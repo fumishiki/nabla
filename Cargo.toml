@@ -10,8 +10,8 @@ members = ["macros"]
 [features]
 default = ["cpu"]
 cpu  = []
-cuda = ["dep:cubecl-cuda"]
-wgpu = ["dep:cubecl-wgpu"]
+cuda = ["dep:cubecl-cuda", "dep:cubecl-core"]
+wgpu = ["dep:cubecl-wgpu", "dep:cubecl-core"]
 hip = ["dep:cubecl-hip"]
 
 [dependencies]
@@ -19,6 +19,7 @@ faer = "0.24"
 faer-traits = "0.24"
 rayon = "1"
 nabla-macros = { path = "macros" }
+cubecl-core = { version = "0.9", optional = true }
 cubecl-cuda = { version = "0.9", optional = true }
 cubecl-wgpu = { version = "0.9", optional = true }
 cubecl-hip  = { version = "0.9", optional = true }

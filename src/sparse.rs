@@ -1,5 +1,4 @@
 use core::fmt;
-use std::convert::TryFrom;
 
 use faer::{
     Side, prelude::*, sparse as faer_sparse,
@@ -9,6 +8,7 @@ use faer::{
 use crate::error::{Error, Result};
 use crate::scalar::Scalar;
 use crate::tensor::Tensor;
+use crate::backend::Cpu;
 
 type TripletEntriesNonNegative<T> = faer_sparse::Triplet<isize, isize, T>;
 type TripletEntries<T> = faer_sparse::Triplet<usize, usize, T>;
@@ -27,12 +27,45 @@ fn sparse_error<T: fmt::Display>(op: &'static str, shape: (usize, usize), err: T
 }
 
 #[inline]
-fn check_rhs_rows<T: Scalar>(expected_rows: usize, rhs: &Tensor<T>) -> Result<()> {
+fn check_rhs_rows<T: Scalar>(expected_rows: usize, rhs: &Tensor<T, Cpu>) -> Result<()> {
     if expected_rows == rhs.nrows() {
         Ok(())
     } else {
         Err(Error::mismatch((expected_rows, rhs.ncols()), rhs.shape()))
     }
+}
+
+/// Generate `symbolic_METHOD` body: `SymType::try_new(symbolic_ref, ...args)`.
+macro_rules! symbolic_factorize {
+    ($self:expr, $name:literal, $SymType:ty $(, $arg:expr)*) => {
+        <$SymType>::try_new($self.as_ref().symbolic() $(, $arg)*)
+            .map_err(|err| sparse_error($name, $self.shape(), err))
+    };
+}
+
+/// Generate `METHOD_with_symbolic` body: `NumType::try_new_with_symbolic(sym, mat, ...args)`.
+macro_rules! factorize_with_symbolic {
+    ($self:expr, $name:literal, $NumType:ty, $sym:expr $(, $arg:expr)*) => {
+        <$NumType>::try_new_with_symbolic($sym, $self.as_ref() $(, $arg)*)
+            .map_err(|err| sparse_error($name, $self.shape(), err))
+    };
+}
+
+/// Generate `sp_METHOD` body: `storage.sp_METHOD(...args).map_err(...)`.
+macro_rules! factorize {
+    ($self:expr, $name:literal, $sp_method:ident $(, $arg:expr)*) => {
+        $self.storage.$sp_method($($arg),*)
+            .map_err(|err| sparse_error($name, $self.shape(), err))
+    };
+}
+
+/// Generate solve body: `check_rhs → factorize → solve`.
+macro_rules! sparse_solve {
+    ($self:expr, $rhs:expr, $factorize:expr, $solve_method:ident) => {{
+        check_rhs_rows($self.nrows(), $rhs)?;
+        let fac = $factorize?;
+        Ok(Tensor::from_storage(fac.$solve_method($rhs.as_mat_ref())))
+    }};
 }
 
 /// Owned CSC sparse matrix with `usize` indices.
@@ -67,20 +100,18 @@ impl<T: Scalar> SparseMatrix<T> {
     ) -> Result<Self> {
         let entries = entries
             .iter()
-            .map(
-                |entry| -> core::result::Result<TripletEntriesNonNegative<T>, Error> {
-                    let row = isize::try_from(entry.row)
-                        .map_err(|_| Error::invalid("triplet row index does not fit in isize"))?;
-                    let col = isize::try_from(entry.col)
-                        .map_err(|_| Error::invalid("triplet col index does not fit in isize"))?;
-                    Ok(TripletEntriesNonNegative {
-                        row,
-                        col,
-                        val: entry.val,
-                    })
-                },
-            )
-            .collect::<core::result::Result<Vec<_>, _>>()?;
+            .map(|entry| -> Result<TripletEntriesNonNegative<T>> {
+                let row: isize = entry
+                    .row
+                    .try_into()
+                    .map_err(|_| Error::invalid("triplet row index does not fit in isize"))?;
+                let col: isize = entry
+                    .col
+                    .try_into()
+                    .map_err(|_| Error::invalid("triplet col index does not fit in isize"))?;
+                Ok(TripletEntriesNonNegative { row, col, val: entry.val })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let storage = SparseStorage::try_new_from_nonnegative_triplets(nrows, ncols, &entries)
             .map_err(|err| {
                 sparse_error("try_new_from_nonnegative_triplets", (nrows, ncols), err)
@@ -142,8 +173,7 @@ impl<T: Scalar> SparseMatrix<T> {
     /// # Errors
     /// Returns `Err` when symbolic factorization fails.
     pub fn symbolic_llt(&self, side: Side) -> Result<SymbolicLlt> {
-        SymbolicLlt::try_new(self.as_ref().symbolic(), side)
-            .map_err(|err| sparse_error("symbolic_llt", self.shape(), err))
+        symbolic_factorize!(self, "symbolic_llt", SymbolicLlt, side)
     }
 
     /// Sparse LU symbolic factorization.
@@ -151,8 +181,7 @@ impl<T: Scalar> SparseMatrix<T> {
     /// # Errors
     /// Returns `Err` when symbolic factorization fails.
     pub fn symbolic_lu(&self) -> Result<SymbolicLu> {
-        SymbolicLu::try_new(self.as_ref().symbolic())
-            .map_err(|err| sparse_error("symbolic_lu", self.shape(), err))
+        symbolic_factorize!(self, "symbolic_lu", SymbolicLu)
     }
 
     /// Sparse QR symbolic factorization.
@@ -160,8 +189,7 @@ impl<T: Scalar> SparseMatrix<T> {
     /// # Errors
     /// Returns `Err` when symbolic factorization fails.
     pub fn symbolic_qr(&self) -> Result<SymbolicQr> {
-        SymbolicQr::try_new(self.as_ref().symbolic())
-            .map_err(|err| sparse_error("symbolic_qr", self.shape(), err))
+        symbolic_factorize!(self, "symbolic_qr", SymbolicQr)
     }
 
     /// Cholesky factorization with pre-computed symbolic data.
@@ -169,8 +197,7 @@ impl<T: Scalar> SparseMatrix<T> {
     /// # Errors
     /// Returns `Err` when numeric factorization fails.
     pub fn llt_with_symbolic(&self, symbolic: SymbolicLlt, side: Side) -> Result<NumericLlt<T>> {
-        NumericLlt::try_new_with_symbolic(symbolic, self.as_ref(), side)
-            .map_err(|err| sparse_error("llt_with_symbolic", self.shape(), err))
+        factorize_with_symbolic!(self, "llt_with_symbolic", NumericLlt<T>, symbolic, side)
     }
 
     /// LU factorization with pre-computed symbolic data.
@@ -178,8 +205,7 @@ impl<T: Scalar> SparseMatrix<T> {
     /// # Errors
     /// Returns `Err` when numeric factorization fails.
     pub fn lu_with_symbolic(&self, symbolic: SymbolicLu) -> Result<NumericLu<T>> {
-        NumericLu::try_new_with_symbolic(symbolic, self.as_ref())
-            .map_err(|err| sparse_error("lu_with_symbolic", self.shape(), err))
+        factorize_with_symbolic!(self, "lu_with_symbolic", NumericLu<T>, symbolic)
     }
 
     /// QR factorization with pre-computed symbolic data.
@@ -187,8 +213,7 @@ impl<T: Scalar> SparseMatrix<T> {
     /// # Errors
     /// Returns `Err` when numeric factorization fails.
     pub fn qr_with_symbolic(&self, symbolic: SymbolicQr) -> Result<NumericQr<T>> {
-        NumericQr::try_new_with_symbolic(symbolic, self.as_ref())
-            .map_err(|err| sparse_error("qr_with_symbolic", self.shape(), err))
+        factorize_with_symbolic!(self, "qr_with_symbolic", NumericQr<T>, symbolic)
     }
 
     /// Compute sparse Cholesky factors.
@@ -196,19 +221,15 @@ impl<T: Scalar> SparseMatrix<T> {
     /// # Errors
     /// Returns `Err` when Cholesky factorization fails.
     pub fn cholesky(&self, side: Side) -> Result<NumericLlt<T>> {
-        self.storage
-            .sp_cholesky(side)
-            .map_err(|err| sparse_error("cholesky", self.shape(), err))
+        factorize!(self, "cholesky", sp_cholesky, side)
     }
 
     /// Solve `A x = b` via sparse Cholesky.
     ///
     /// # Errors
     /// Returns `Err` when RHS shape is incompatible or solver fails.
-    pub fn cholesky_solve(&self, side: Side, rhs: &Tensor<T>) -> Result<Tensor<T>> {
-        check_rhs_rows(self.nrows(), rhs)?;
-        let llt = self.cholesky(side)?;
-        Ok(Tensor::from_storage(llt.solve(rhs.as_mat_ref())))
+    pub fn cholesky_solve(&self, side: Side, rhs: &Tensor<T, Cpu>) -> Result<Tensor<T, Cpu>> {
+        sparse_solve!(self, rhs, self.cholesky(side), solve)
     }
 
     /// Solve `A x = b` via sparse Cholesky with symbolic prepass.
@@ -219,11 +240,9 @@ impl<T: Scalar> SparseMatrix<T> {
         &self,
         symbolic: SymbolicLlt,
         side: Side,
-        rhs: &Tensor<T>,
-    ) -> Result<Tensor<T>> {
-        check_rhs_rows(self.nrows(), rhs)?;
-        let llt = self.llt_with_symbolic(symbolic, side)?;
-        Ok(Tensor::from_storage(llt.solve(rhs.as_mat_ref())))
+        rhs: &Tensor<T, Cpu>,
+    ) -> Result<Tensor<T, Cpu>> {
+        sparse_solve!(self, rhs, self.llt_with_symbolic(symbolic, side), solve)
     }
 
     /// Compute sparse LU factors.
@@ -231,19 +250,15 @@ impl<T: Scalar> SparseMatrix<T> {
     /// # Errors
     /// Returns `Err` when LU factorization fails.
     pub fn lu(&self) -> Result<NumericLu<T>> {
-        self.storage
-            .sp_lu()
-            .map_err(|err| sparse_error("lu", self.shape(), err))
+        factorize!(self, "lu", sp_lu)
     }
 
     /// Solve `A x = b` via sparse LU.
     ///
     /// # Errors
     /// Returns `Err` when RHS shape is incompatible or solver fails.
-    pub fn lu_solve(&self, rhs: &Tensor<T>) -> Result<Tensor<T>> {
-        check_rhs_rows(self.nrows(), rhs)?;
-        let lu = self.lu()?;
-        Ok(Tensor::from_storage(lu.solve(rhs.as_mat_ref())))
+    pub fn lu_solve(&self, rhs: &Tensor<T, Cpu>) -> Result<Tensor<T, Cpu>> {
+        sparse_solve!(self, rhs, self.lu(), solve)
     }
 
     /// Solve `A x = b` via sparse LU with symbolic prepass.
@@ -253,11 +268,9 @@ impl<T: Scalar> SparseMatrix<T> {
     pub fn lu_solve_with_symbolic(
         &self,
         symbolic: SymbolicLu,
-        rhs: &Tensor<T>,
-    ) -> Result<Tensor<T>> {
-        check_rhs_rows(self.nrows(), rhs)?;
-        let lu = self.lu_with_symbolic(symbolic)?;
-        Ok(Tensor::from_storage(lu.solve(rhs.as_mat_ref())))
+        rhs: &Tensor<T, Cpu>,
+    ) -> Result<Tensor<T, Cpu>> {
+        sparse_solve!(self, rhs, self.lu_with_symbolic(symbolic), solve)
     }
 
     /// Compute sparse QR factors.
@@ -265,19 +278,15 @@ impl<T: Scalar> SparseMatrix<T> {
     /// # Errors
     /// Returns `Err` when QR factorization fails.
     pub fn qr(&self) -> Result<NumericQr<T>> {
-        self.storage
-            .sp_qr()
-            .map_err(|err| sparse_error("qr", self.shape(), err))
+        factorize!(self, "qr", sp_qr)
     }
 
     /// Least-squares solve `A x ≈ b` via sparse QR.
     ///
     /// # Errors
     /// Returns `Err` when RHS shape is incompatible or solver fails.
-    pub fn qr_solve_lstsq(&self, rhs: &Tensor<T>) -> Result<Tensor<T>> {
-        check_rhs_rows(self.nrows(), rhs)?;
-        let qr = self.qr()?;
-        Ok(Tensor::from_storage(qr.solve_lstsq(rhs.as_mat_ref())))
+    pub fn qr_solve_lstsq(&self, rhs: &Tensor<T, Cpu>) -> Result<Tensor<T, Cpu>> {
+        sparse_solve!(self, rhs, self.qr(), solve_lstsq)
     }
 
     /// Least-squares solve `A x ≈ b` via sparse QR with symbolic prepass.
@@ -287,15 +296,13 @@ impl<T: Scalar> SparseMatrix<T> {
     pub fn qr_solve_lstsq_with_symbolic(
         &self,
         symbolic: SymbolicQr,
-        rhs: &Tensor<T>,
-    ) -> Result<Tensor<T>> {
-        check_rhs_rows(self.nrows(), rhs)?;
-        let qr = self.qr_with_symbolic(symbolic)?;
-        Ok(Tensor::from_storage(qr.solve_lstsq(rhs.as_mat_ref())))
+        rhs: &Tensor<T, Cpu>,
+    ) -> Result<Tensor<T, Cpu>> {
+        sparse_solve!(self, rhs, self.qr_with_symbolic(symbolic), solve_lstsq)
     }
 
     /// Multiply sparse × dense into dense output.
-    pub fn sparse_dense_matmul(&self, right: &Tensor<T>, alpha: T) -> Tensor<T> {
+    pub fn sparse_dense_matmul(&self, right: &Tensor<T, Cpu>, alpha: T) -> Tensor<T, Cpu> {
         let mut out = Tensor::zeros(self.nrows(), right.ncols());
         faer_sparse_dense_matmul(
             out.as_mat_mut(),

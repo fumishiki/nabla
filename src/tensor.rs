@@ -7,9 +7,9 @@
 // - `adjoint` delegates element-wise conjugation via `faer_traits::conj`.
 
 use core::fmt;
-use core::ops::{Add, Mul, Neg, Sub};
+use core::ops::{Add, Bound, Mul, Neg, RangeBounds, Sub};
 
-use crate::backend::{Backend, DefaultBackend};
+use crate::backend::{Backend, Cpu, DefaultBackend};
 use crate::scalar::Scalar;
 
 /// A 2-D dense matrix backed by a pluggable [`Backend`].
@@ -17,6 +17,64 @@ use crate::scalar::Scalar;
 /// The default backend is [`crate::backend::Cpu`], which uses faer's SIMD kernels.
 pub struct Tensor<T: Scalar, B: Backend = DefaultBackend> {
     storage: B::Storage<T>,
+}
+
+impl<T: Scalar, B: Backend> Clone for Tensor<T, B> {
+    fn clone(&self) -> Self {
+        Self { storage: B::clone_storage(&self.storage) }
+    }
+}
+
+fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> (usize, usize) {
+    let start = match range.start_bound() {
+        Bound::Included(&s) => s,
+        Bound::Excluded(&s) => s + 1,
+        Bound::Unbounded => 0,
+    };
+    let end = match range.end_bound() {
+        Bound::Included(&e) => e + 1,
+        Bound::Excluded(&e) => e,
+        Bound::Unbounded => len,
+    };
+    (start, end)
+}
+
+/// Write a matrix in `[[a, b], [c, d]]` style.
+///
+/// `prefix` is written before the outer `[`; when `None` a space is inserted
+/// between rows (Display style), otherwise `, ` (Debug style).
+pub(crate) fn fmt_matrix(
+    rows: usize,
+    cols: usize,
+    mut elem: impl FnMut(usize, usize, &mut fmt::Formatter<'_>) -> fmt::Result,
+    f: &mut fmt::Formatter<'_>,
+    prefix: Option<&str>,
+) -> fmt::Result {
+    if let Some(p) = prefix {
+        write!(f, "{p}")?;
+    }
+    write!(f, "[")?;
+    for r in 0..rows {
+        if prefix.is_none() && r > 0 {
+            write!(f, " ")?;
+        }
+        write!(f, "[")?;
+        for c in 0..cols {
+            if c > 0 {
+                write!(f, ", ")?;
+            }
+            elem(r, c, f)?;
+        }
+        write!(f, "]")?;
+        if r + 1 < rows {
+            if prefix.is_some() {
+                write!(f, ", ")?;
+            } else {
+                writeln!(f)?;
+            }
+        }
+    }
+    write!(f, "]")
 }
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
@@ -74,13 +132,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Allocate an `n × n` identity matrix.
     #[must_use]
     pub fn identity(n: usize) -> Self {
-        Self::from_fn(n, n, |r, c| {
-            if r == c {
-                T::one_impl()
-            } else {
-                T::zero_impl()
-            }
-        })
+        Self::from_fn(n, n, |r, c| if r == c { T::one_impl() } else { T::zero_impl() })
     }
 
     /// Number of rows.
@@ -131,6 +183,40 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         }
     }
 
+    /// Set element at `(row, col)`.
+    #[inline]
+    pub fn set(&mut self, row: usize, col: usize, val: T) {
+        Self::check_range("set row", row, self.nrows());
+        Self::check_range("set col", col, self.ncols());
+        B::set(&mut self.storage, row, col, val);
+    }
+
+    /// Slice by row and column ranges, returning a new `Tensor` (copy).
+    ///
+    /// `A[row_range, col_range]` — copy of the selected submatrix.
+    #[must_use]
+    pub fn slice(&self, rows: impl RangeBounds<usize>, cols: impl RangeBounds<usize>) -> Self {
+        let (rs, re) = resolve_range(rows, self.nrows());
+        let (cs, ce) = resolve_range(cols, self.ncols());
+        self.submatrix(rs, re, cs, ce)
+    }
+
+    /// Slice rows, all columns.
+    ///
+    /// `A[rows, :]` — slice rows, all columns.
+    #[must_use]
+    pub fn slice_rows(&self, rows: impl RangeBounds<usize>) -> Self {
+        self.slice(rows, ..)
+    }
+
+    /// Slice columns, all rows.
+    ///
+    /// `A[:, cols]` — slice columns, all rows.
+    #[must_use]
+    pub fn slice_cols(&self, cols: impl RangeBounds<usize>) -> Self {
+        self.slice(.., cols)
+    }
+
     /// Extract a row vector tensor with shape `1 × ncols`.
     #[must_use]
     pub fn row(&self, row: usize) -> Self {
@@ -173,17 +259,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ///
     /// For real types (`f32`, `f64`) this is identical to [`Tensor::t`].
     /// For complex types (`c32`, `c64`) each element is conjugated before
-    /// transposing.
+    /// transposing.  Both cases are computed in a single `from_fn` pass —
+    /// no intermediate allocation.
     #[must_use]
     pub fn adjoint(&self) -> Self {
-        if T::IS_REAL {
-            return self.t();
-        }
         let (r, c) = self.shape();
-        let conj = B::from_fn(r, c, |i, j| {
-            faer_traits::math_utils::conj(&B::get(&self.storage, i, j))
-        });
-        Self { storage: conj }.t()
+        Self::from_storage(if T::IS_REAL {
+            B::from_fn(c, r, |i, j| self.get(j, i))
+        } else {
+            B::from_fn(c, r, |i, j| faer_traits::math_utils::conj(&self.get(j, i)))
+        })
     }
 
     /// Compute `out = a * b` (matrix multiply), overwriting `out`.
@@ -206,49 +291,88 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         );
         B::matmul_into(&mut out.storage, &a.storage, &b.storage);
     }
-}
 
-impl<T: Scalar, B: Backend> Add for &Tensor<T, B> {
-    type Output = Tensor<T, B>;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        assert_eq!(
-            self.shape(),
-            rhs.shape(),
-            "add shape mismatch: lhs {:?} vs rhs {:?}",
-            self.shape(),
-            rhs.shape()
-        );
+    /// Copy all elements into a tensor on a (possibly different) backend.
+    ///
+    /// This is the general backend-conversion primitive.  Internally it calls
+    /// `get(r, c)` on every element and constructs the target tensor via
+    /// `B2::from_fn`, so it works across any pair of backends.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use nabla::prelude::*;
+    /// let cpu_t: Tensor<f32, Cpu> = Tensor::from_fn(2, 2, |r, c| (r + c) as f32);
+    /// // round-trip through CPU (always available)
+    /// let cpu2 = cpu_t.to_backend::<Cpu>();
+    /// assert_eq!(cpu2.get(1, 1), 2.0_f32);
+    /// ```
+    #[must_use]
+    pub fn to_backend<B2: Backend>(&self) -> Tensor<T, B2> {
+        let (rows, cols) = self.shape();
         Tensor {
-            storage: B::add(&self.storage, &rhs.storage),
+            storage: B2::from_fn(rows, cols, |r, c| self.get(r, c)),
         }
+    }
+
+    /// Copy into a CPU-backed tensor.
+    ///
+    /// Equivalent to `self.to_backend::<Cpu>()`.  Always available regardless
+    /// of which backend features are enabled.
+    #[must_use]
+    #[inline]
+    pub fn to_cpu(&self) -> Tensor<T, crate::backend::Cpu> {
+        self.to_backend::<crate::backend::Cpu>()
     }
 }
 
-impl<T: Scalar, B: Backend> Sub for &Tensor<T, B> {
-    type Output = Tensor<T, B>;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        assert_eq!(
-            self.shape(),
-            rhs.shape(),
-            "sub shape mismatch: lhs {:?} vs rhs {:?}",
-            self.shape(),
-            rhs.shape()
-        );
-        Tensor {
-            storage: B::sub(&self.storage, &rhs.storage),
-        }
+#[cfg(feature = "cuda")]
+impl<T: Scalar, B: crate::backend::Backend> Tensor<T, B> {
+    /// Copy into a CUDA-backed tensor (requires `cuda` feature).
+    #[must_use]
+    #[inline]
+    pub fn to_cuda(&self) -> Tensor<T, crate::backend::Cuda> {
+        self.to_backend::<crate::backend::Cuda>()
     }
 }
+
+#[cfg(feature = "wgpu")]
+impl<T: Scalar, B: crate::backend::Backend> Tensor<T, B> {
+    /// Copy into a wgpu-backed tensor (requires `wgpu` feature).
+    #[must_use]
+    #[inline]
+    pub fn to_wgpu(&self) -> Tensor<T, crate::backend::Wgpu> {
+        self.to_backend::<crate::backend::Wgpu>()
+    }
+}
+
+macro_rules! impl_tensor_binop {
+    ($trait:ident, $method:ident, $backend_fn:ident, $op:literal) => {
+        impl<T: Scalar, B: Backend> $trait for &Tensor<T, B> {
+            type Output = Tensor<T, B>;
+
+            fn $method(self, rhs: Self) -> Self::Output {
+                assert_eq!(
+                    self.shape(),
+                    rhs.shape(),
+                    concat!($op, " shape mismatch: lhs {:?} vs rhs {:?}"),
+                    self.shape(),
+                    rhs.shape()
+                );
+                Tensor::from_storage(B::$backend_fn(&self.storage, &rhs.storage))
+            }
+        }
+    };
+}
+
+impl_tensor_binop!(Add, add, add, "add");
+impl_tensor_binop!(Sub, sub, sub, "sub");
 
 impl<T: Scalar, B: Backend> Neg for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
     fn neg(self) -> Self::Output {
-        Tensor {
-            storage: B::neg(&self.storage),
-        }
+        Tensor::from_storage(B::neg(&self.storage))
     }
 }
 
@@ -274,53 +398,235 @@ impl<T: Scalar, B: Backend> Mul<T> for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
     fn mul(self, rhs: T) -> Self::Output {
-        Tensor {
-            storage: B::scale(&self.storage, rhs),
-        }
+        Tensor::from_storage(B::scale(&self.storage, rhs))
     }
 }
 
 impl<T: Scalar + fmt::Display, B: Backend> fmt::Display for Tensor<T, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (rows, cols) = self.shape();
-        write!(f, "[")?;
-        for r in 0..rows {
-            if r > 0 {
-                write!(f, " ")?;
-            }
-            write!(f, "[")?;
-            for c in 0..cols {
-                if c > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{}", B::get(&self.storage, r, c))?;
-            }
-            write!(f, "]")?;
-            if r + 1 < rows {
-                writeln!(f)?;
-            }
-        }
-        write!(f, "]")
+        fmt_matrix(rows, cols, |r, c, f| write!(f, "{}", self.get(r, c)), f, None)
     }
 }
 
 impl<T: Scalar + fmt::Debug, B: Backend> fmt::Debug for Tensor<T, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (rows, cols) = self.shape();
-        write!(f, "Tensor({rows}x{cols})[")?;
-        for r in 0..rows {
-            write!(f, "[")?;
-            for c in 0..cols {
-                if c > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{:?}", B::get(&self.storage, r, c))?;
-            }
-            write!(f, "]")?;
-            if r + 1 < rows {
-                write!(f, ", ")?;
+        let prefix = format!("Tensor({rows}x{cols})");
+        fmt_matrix(rows, cols, |r, c, f| write!(f, "{:?}", self.get(r, c)), f, Some(&prefix))
+    }
+}
+
+// Static matrices and abstract type hierarchy.
+//
+// Combines:
+//   - StaticMatrix<T, R, C>  — stack-allocated const-generic matrix
+//   - Array<T> / Matrix<T>   — abstract trait hierarchy
+
+/// A stack-allocated `R × C` matrix with element type `T`.
+///
+/// Arithmetic (`+`, `-`, `*`) is stack-only and allocation-free.
+#[derive(Clone, Copy)]
+pub struct StaticMatrix<T: Scalar, const R: usize, const C: usize> {
+    data: [[T; C]; R],
+}
+
+impl<T: Scalar, const R: usize, const C: usize> StaticMatrix<T, R, C> {
+    /// Zero-filled `R × C` matrix.
+    #[must_use]
+    pub fn zeros() -> Self {
+        Self { data: [[T::zero_impl(); C]; R] }
+    }
+
+    /// Matrix whose `(r, c)` element is `f(r, c)`.
+    #[must_use]
+    pub fn from_fn(mut f: impl FnMut(usize, usize) -> T) -> Self {
+        let mut data = [[T::zero_impl(); C]; R];
+        for (r, row) in data.iter_mut().enumerate() {
+            for (c, elem) in row.iter_mut().enumerate() {
+                *elem = f(r, c);
             }
         }
-        write!(f, "]")
+        Self { data }
     }
+
+    /// Identity-like matrix: `1` on the diagonal, `0` elsewhere.
+    #[must_use]
+    pub fn identity() -> Self {
+        Self::from_fn(|r, c| if r == c { T::one_impl() } else { T::zero_impl() })
+    }
+
+    /// Number of rows (always `R`).
+    #[must_use]
+    #[inline]
+    pub const fn nrows(&self) -> usize { R }
+
+    /// Number of columns (always `C`).
+    #[must_use]
+    #[inline]
+    pub const fn ncols(&self) -> usize { C }
+
+    /// Shape `(R, C)`.
+    #[must_use]
+    #[inline]
+    pub const fn shape(&self) -> (usize, usize) { (R, C) }
+
+    /// Read element at `(row, col)`.
+    #[must_use]
+    #[inline]
+    pub fn get(&self, row: usize, col: usize) -> T { self.data[row][col] }
+
+    /// Write element at `(row, col)`.
+    #[inline]
+    pub fn set(&mut self, row: usize, col: usize, val: T) { self.data[row][col] = val; }
+
+    /// Transpose: returns a new `C × R` static matrix (stack-only).
+    #[must_use]
+    pub fn t(&self) -> StaticMatrix<T, C, R> {
+        StaticMatrix::<T, C, R>::from_fn(|r, c| self.data[c][r])
+    }
+
+    /// Conjugate-transpose (adjoint).
+    #[must_use]
+    pub fn adjoint(&self) -> StaticMatrix<T, C, R> {
+        if T::IS_REAL { return self.t(); }
+        StaticMatrix::<T, C, R>::from_fn(|r, c| faer_traits::math_utils::conj(&self.data[c][r]))
+    }
+
+    /// Matrix multiply `self (R×K) * rhs (K×N)` → `StaticMatrix<T, R, N>`.
+    #[must_use]
+    pub fn matmul<const N: usize>(&self, rhs: &StaticMatrix<T, C, N>) -> StaticMatrix<T, R, N> {
+        StaticMatrix::<T, R, N>::from_fn(|r, c| {
+            (0..C).fold(T::zero_impl(), |acc, k| acc + self.data[r][k] * rhs.data[k][c])
+        })
+    }
+
+    /// Convert to a heap-allocated [`Tensor`] (copies all elements).
+    #[must_use]
+    pub fn to_tensor(&self) -> Tensor<T, DefaultBackend> {
+        Tensor::from_fn(R, C, |r, c| self.data[r][c])
+    }
+
+    /// Build from a [`Tensor`] (copies all elements).
+    ///
+    /// # Panics
+    /// Panics if `tensor.shape() != (R, C)`.
+    #[must_use]
+    pub fn from_tensor(tensor: &Tensor<T, DefaultBackend>) -> Self {
+        assert_eq!(tensor.shape(), (R, C),
+            "StaticMatrix::from_tensor shape mismatch: expected ({R}, {C}), got {:?}", tensor.shape());
+        Self::from_fn(|r, c| tensor.get(r, c))
+    }
+}
+
+macro_rules! impl_static_binop {
+    (binary: $trait:ident, $method:ident, $op:tt) => {
+        impl<T: Scalar, const R: usize, const C: usize> $trait for StaticMatrix<T, R, C> {
+            type Output = Self;
+            fn $method(self, rhs: Self) -> Self {
+                Self::from_fn(|r, c| self.data[r][c] $op rhs.data[r][c])
+            }
+        }
+    };
+    (unary: $trait:ident, $method:ident, $op:tt) => {
+        impl<T: Scalar, const R: usize, const C: usize> $trait for StaticMatrix<T, R, C> {
+            type Output = Self;
+            fn $method(self) -> Self {
+                Self::from_fn(|r, c| $op self.data[r][c])
+            }
+        }
+    };
+    (scalar: $trait:ident, $method:ident, $op:tt) => {
+        impl<T: Scalar, const R: usize, const C: usize> $trait<T> for StaticMatrix<T, R, C> {
+            type Output = Self;
+            fn $method(self, rhs: T) -> Self {
+                Self::from_fn(|r, c| self.data[r][c] $op rhs)
+            }
+        }
+    };
+}
+
+impl_static_binop!(binary: Add, add, +);
+impl_static_binop!(binary: Sub, sub, -);
+impl_static_binop!(unary: Neg, neg, -);
+impl_static_binop!(scalar: Mul, mul, *);
+
+impl<T: Scalar, const R: usize, const K: usize, const N: usize>
+    Mul<StaticMatrix<T, K, N>> for StaticMatrix<T, R, K>
+{
+    type Output = StaticMatrix<T, R, N>;
+    fn mul(self, rhs: StaticMatrix<T, K, N>) -> Self::Output { self.matmul(&rhs) }
+}
+
+impl<T: Scalar + fmt::Display, const R: usize, const C: usize> fmt::Display for StaticMatrix<T, R, C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt_matrix(R, C, |r, c, f| write!(f, "{}", self.data[r][c]), f, None)
+    }
+}
+
+impl<T: Scalar + fmt::Debug, const R: usize, const C: usize> fmt::Debug for StaticMatrix<T, R, C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let prefix = format!("StaticMatrix({R}x{C})");
+        fmt_matrix(R, C, |r, c, f| write!(f, "{:?}", self.data[r][c]), f, Some(&prefix))
+    }
+}
+
+/// Base trait for any 2-D array-like type.
+///
+/// Implemented by both dynamic [`Tensor`] and static [`StaticMatrix`].
+pub trait Array<T: Scalar> {
+    /// Number of rows.
+    fn nrows(&self) -> usize;
+    /// Number of columns.
+    fn ncols(&self) -> usize;
+    /// Shape as `(nrows, ncols)`.
+    #[inline]
+    fn shape(&self) -> (usize, usize) { (self.nrows(), self.ncols()) }
+    /// Read element at `(row, col)`.
+    fn get(&self, row: usize, col: usize) -> T;
+}
+
+/// Matrix algebra trait extending [`Array`].
+///
+/// `t_dyn` and `matmul_dyn` always return a CPU-backed [`Tensor`] so the
+/// return type is independent of which backend `self` uses.
+pub trait Matrix<T: Scalar>: Array<T> {
+    /// Transpose into a CPU-backed [`Tensor`].
+    fn t_dyn(&self) -> Tensor<T, Cpu>;
+    /// Matrix multiply `self × rhs` into a CPU-backed [`Tensor`].
+    fn matmul_dyn(&self, rhs: &dyn Array<T>) -> Tensor<T, Cpu>;
+}
+
+/// Shared matmul logic for any pair of `Array<T>` implementors.
+fn dyn_matmul<T: Scalar>(lhs: &dyn Array<T>, rhs: &dyn Array<T>) -> Tensor<T, Cpu> {
+    let (m, k) = lhs.shape();
+    let (k2, n) = rhs.shape();
+    assert_eq!(k, k2, "matmul_dyn inner dimension mismatch: lhs k={k}, rhs k={k2}");
+    Tensor::from_fn(m, n, |r, c| {
+        (0..k).fold(T::zero_impl(), |acc, i| acc + lhs.get(r, i) * rhs.get(i, c))
+    })
+}
+
+impl<T: Scalar, B: Backend> Array<T> for Tensor<T, B> {
+    #[inline] fn nrows(&self) -> usize { Tensor::nrows(self) }
+    #[inline] fn ncols(&self) -> usize { Tensor::ncols(self) }
+    #[inline] fn get(&self, row: usize, col: usize) -> T { Tensor::get(self, row, col) }
+}
+
+impl<T: Scalar, B: Backend> Matrix<T> for Tensor<T, B> {
+    fn t_dyn(&self) -> Tensor<T, Cpu> { self.to_cpu().t() }
+    fn matmul_dyn(&self, rhs: &dyn Array<T>) -> Tensor<T, Cpu> { dyn_matmul(self, rhs) }
+}
+
+impl<T: Scalar, const R: usize, const C: usize> Array<T> for StaticMatrix<T, R, C> {
+    #[inline] fn nrows(&self) -> usize { R }
+    #[inline] fn ncols(&self) -> usize { C }
+    #[inline] fn get(&self, row: usize, col: usize) -> T { StaticMatrix::get(self, row, col) }
+}
+
+impl<T: Scalar, const R: usize, const C: usize> Matrix<T> for StaticMatrix<T, R, C> {
+    fn t_dyn(&self) -> Tensor<T, Cpu> {
+        Tensor::from_fn(C, R, |r, c| self.get(c, r))
+    }
+    fn matmul_dyn(&self, rhs: &dyn Array<T>) -> Tensor<T, Cpu> { dyn_matmul(self, rhs) }
 }

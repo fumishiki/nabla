@@ -8,6 +8,8 @@ use syn::{
     token::Comma,
 };
 
+mod einsum;
+
 // Parse `[[e00, e01], [e10, e11], ...]`.
 struct MatInput {
     rows: Vec<Vec<Expr>>,
@@ -65,6 +67,34 @@ impl Parse for RowExprs {
 #[proc_macro]
 pub fn mat(input: TokenStream) -> TokenStream {
     match mat_impl(input.into()) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// Einstein summation macro — Julia `@tullio` / `@einsum` equivalent.
+///
+/// Computes Einstein summation over 2-D tensors. Free indices appear on the
+/// LHS; contraction indices appear only on the RHS and are summed over.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Matrix multiply: C = A * B
+/// let c = einsum!(c[i,j] = a[i,k] * b[k,j]);
+///
+/// // Matrix-vector multiply (column vector output)
+/// let y = einsum!(y[i] = a[i,j] * x[j]);
+///
+/// // Trace (scalar output)
+/// let s: f64 = einsum!(s = a[i,i]);
+///
+/// // Hadamard product
+/// let c = einsum!(c[i,j] = a[i,j] * b[i,j]);
+/// ```
+#[proc_macro]
+pub fn einsum(input: TokenStream) -> TokenStream {
+    match einsum::einsum_impl(input.into()) {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
     }

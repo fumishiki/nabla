@@ -1,10 +1,10 @@
 use core::fmt;
 
 use faer::{
-    Accum, Par, Side,
     linalg::solvers::{self, DenseSolveCore},
     prelude::*,
     sparse::linalg::matmul::sparse_dense_matmul,
+    Accum, Par, Side,
 };
 
 use crate::backend::Cpu;
@@ -40,6 +40,89 @@ fn require_square(shape: (usize, usize), op: &'static str) -> Result<()> {
             "{op} requires square input: {shape:?}"
         )))
     }
+}
+
+/// Generate `solve`-family methods that delegate to partial-pivot LU.
+///
+/// Variants produced:
+/// - returning `Result<Self>`: `solve`, `solve_transpose`, `solve_adjoint`,
+///   `rsolve`, `rsolve_transpose`, `rsolve_adjoint`
+/// - in-place `Result<()>`: `solve_in_place`, `solve_transpose_in_place`,
+///   `solve_adjoint_in_place`, `rsolve_in_place`
+macro_rules! lu_solve {
+    // returning variant: fn $name(&self, rhs: &Self) -> Result<Self>
+    (ret $name:ident, $doc:literal, $expected:expr, $lu_method:ident) => {
+        #[doc = $doc]
+        ///
+        /// # Errors
+        /// Returns `Err` when dimensions mismatch or solve fails.
+        pub fn $name(&self, rhs: &Self) -> Result<Self> {
+            check_shape($expected(self, rhs), rhs.shape())?;
+            let lu = self.partial_piv_lu();
+            Ok(Tensor::from_storage(lu.$lu_method(rhs.as_mat_ref())))
+        }
+    };
+    // in-place variant: fn $name(&self, rhs: &mut Self) -> Result<()>
+    (inplace $name:ident, $doc:literal, $expected:expr, $lu_method:ident) => {
+        #[doc = $doc]
+        ///
+        /// # Errors
+        /// Returns `Err` when dimensions mismatch or solve fails.
+        pub fn $name(&self, rhs: &mut Self) -> Result<()> {
+            check_shape($expected(self, rhs), rhs.shape())?;
+            self.partial_piv_lu().$lu_method(rhs.as_mat_mut());
+            Ok(())
+        }
+    };
+}
+
+/// Generate triangular in-place solve methods.
+///
+/// Pattern: `require_square` + `check_shape` + `self.as_mat_ref().METHOD(rhs.as_mat_mut())`.
+macro_rules! tri_solve {
+    ($name:ident, $doc:literal, $mat_method:ident) => {
+        #[doc = $doc]
+        ///
+        /// # Errors
+        /// Returns `Err` when dimensions mismatch or solve fails.
+        pub fn $name(&self, rhs: &mut Self) -> Result<()> {
+            require_square(self.shape(), stringify!($name))?;
+            check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
+            self.as_mat_ref().$mat_method(rhs.as_mat_mut());
+            Ok(())
+        }
+    };
+}
+
+/// Generate reconstruct/inverse methods for fallible factorizations (those
+/// that take a `Side` argument and return `Result`).
+macro_rules! factored_op {
+    // fallible factorization (takes Side, returns Result)
+    (fallible $name:ident, $doc:literal, $factorize:ident, $op:ident) => {
+        #[doc = $doc]
+        ///
+        /// # Errors
+        /// Returns `Err` when factorization fails.
+        pub fn $name(&self, side: Side) -> Result<Self> {
+            Ok(Tensor::from_storage(self.$factorize(side)?.$op()))
+        }
+    };
+    // infallible factorization (no Side, returns Self directly)
+    (infallible $name:ident, $doc:literal, $factorize:ident, $op:ident) => {
+        #[doc = $doc]
+        #[must_use]
+        pub fn $name(&self) -> Self {
+            Tensor::from_storage(self.$factorize().$op())
+        }
+    };
+    // infallible factorization with Side argument
+    (infallible_side $name:ident, $doc:literal, $factorize:ident, $op:ident) => {
+        #[doc = $doc]
+        #[must_use]
+        pub fn $name(&self, side: Side) -> Self {
+            Tensor::from_storage(self.$factorize(side).$op())
+        }
+    };
 }
 
 impl<T: Scalar> Tensor<T, Cpu> {
@@ -166,108 +249,17 @@ impl<T: Scalar> Tensor<T, Cpu> {
             .map_err(|e| factorization_failed("self_adjoint_eigenvalues", self.shape(), e))
     }
 
-    /// Solve `A x = b`.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve(&self, rhs: &Self) -> Result<Self> {
-        check_shape((self.ncols(), rhs.ncols()), rhs.shape())?;
-        let lu = self.partial_piv_lu();
-        Ok(Tensor::from_storage(lu.solve(rhs.as_mat_ref())))
-    }
+    lu_solve!(ret solve,             "Solve `A x = b`.",           |s: &Self, r: &Self| (s.ncols(), r.ncols()), solve);
+    lu_solve!(ret solve_transpose,   "Solve `A^T x = b`.",         |s: &Self, r: &Self| (s.nrows(), r.ncols()), solve_transpose);
+    lu_solve!(ret solve_adjoint,     "Solve `A^H x = b`.",         |s: &Self, r: &Self| (s.nrows(), r.ncols()), solve_adjoint);
+    lu_solve!(ret rsolve,            "Solve `x A = b`.",           |s: &Self, r: &Self| (r.nrows(), s.ncols()), rsolve);
+    lu_solve!(ret rsolve_transpose,  "Solve `x A^T = b`.",         |s: &Self, r: &Self| (r.nrows(), s.nrows()), rsolve_transpose);
+    lu_solve!(ret rsolve_adjoint,    "Solve `x A^H = b`.",         |s: &Self, r: &Self| (r.nrows(), s.nrows()), rsolve_adjoint);
 
-    /// Solve `A^T x = b`.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_transpose(&self, rhs: &Self) -> Result<Self> {
-        check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        let lu = self.partial_piv_lu();
-        Ok(Tensor::from_storage(lu.solve_transpose(rhs.as_mat_ref())))
-    }
-
-    /// Solve `A^H x = b`.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_adjoint(&self, rhs: &Self) -> Result<Self> {
-        check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        let lu = self.partial_piv_lu();
-        Ok(Tensor::from_storage(lu.solve_adjoint(rhs.as_mat_ref())))
-    }
-
-    /// Solve in place: `A x = b`.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_in_place(&self, rhs: &mut Self) -> Result<()> {
-        check_shape((self.ncols(), rhs.ncols()), rhs.shape())?;
-        self.partial_piv_lu().solve_in_place(rhs.as_mat_mut());
-        Ok(())
-    }
-
-    /// Solve in place: `A^T x = b`.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_transpose_in_place(&self, rhs: &mut Self) -> Result<()> {
-        check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        self.partial_piv_lu()
-            .solve_transpose_in_place(rhs.as_mat_mut());
-        Ok(())
-    }
-
-    /// Solve in place: `A^H x = b`.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_adjoint_in_place(&self, rhs: &mut Self) -> Result<()> {
-        check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        self.partial_piv_lu()
-            .solve_adjoint_in_place(rhs.as_mat_mut());
-        Ok(())
-    }
-
-    /// Solve `x A = b`.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn rsolve(&self, rhs: &Self) -> Result<Self> {
-        check_shape((rhs.nrows(), self.ncols()), rhs.shape())?;
-        let lu = self.partial_piv_lu();
-        Ok(Tensor::from_storage(lu.rsolve(rhs.as_mat_ref())))
-    }
-
-    /// Solve `x A^T = b`.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn rsolve_transpose(&self, rhs: &Self) -> Result<Self> {
-        check_shape((rhs.nrows(), self.nrows()), rhs.shape())?;
-        let lu = self.partial_piv_lu();
-        Ok(Tensor::from_storage(lu.rsolve_transpose(rhs.as_mat_ref())))
-    }
-
-    /// Solve `x A^H = b`.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn rsolve_adjoint(&self, rhs: &Self) -> Result<Self> {
-        check_shape((rhs.nrows(), self.nrows()), rhs.shape())?;
-        let lu = self.partial_piv_lu();
-        Ok(Tensor::from_storage(lu.rsolve_adjoint(rhs.as_mat_ref())))
-    }
-
-    /// Solve in place: `x A = b`.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn rsolve_in_place(&self, rhs: &mut Self) -> Result<()> {
-        check_shape((rhs.nrows(), self.ncols()), rhs.shape())?;
-        let lu = self.partial_piv_lu();
-        lu.rsolve_in_place(rhs.as_mat_mut());
-        Ok(())
-    }
+    lu_solve!(inplace solve_in_place,           "Solve in place: `A x = b`.",   |s: &Self, r: &Self| (s.ncols(), r.ncols()), solve_in_place);
+    lu_solve!(inplace solve_transpose_in_place, "Solve in place: `A^T x = b`.", |s: &Self, r: &Self| (s.nrows(), r.ncols()), solve_transpose_in_place);
+    lu_solve!(inplace solve_adjoint_in_place,   "Solve in place: `A^H x = b`.", |s: &Self, r: &Self| (s.nrows(), r.ncols()), solve_adjoint_in_place);
+    lu_solve!(inplace rsolve_in_place,          "Solve in place: `x A = b`.",   |s: &Self, r: &Self| (r.nrows(), s.ncols()), rsolve_in_place);
 
     /// Least-squares solve by QR: `A x = b`.
     ///
@@ -290,103 +282,36 @@ impl<T: Scalar> Tensor<T, Cpu> {
         Ok(())
     }
 
-    /// Solve `L x = b` for a lower-triangular matrix `L` in place.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_lower_triangular_in_place(&self, rhs: &mut Self) -> Result<()> {
-        require_square(self.shape(), "solve_lower_triangular_in_place")?;
-        check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        self.as_mat_ref()
-            .solve_lower_triangular_in_place(rhs.as_mat_mut());
-        Ok(())
-    }
+    tri_solve!(
+        solve_lower_triangular_in_place,
+        "Solve `L x = b` for a lower-triangular matrix `L` in place.",
+        solve_lower_triangular_in_place
+    );
+    tri_solve!(
+        solve_upper_triangular_in_place,
+        "Solve `U x = b` for an upper-triangular matrix `U` in place.",
+        solve_upper_triangular_in_place
+    );
+    tri_solve!(
+        solve_unit_lower_triangular_in_place,
+        "Solve `L x = b` for a unit lower-triangular matrix `L` in place.",
+        solve_unit_lower_triangular_in_place
+    );
+    tri_solve!(
+        solve_unit_upper_triangular_in_place,
+        "Solve `U x = b` for a unit upper-triangular matrix `U` in place.",
+        solve_unit_upper_triangular_in_place
+    );
 
-    /// Solve `U x = b` for an upper-triangular matrix `U` in place.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_upper_triangular_in_place(&self, rhs: &mut Self) -> Result<()> {
-        require_square(self.shape(), "solve_upper_triangular_in_place")?;
-        check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        self.as_mat_ref()
-            .solve_upper_triangular_in_place(rhs.as_mat_mut());
-        Ok(())
-    }
+    factored_op!(infallible partial_piv_lu_reconstruct, "Reconstruct from partial-pivot LU factors.", partial_piv_lu, reconstruct);
+    factored_op!(infallible partial_piv_lu_inverse,     "Inverse from partial-pivot LU factors.",     partial_piv_lu, inverse);
 
-    /// Solve `L x = b` for a unit lower-triangular matrix `L` in place.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_unit_lower_triangular_in_place(&self, rhs: &mut Self) -> Result<()> {
-        require_square(self.shape(), "solve_unit_lower_triangular_in_place")?;
-        check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        self.as_mat_ref()
-            .solve_unit_lower_triangular_in_place(rhs.as_mat_mut());
-        Ok(())
-    }
+    factored_op!(fallible llt_reconstruct,  "Reconstruct from Cholesky factors.",  llt,  reconstruct);
+    factored_op!(fallible llt_inverse,      "Inverse from Cholesky factors.",      llt,  inverse);
+    factored_op!(fallible ldlt_reconstruct, "Reconstruct from LDLT factors.",      ldlt, reconstruct);
+    factored_op!(fallible ldlt_inverse,     "Inverse from LDLT factors.",          ldlt, inverse);
 
-    /// Solve `U x = b` for a unit upper-triangular matrix `U` in place.
-    ///
-    /// # Errors
-    /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_unit_upper_triangular_in_place(&self, rhs: &mut Self) -> Result<()> {
-        require_square(self.shape(), "solve_unit_upper_triangular_in_place")?;
-        check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        self.as_mat_ref()
-            .solve_unit_upper_triangular_in_place(rhs.as_mat_mut());
-        Ok(())
-    }
-
-    /// Reconstruct from partial-pivot LU factors.
-    #[must_use]
-    pub fn partial_piv_lu_reconstruct(&self) -> Self {
-        Tensor::from_storage(self.partial_piv_lu().reconstruct())
-    }
-
-    /// Inverse from partial-pivot LU factors.
-    #[must_use]
-    pub fn partial_piv_lu_inverse(&self) -> Self {
-        Tensor::from_storage(self.partial_piv_lu().inverse())
-    }
-
-    /// Reconstruct from Cholesky factors.
-    ///
-    /// # Errors
-    /// Returns `Err` when factorization is not available.
-    pub fn llt_reconstruct(&self, side: Side) -> Result<Self> {
-        Ok(Tensor::from_storage(self.llt(side)?.reconstruct()))
-    }
-
-    /// Inverse from Cholesky factors.
-    ///
-    /// # Errors
-    /// Returns `Err` when inversion fails.
-    pub fn llt_inverse(&self, side: Side) -> Result<Self> {
-        Ok(Tensor::from_storage(self.llt(side)?.inverse()))
-    }
-
-    /// Reconstruct from LDLT factors.
-    ///
-    /// # Errors
-    /// Returns `Err` when factorization is not available.
-    pub fn ldlt_reconstruct(&self, side: Side) -> Result<Self> {
-        Ok(Tensor::from_storage(self.ldlt(side)?.reconstruct()))
-    }
-
-    /// Inverse from LDLT factors.
-    ///
-    /// # Errors
-    /// Returns `Err` when inversion fails.
-    pub fn ldlt_inverse(&self, side: Side) -> Result<Self> {
-        Ok(Tensor::from_storage(self.ldlt(side)?.inverse()))
-    }
-
-    /// Reconstruct from Bunch-Kaufman factors.
-    #[must_use]
-    pub fn lblt_reconstruct(&self, side: Side) -> Self {
-        Tensor::from_storage(self.lblt(side).reconstruct())
-    }
+    factored_op!(infallible_side lblt_reconstruct, "Reconstruct from Bunch-Kaufman factors.", lblt, reconstruct);
 
     /// Multiply sparse column matrix and dense matrix into dense result.
     ///
@@ -409,5 +334,202 @@ impl<T: Scalar> Tensor<T, Cpu> {
             Par::Seq,
         );
         out
+    }
+}
+
+/// Diagonal matrix that stores only the `n` diagonal elements.
+///
+pub struct Diagonal<T: Scalar> {
+    diag: Vec<T>,
+}
+
+impl<T: Scalar> Diagonal<T> {
+    /// Create from a vector of diagonal elements.  The matrix is implicitly
+    /// `n × n` where `n = diag.len()`.
+    #[must_use]
+    pub fn new(diag: Vec<T>) -> Self {
+        Self { diag }
+    }
+
+    /// Side length (the matrix is square: `size × size`).
+    #[must_use]
+    #[inline]
+    pub fn size(&self) -> usize {
+        self.diag.len()
+    }
+
+    /// Diagonal element at index `i`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i >= self.size()`.
+    #[must_use]
+    #[inline]
+    pub fn get(&self, i: usize) -> T {
+        self.diag[i]
+    }
+
+    /// Convert to a dense `n × n` [`Tensor`] with zeros off the diagonal.
+    #[must_use]
+    pub fn to_tensor(&self) -> Tensor<T> {
+        let n = self.size();
+        Tensor::from_fn(
+            n,
+            n,
+            |r, c| {
+                if r == c {
+                    self.diag[r]
+                } else {
+                    T::zero_impl()
+                }
+            },
+        )
+    }
+
+    /// Efficient diagonal-times-dense multiplication: `D * rhs`.
+    ///
+    /// Each row `i` of the result is `self.diag[i] * rhs.row(i)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ShapeMismatch`] when `rhs.nrows() != self.size()`.
+    pub fn mul_dense(&self, rhs: &Tensor<T>) -> Result<Tensor<T>> {
+        let n = self.size();
+        if rhs.nrows() != n {
+            return Err(Error::mismatch((n, rhs.ncols()), rhs.shape()));
+        }
+        Ok(Tensor::from_fn(n, rhs.ncols(), |r, c| {
+            self.diag[r] * rhs.get(r, c)
+        }))
+    }
+}
+
+/// Symmetric matrix view — tags a [`Tensor`] for symmetric operations.
+///
+/// Only the triangle indicated by `side` is referenced by solvers.
+pub struct Symmetric<T: Scalar> {
+    tensor: Tensor<T, Cpu>,
+    side: Side,
+}
+
+impl<T: Scalar> Symmetric<T> {
+    /// Wrap `tensor` as symmetric, reading from `side`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidDimension`] when `tensor` is not square.
+    pub fn new(tensor: Tensor<T, Cpu>, side: Side) -> Result<Self> {
+        require_square(tensor.shape(), "Symmetric::new")?;
+        Ok(Self { tensor, side })
+    }
+
+    /// Borrow the underlying tensor.
+    #[must_use]
+    #[inline]
+    pub fn as_tensor(&self) -> &Tensor<T, Cpu> {
+        &self.tensor
+    }
+
+    /// Which triangle is the authoritative source for solver routines.
+    #[must_use]
+    #[inline]
+    pub fn side(&self) -> Side {
+        self.side
+    }
+
+    /// Cholesky factorization `A = L Lᴴ` (or `A = Uᴴ U`).
+    ///
+    /// Delegates to [`Tensor::llt`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the matrix is not positive-definite.
+    pub fn llt(&self) -> Result<solvers::Llt<T>> {
+        self.tensor.llt(self.side)
+    }
+
+    /// Full self-adjoint eigendecomposition `A = V Λ Vᴴ`.
+    ///
+    /// Delegates to [`Tensor::self_adjoint_eigen`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the eigensolver fails to converge.
+    pub fn eigen(&self) -> Result<solvers::SelfAdjointEigen<T>> {
+        self.tensor.self_adjoint_eigen(self.side)
+    }
+
+    /// Eigenvalues only (ascending order).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the eigensolver fails to converge.
+    pub fn eigenvalues(&self) -> Result<Vec<T::Real>> {
+        self.tensor.self_adjoint_eigenvalues(self.side)
+    }
+}
+
+/// Selects which kind of triangular structure a [`Triangular`] wrapper represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriKind {
+    /// Lower-triangular (diagonal and below).
+    Lower,
+    /// Upper-triangular (diagonal and above).
+    Upper,
+    /// Unit lower-triangular (lower with implicit 1 on diagonal).
+    UnitLower,
+    /// Unit upper-triangular (upper with implicit 1 on diagonal).
+    UnitUpper,
+}
+
+/// Triangular matrix view.
+///
+/// The underlying storage is a full square tensor; the structural tag
+/// directs solver routines to use only the relevant triangle.
+pub struct Triangular<T: Scalar> {
+    tensor: Tensor<T, Cpu>,
+    kind: TriKind,
+}
+
+impl<T: Scalar> Triangular<T> {
+    /// Wrap `tensor` as triangular with the given `kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidDimension`] when `tensor` is not square.
+    pub fn new(tensor: Tensor<T, Cpu>, kind: TriKind) -> Result<Self> {
+        require_square(tensor.shape(), "Triangular::new")?;
+        Ok(Self { tensor, kind })
+    }
+
+    /// Borrow the underlying tensor.
+    #[must_use]
+    #[inline]
+    pub fn as_tensor(&self) -> &Tensor<T, Cpu> {
+        &self.tensor
+    }
+
+    /// The triangular kind of this wrapper.
+    #[must_use]
+    #[inline]
+    pub fn kind(&self) -> &TriKind {
+        &self.kind
+    }
+
+    /// Solve `T x = b` in place, where `T` is this triangular matrix.
+    ///
+    /// Delegates to the appropriate [`Tensor`] triangular solve based on
+    /// [`TriKind`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if dimensions mismatch.
+    pub fn solve_in_place(&self, rhs: &mut Tensor<T, Cpu>) -> Result<()> {
+        match self.kind {
+            TriKind::Lower => self.tensor.solve_lower_triangular_in_place(rhs),
+            TriKind::Upper => self.tensor.solve_upper_triangular_in_place(rhs),
+            TriKind::UnitLower => self.tensor.solve_unit_lower_triangular_in_place(rhs),
+            TriKind::UnitUpper => self.tensor.solve_unit_upper_triangular_in_place(rhs),
+        }
     }
 }
