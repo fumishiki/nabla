@@ -1,9 +1,20 @@
-#![deny(clippy::unwrap_used)]
-#![warn(clippy::pedantic, missing_docs)]
-
-//! nabla — Rust linear algebra DSL backed by faer.
+//! nabla — Rust linear algebra DSL.
 //!
 //! Import [`prelude`] for the most common types and traits.
+
+#![deny(clippy::unwrap_used)]
+#![warn(clippy::pedantic, missing_docs)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::float_cmp,
+        clippy::approx_constant,
+        clippy::assertions_on_constants
+    )
+)]
+
+#[cfg(all(feature = "cpu", feature = "gpu"))]
+compile_error!("nabla: exactly one backend feature must be enabled (cpu / gpu)");
 
 /// Error types for nabla operations.
 pub mod error {
@@ -24,6 +35,8 @@ pub mod error {
         InvalidDimension(String),
         /// GPU kernel launch or execution failed.
         GpuKernelFailed(String),
+        /// Expression evaluation failed (unbound variable, empty context, etc.).
+        EvalError(String),
     }
 
     impl core::fmt::Display for Error {
@@ -36,6 +49,7 @@ pub mod error {
                 ),
                 Self::InvalidDimension(msg) => write!(f, "invalid dimension: {msg}"),
                 Self::GpuKernelFailed(msg) => write!(f, "GPU kernel failed: {msg}"),
+                Self::EvalError(msg) => write!(f, "eval error: {msg}"),
             }
         }
     }
@@ -50,48 +64,44 @@ pub mod error {
         pub(crate) fn invalid<T: core::fmt::Display>(msg: T) -> Self {
             Self::InvalidDimension(msg.to_string())
         }
+
+        #[inline]
+        pub(crate) fn eval<T: core::fmt::Display>(msg: T) -> Self {
+            Self::EvalError(msg.to_string())
+        }
     }
 
     impl std::error::Error for Error {}
 }
 
 /// Scalar numeric types supported by nabla.
-pub mod scalar {
-    use faer_traits::ComplexField;
-
-    use crate::backend::{MathOps, ReductionOps};
-
-    /// Marker trait for numeric types supported by nabla.
-    ///
-    /// Implemented for `f32`, `f64`, `c32`, and `c64` — the four types that faer
-    /// provides native SIMD kernels for.
-    // MathOps and ReductionOps are private supertraits (sealed impl details) — suppress the lint.
-    #[allow(private_bounds)]
-    pub trait Scalar: ComplexField + MathOps + ReductionOps + Copy + Send + Sync + 'static {}
-
-    macro_rules! impl_scalar {
-        ($($ty:ty),* $(,)?) => {
-            $(impl Scalar for $ty {})*
-        };
-    }
-
-    impl_scalar!(f32, f64, faer::c32, faer::c64);
-}
+pub mod scalar;
 
 /// Compute backends (CPU + future GPU stubs).
 pub mod backend;
 
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
+#[cfg(feature = "gpu")]
 pub(crate) mod gpu;
 
 /// 2-D dense tensor type with operator overloads.
 pub mod tensor;
 
 /// Dense and sparse linear algebra helpers (includes structural wrappers).
+#[cfg(feature = "cpu")]
 pub mod linalg;
 
 /// Sparse matrix support.
+#[cfg(feature = "cpu")]
 pub mod sparse;
+
+/// Symbolic Computer Algebra System (CAS): expression trees, differentiation, simplification.
+pub mod cas;
+
+/// ODE solvers: Euler, RK4, Dormand-Prince (adaptive).
+pub mod ode;
+
+/// Reverse-mode automatic differentiation (tape-based).
+pub mod autograd;
 
 /// Utility macros and functions mirroring Julia math notation (includes broadcast macros).
 pub mod util {
@@ -151,10 +161,11 @@ pub mod util {
     /// assert_eq!(z.re, 1.0_f32);
     /// assert_eq!(z.im, 2.0_f32);
     /// ```
+    #[cfg(feature = "cpu")]
     #[inline]
     #[must_use]
-    pub fn c32(re: f32, im: f32) -> faer::c32 {
-        faer::c32::new(re, im)
+    pub fn c32(re: f32, im: f32) -> crate::scalar::c32 {
+        crate::scalar::c32::new(re, im)
     }
 
     /// Create a 64-bit complex number.
@@ -165,10 +176,11 @@ pub mod util {
     /// assert_eq!(z.re, 1.0_f64);
     /// assert_eq!(z.im, 2.0_f64);
     /// ```
+    #[cfg(feature = "cpu")]
     #[inline]
     #[must_use]
-    pub fn c64(re: f64, im: f64) -> faer::c64 {
-        faer::c64::new(re, im)
+    pub fn c64(re: f64, im: f64) -> crate::scalar::c64 {
+        crate::scalar::c64::new(re, im)
     }
 
     /// Linearly spaced vector.
@@ -221,11 +233,15 @@ pub mod util {
     #[macro_export]
     macro_rules! bcast {
         ($f:expr, $a:expr) => {{
+            #[cfg(feature = "gpu")]
+            compile_error!("bcast! is CPU-only. Use bcast_all! for GPU dispatch.");
             let __a = $a;
             let (__r, __c) = __a.shape();
             $crate::tensor::Tensor::from_fn(__r, __c, |__i, __j| $f(__a.get(__i, __j)))
         }};
         ($f:expr, $a:expr, $b:expr) => {{
+            #[cfg(feature = "gpu")]
+            compile_error!("bcast! is CPU-only. Use bcast_all! for GPU dispatch.");
             let __a = $a;
             let __b = $b;
             assert_eq!(__a.shape(), __b.shape(), "bcast! shape mismatch");
@@ -235,6 +251,8 @@ pub mod util {
             })
         }};
         ($f:expr, $a:expr, $b:expr, $c:expr) => {{
+            #[cfg(feature = "gpu")]
+            compile_error!("bcast! is CPU-only. Use bcast_all! for GPU dispatch.");
             let __a = $a;
             let __b = $b;
             let __c_t = $c;
@@ -243,6 +261,42 @@ pub mod util {
             let (__r, __c) = __a.shape();
             $crate::tensor::Tensor::from_fn(__r, __c, |__i, __j| {
                 $f(__a.get(__i, __j), __b.get(__i, __j), __c_t.get(__i, __j))
+            })
+        }};
+    }
+
+    /// Parallel broadcast: apply `$f` element-wise using rayon.
+    ///
+    /// Same semantics as [`bcast!`] but parallelises the computation across
+    /// rayon's thread pool. Use for expensive per-element closures on large matrices.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nabla::prelude::*;
+    /// use nabla::par_bcast;
+    ///
+    /// let a: Tensor<f64> = Tensor::from_fn(4, 4, |i, j| (i * 4 + j) as f64);
+    /// let b: Tensor<f64> = par_bcast!(|x| x * 2.0, &a);
+    /// assert!((b.get(0, 1) - 2.0).abs() < 1e-12);
+    /// ```
+    #[macro_export]
+    macro_rules! par_bcast {
+        ($f:expr, $a:expr) => {{
+            #[cfg(feature = "gpu")]
+            compile_error!("par_bcast! is CPU-only.");
+            let __a = $a;
+            __a.par_map($f)
+        }};
+        ($f:expr, $a:expr, $b:expr) => {{
+            #[cfg(feature = "gpu")]
+            compile_error!("par_bcast! is CPU-only.");
+            let __a = $a;
+            let __b = $b;
+            assert_eq!(__a.shape(), __b.shape(), "par_bcast! shape mismatch");
+            let (__r, __c) = __a.shape();
+            $crate::tensor::Tensor::par_from_fn(__r, __c, |__i, __j| {
+                $f(__a.get(__i, __j), __b.get(__i, __j))
             })
         }};
     }
@@ -267,6 +321,8 @@ pub mod util {
     #[macro_export]
     macro_rules! zip_map {
         ($out:expr, $f:expr, $a:expr) => {{
+            #[cfg(feature = "gpu")]
+            compile_error!("zip_map! is CPU-only. Use bcast_all! for GPU dispatch.");
             let __a = $a;
             let (__r, __c) = $out.shape();
             assert_eq!((__r, __c), __a.shape(), "zip_map! shape mismatch");
@@ -277,6 +333,8 @@ pub mod util {
             }
         }};
         ($out:expr, $f:expr, $a:expr, $b:expr) => {{
+            #[cfg(feature = "gpu")]
+            compile_error!("zip_map! is CPU-only. Use bcast_all! for GPU dispatch.");
             let __a = $a;
             let __b = $b;
             let (__r, __c) = $out.shape();
@@ -313,22 +371,54 @@ pub mod util {
             pipe!($f($val) $(, $rest)*)
         };
     }
+
+    /// Julia-style splatting: unpack a tuple as function arguments.
+    ///
+    /// Supports tuples of arity 1–8, or an explicit list of expressions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nabla::splat;
+    /// fn add3(a: f64, b: f64, c: f64) -> f64 { a + b + c }
+    /// assert!((splat!(add3, (1.0_f64, 2.0, 3.0)) - 6.0).abs() < 1e-12);
+    /// ```
+    #[macro_export]
+    macro_rules! splat {
+        // Tuple literal: splat!(f, (a, b, c, ...))
+        ($f:expr, ($($args:expr),+ $(,)?)) => {
+            $f($($args),+)
+        };
+    }
 }
 
 /// Prelude for convenient imports.
 pub mod prelude {
-    pub use crate::backend::{Backend, Cpu, DefaultBackend};
+    pub use crate::backend::{Backend, DefaultBackend};
     pub use crate::error::{Error, Result};
-    pub use crate::linalg::{Diagonal, Symmetric, TriKind, Triangular};
     pub use crate::scalar::Scalar;
-    pub use crate::sparse::*;
     pub use crate::tensor::Tensor;
-    pub use crate::tensor::{Array, DynTensor, Matrix, NdTensor, StaticMatrix};
-    pub use crate::util::{c32, c64, linspace};
-    pub use nabla_macros::{einsum, mat};
+    pub use crate::tensor::{Array, NdTensor, StaticMatrix};
+    #[cfg(feature = "cpu")]
+    pub use crate::tensor::{DynTensor, Matrix};
+    pub use nabla_macros::{bcast_all, einsum, generated, mat, named};
 
-    #[cfg(feature = "cuda")]
-    pub use crate::backend::Cuda;
-    #[cfg(feature = "wgpu")]
-    pub use crate::backend::Wgpu;
+    pub use crate::autograd::{Tape, Variable};
+    #[cfg(feature = "cpu")]
+    pub use crate::backend::Cpu;
+    pub use crate::cas::{Expr, ExprKind};
+    #[cfg(feature = "cpu")]
+    pub use crate::linalg::{Diagonal, Symmetric, TriKind, Triangular};
+    pub use crate::ode::{AdaptiveConfig, OdeSolution};
+    #[cfg(feature = "cpu")]
+    pub use crate::scalar::{c32, c64};
+    #[cfg(feature = "cpu")]
+    pub use crate::sparse::*;
+    #[cfg(feature = "cpu")]
+    pub use crate::util::linspace;
+    #[cfg(feature = "cpu")]
+    pub use nabla_macros::stencil;
+
+    #[cfg(feature = "gpu")]
+    pub use crate::backend::Gpu;
 }

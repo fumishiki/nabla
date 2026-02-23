@@ -2,7 +2,7 @@
 //
 // Parses `output[free_indices] = term1 * term2 * ...` and generates
 // optimised Rust code:
-//   - GEMM pattern  → `Tensor::matmul_into`  (faer BLAS / GPU tiled)
+//   - GEMM pattern  → `Tensor::matmul_into`  (nabla CPU / GPU tiled)
 //   - GEMV pattern  → `Tensor::matmul_into`  (M×1 column vector)
 //   - Hadamard      → `mul_elem`
 //   - Trace         → diagonal sum loop
@@ -36,7 +36,7 @@ struct IndexedTensor {
 /// Parsed representation of a full einsum expression.
 pub(crate) struct EinsumInput {
     /// The LHS output name (e.g. `c` in `c[i,j] = ...`).
-    output_name: Ident,
+    _output_name: Ident,
     /// Free indices on the LHS (in declaration order).
     output_indices: Vec<Ident>,
     /// The `=` token (kept for spanned errors).
@@ -51,7 +51,10 @@ enum ContractionKind {
     /// C = A B  (standard layout: a[i,k] * b[k,j])
     Gemm,
     /// C = op(A) op(B) where op is identity or transpose
-    GemmTransposed { transpose_a: bool, transpose_b: bool },
+    GemmTransposed {
+        transpose_a: bool,
+        transpose_b: bool,
+    },
     /// y = A x  (matrix-vector product)
     Gemv { mat_first: bool },
     /// C = A ∘ B  (element-wise / Hadamard product, no contraction)
@@ -92,7 +95,7 @@ impl Parse for EinsumInput {
         }
 
         Ok(EinsumInput {
-            output_name,
+            _output_name: output_name,
             output_indices,
             eq_token,
             rhs_terms,
@@ -155,8 +158,7 @@ fn validate(input: &EinsumInput) -> Result<()> {
     }
 
     // Collect free names for later checks.
-    let free_names: HashSet<String> =
-        input.output_indices.iter().map(Ident::to_string).collect();
+    let free_names: HashSet<String> = input.output_indices.iter().map(Ident::to_string).collect();
 
     // Check: contraction indices must appear in at least 2 terms.
     // (An index on the RHS only, appearing in just 1 term, is likely a typo.)
@@ -178,9 +180,10 @@ fn validate(input: &EinsumInput) -> Result<()> {
             // Allow trace pattern: same index twice in one term (e.g. a[i,i])
             if *count == 1 {
                 // Check if it appears twice within a single term (trace).
-                let is_trace = input.rhs_terms.iter().any(|t| {
-                    t.indices.iter().filter(|i| i.to_string() == *name).count() >= 2
-                });
+                let is_trace = input
+                    .rhs_terms
+                    .iter()
+                    .any(|t| t.indices.iter().filter(|i| i.to_string() == *name).count() >= 2);
                 if !is_trace {
                     return Err(Error::new_spanned(
                         ident,
@@ -279,7 +282,9 @@ fn classify(input: &EinsumInput) -> ContractionKind {
     // Hadamard: 2 terms with matching dimensionality, no contraction, all indices are free
     if rhs.len() == 2 && contraction.is_empty() && !free.is_empty() {
         let all_rhs_indices_are_free = rhs.iter().all(|t| {
-            t.indices.iter().all(|idx| free_names.contains(&idx.to_string()))
+            t.indices
+                .iter()
+                .all(|idx| free_names.contains(&idx.to_string()))
         });
         if all_rhs_indices_are_free
             && rhs[0].indices.len() == rhs[1].indices.len()
@@ -299,17 +304,14 @@ fn classify(input: &EinsumInput) -> ContractionKind {
             let batch_count = a.indices.len() - 2;
             // Check that leading indices are the same batch dims in both terms
             if b.indices.len() - 2 == batch_count {
-                let batch_match = (0..batch_count)
-                    .all(|d| a.indices[d].to_string() == b.indices[d].to_string());
+                let batch_match = (0..batch_count).all(|d| a.indices[d] == b.indices[d]);
                 // Check that inner 2 dims form standard GEMM: a[..,i,k] * b[..,k,j]
                 let k = &contraction[0];
                 let a_inner1 = a.indices[batch_count + 1].to_string();
                 let b_inner0 = b.indices[batch_count].to_string();
                 if batch_match && a_inner1 == *k && b_inner0 == *k {
                     // Check output is [b..,i,j]
-                    let out_batch_match = (0..batch_count).all(|d| {
-                        free[d].to_string() == a.indices[d].to_string()
-                    });
+                    let out_batch_match = (0..batch_count).all(|d| free[d] == a.indices[d]);
                     if out_batch_match && free.len() == batch_count + 2 {
                         return ContractionKind::BatchGemm { batch_count };
                     }
@@ -352,11 +354,7 @@ fn codegen_einsum(input: &EinsumInput) -> Result<TokenStream2> {
 /// GEMM: emit `Tensor::matmul_into` with optional transposes.
 ///
 /// When no transpose is needed, passes references directly (zero-copy).
-fn codegen_gemm(
-    input: &EinsumInput,
-    transpose_a: bool,
-    transpose_b: bool,
-) -> Result<TokenStream2> {
+fn codegen_gemm(input: &EinsumInput, transpose_a: bool, transpose_b: bool) -> Result<TokenStream2> {
     let a_name = &input.rhs_terms[0].name;
     let b_name = &input.rhs_terms[1].name;
     let a_bind = Ident::new(&format!("__{a_name}"), a_name.span());
@@ -408,7 +406,10 @@ fn codegen_gemv(input: &EinsumInput, mat_first: bool) -> Result<TokenStream2> {
     let transpose_mat = mat_term.indices[0] != input.output_indices[0];
 
     let (mat_prep, mat_ref) = if transpose_mat {
-        (quote! { let __mat_t = #mat_bind.t(); }, quote! { (&__mat_t) })
+        (
+            quote! { let __mat_t = #mat_bind.t(); },
+            quote! { (&__mat_t) },
+        )
     } else {
         (quote! {}, quote! { #mat_bind })
     };
@@ -433,8 +434,16 @@ fn codegen_hadamard(input: &EinsumInput) -> Result<TokenStream2> {
 
     // Check if index order matches (both same order → direct mul_elem).
     // If b has reversed indices, we need to transpose b.
-    let a_indices: Vec<String> = input.rhs_terms[0].indices.iter().map(Ident::to_string).collect();
-    let b_indices: Vec<String> = input.rhs_terms[1].indices.iter().map(Ident::to_string).collect();
+    let a_indices: Vec<String> = input.rhs_terms[0]
+        .indices
+        .iter()
+        .map(Ident::to_string)
+        .collect();
+    let b_indices: Vec<String> = input.rhs_terms[1]
+        .indices
+        .iter()
+        .map(Ident::to_string)
+        .collect();
 
     if a_indices == b_indices {
         Ok(quote! {
@@ -461,9 +470,9 @@ fn codegen_trace(input: &EinsumInput) -> Result<TokenStream2> {
         {
             let #a_bind = &#a_name;
             let __n = #a_bind.nrows().min(#a_bind.ncols());
-            let mut __acc = faer_traits::math_utils::zero::<_>();
+            let mut __acc = nabla::scalar::math_utils::zero::<_>();
             for __diag_idx in 0..__n {
-                __acc = faer_traits::math_utils::add(
+                __acc = nabla::scalar::math_utils::add(
                     &__acc,
                     &#a_bind.get(__diag_idx, __diag_idx),
                 );
@@ -499,7 +508,7 @@ fn codegen_outer(input: &EinsumInput) -> Result<TokenStream2> {
             let __m = #row_src.nrows();
             let __n = #col_src.nrows();
             nabla::tensor::Tensor::from_fn(__m, __n, |__i, __j| {
-                faer_traits::math_utils::mul(
+                nabla::scalar::math_utils::mul(
                     &#row_src.get(__i, 0),
                     &#col_src.get(__j, 0),
                 )
@@ -606,7 +615,7 @@ fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
         quote! {
             {
                 #(#tensor_bindings)*
-                let mut __acc = faer_traits::math_utils::zero::<_>();
+                let mut __acc = nabla::scalar::math_utils::zero::<_>();
                 #acc_body
                 __acc
             }
@@ -618,7 +627,7 @@ fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
             {
                 #(#tensor_bindings)*
                 nabla::tensor::Tensor::from_fn(#nrows_expr, 1, |#i_idx, _| {
-                    let mut __acc = faer_traits::math_utils::zero::<_>();
+                    let mut __acc = nabla::scalar::math_utils::zero::<_>();
                     #acc_body
                     __acc
                 })
@@ -633,7 +642,7 @@ fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
             {
                 #(#tensor_bindings)*
                 nabla::tensor::Tensor::from_fn(#nrows_expr, #ncols_expr, |#i_idx, #j_idx| {
-                    let mut __acc = faer_traits::math_utils::zero::<_>();
+                    let mut __acc = nabla::scalar::math_utils::zero::<_>();
                     #acc_body
                     __acc
                 })
@@ -659,7 +668,7 @@ fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
                     &[#(#shape_exprs),*],
                     |__idx| {
                         #(#idx_bindings)*
-                        let mut __acc = faer_traits::math_utils::zero::<_>();
+                        let mut __acc = nabla::scalar::math_utils::zero::<_>();
                         #acc_body
                         __acc
                     },
@@ -682,7 +691,7 @@ fn build_accumulator(
 ) -> Result<TokenStream2> {
     let step = quote! {
         let __prod = #product_expr;
-        __acc = faer_traits::math_utils::add(&__acc, &__prod);
+        __acc = nabla::scalar::math_utils::add(&__acc, &__prod);
     };
 
     if contraction_indices.is_empty() {
@@ -718,7 +727,7 @@ fn build_product_expr(rhs_terms: &[IndexedTensor]) -> Result<TokenStream2> {
     let mut expr = accesses[0].clone();
     for access in &accesses[1..] {
         expr = quote! {
-            faer_traits::math_utils::mul(&#expr, &#access)
+            nabla::scalar::math_utils::mul(&#expr, &#access)
         };
     }
 

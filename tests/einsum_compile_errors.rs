@@ -1,4 +1,5 @@
 // tests/einsum_compile_errors.rs — compile-fail tests for einsum! diagnostics.
+#![cfg(feature = "cpu")]
 
 #[test]
 fn einsum_compile_errors() {

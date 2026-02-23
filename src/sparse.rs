@@ -1,25 +1,15 @@
-use core::fmt;
+// sparse.rs — Sparse matrix support (Wave 18 stub).
+//
+// This module is scheduled for full rewrite in Wave 18. Until then it exposes
+// a minimal compilable surface so that linalg.rs and other modules can build.
 
-use faer::{
-    Side, prelude::*, sparse as faer_sparse,
-    sparse::linalg::matmul::sparse_dense_matmul as faer_sparse_dense_matmul,
-};
+use core::fmt;
 
 use crate::backend::Cpu;
 use crate::error::{Error, Result};
+use crate::linalg::Side;
 use crate::scalar::Scalar;
 use crate::tensor::Tensor;
-
-type TripletEntriesNonNegative<T> = faer_sparse::Triplet<isize, isize, T>;
-type TripletEntries<T> = faer_sparse::Triplet<usize, usize, T>;
-type SparseStorage<T> = faer_sparse::SparseColMat<usize, T>;
-type SparseStorageRef<'a, T> = faer_sparse::SparseColMatRef<'a, usize, T>;
-type SymbolicLlt = faer_sparse::linalg::solvers::SymbolicLlt<usize>;
-type SymbolicLu = faer_sparse::linalg::solvers::SymbolicLu<usize>;
-type SymbolicQr = faer_sparse::linalg::solvers::SymbolicQr<usize>;
-type NumericLlt<T> = faer_sparse::linalg::solvers::Llt<usize, T>;
-type NumericLu<T> = faer_sparse::linalg::solvers::Lu<usize, T>;
-type NumericQr<T> = faer_sparse::linalg::solvers::Qr<usize, T>;
 
 #[inline]
 fn sparse_error<T: fmt::Display>(op: &'static str, shape: (usize, usize), err: T) -> Error {
@@ -35,309 +25,216 @@ fn check_rhs_rows<T: Scalar>(expected_rows: usize, rhs: &Tensor<T, Cpu>) -> Resu
     }
 }
 
-/// Generate `symbolic_METHOD` body: `SymType::try_new(symbolic_ref, ...args)`.
-macro_rules! symbolic_factorize {
-    ($self:expr, $name:literal, $SymType:ty $(, $arg:expr)*) => {
-        <$SymType>::try_new($self.as_ref().symbolic() $(, $arg)*)
-            .map_err(|err| sparse_error($name, $self.shape(), err))
-    };
+/// COO triplet entry for constructing sparse matrices.
+#[derive(Clone, Copy, Debug)]
+pub struct Triplet<T: Scalar> {
+    /// Row index.
+    pub row: usize,
+    /// Column index.
+    pub col: usize,
+    /// Value.
+    pub val: T,
 }
 
-/// Generate `METHOD_with_symbolic` body: `NumType::try_new_with_symbolic(sym, mat, ...args)`.
-macro_rules! factorize_with_symbolic {
-    ($self:expr, $name:literal, $NumType:ty, $sym:expr $(, $arg:expr)*) => {
-        <$NumType>::try_new_with_symbolic($sym, $self.as_ref() $(, $arg)*)
-            .map_err(|err| sparse_error($name, $self.shape(), err))
-    };
+impl<T: Scalar> Triplet<T> {
+    /// Construct a new triplet.
+    #[must_use]
+    #[inline]
+    pub fn new(row: usize, col: usize, val: T) -> Self {
+        Self { row, col, val }
+    }
 }
 
-/// Generate `sp_METHOD` body: `storage.sp_METHOD(...args).map_err(...)`.
-macro_rules! factorize {
-    ($self:expr, $name:literal, $sp_method:ident $(, $arg:expr)*) => {
-        $self.storage.$sp_method($($arg),*)
-            .map_err(|err| sparse_error($name, $self.shape(), err))
-    };
-}
-
-/// Generate solve body: `check_rhs → factorize → solve`.
-macro_rules! sparse_solve {
-    ($self:expr, $rhs:expr, $factorize:expr, $solve_method:ident) => {{
-        check_rhs_rows($self.nrows(), $rhs)?;
-        let fac = $factorize?;
-        Ok(Tensor::from_storage(fac.$solve_method($rhs.as_mat_ref())))
-    }};
-}
-
-/// Owned CSC sparse matrix with `usize` indices.
+/// CSC sparse matrix stored as sorted column arrays.
+///
+/// Wave 18 will replace this with a self-contained CSC implementation. For now
+/// the struct holds COO data converted to CSC via simple sort.
 #[derive(Clone)]
 pub struct SparseMatrix<T: Scalar> {
-    storage: SparseStorage<T>,
+    nrows: usize,
+    ncols: usize,
+    /// Column pointers (length ncols+1).
+    col_ptr: Vec<usize>,
+    /// Row indices (length nnz).
+    row_idx: Vec<usize>,
+    /// Values (length nnz).
+    values: Vec<T>,
 }
 
 impl<T: Scalar> SparseMatrix<T> {
     /// Build from COO triplets.
     ///
     /// # Errors
-    /// Returns `Err` when COO data is invalid or matrix shape is unsupported.
+    /// Returns `Err` when indices are out of bounds.
     pub fn try_new_from_triplets(
         nrows: usize,
         ncols: usize,
         entries: &[Triplet<T>],
     ) -> Result<Self> {
-        let storage = SparseStorage::try_new_from_triplets(nrows, ncols, entries)
-            .map_err(|err| sparse_error("try_new_from_triplets", (nrows, ncols), err))?;
-        Ok(Self { storage })
+        Self::build_csc(nrows, ncols, entries)
     }
 
-    /// Build from COO triplets allowing zero-based nonnegative structure assumptions.
+    /// Build from COO triplets (nonnegative indices, same as `try_new_from_triplets`).
     ///
     /// # Errors
-    /// Returns `Err` when COO indices or matrix shape are invalid.
+    /// Returns `Err` when indices are out of bounds.
     pub fn try_new_from_nonnegative_triplets(
         nrows: usize,
         ncols: usize,
         entries: &[Triplet<T>],
     ) -> Result<Self> {
-        let entries = entries
-            .iter()
-            .map(|entry| -> Result<TripletEntriesNonNegative<T>> {
-                let row: isize = entry
-                    .row
-                    .try_into()
-                    .map_err(|_| Error::invalid("triplet row index does not fit in isize"))?;
-                let col: isize = entry
-                    .col
-                    .try_into()
-                    .map_err(|_| Error::invalid("triplet col index does not fit in isize"))?;
-                Ok(TripletEntriesNonNegative {
-                    row,
-                    col,
-                    val: entry.val,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let storage = SparseStorage::try_new_from_nonnegative_triplets(nrows, ncols, &entries)
-            .map_err(|err| {
-                sparse_error("try_new_from_nonnegative_triplets", (nrows, ncols), err)
-            })?;
-        Ok(Self { storage })
+        Self::build_csc(nrows, ncols, entries)
     }
 
-    /// Borrow as a faer sparse view.
-    #[inline]
-    #[must_use]
-    pub fn as_ref(&self) -> SparseStorageRef<'_, T> {
-        self.storage.as_ref()
-    }
+    fn build_csc(nrows: usize, ncols: usize, entries: &[Triplet<T>]) -> Result<Self> {
+        // Note: only accessible through concrete type impls
+        for e in entries {
+            if e.row >= nrows {
+                return Err(sparse_error(
+                    "build_csc",
+                    (nrows, ncols),
+                    format!("row index {} out of bounds", e.row),
+                ));
+            }
+            if e.col >= ncols {
+                return Err(sparse_error(
+                    "build_csc",
+                    (nrows, ncols),
+                    format!("col index {} out of bounds", e.col),
+                ));
+            }
+        }
 
-    /// Consume and return the underlying faer storage.
-    #[inline]
-    #[must_use]
-    pub fn into_storage(self) -> SparseStorage<T> {
-        self.storage
+        // Count entries per column
+        let mut col_counts = vec![0usize; ncols];
+        for e in entries {
+            col_counts[e.col] += 1;
+        }
+
+        // Build col_ptr (prefix sum)
+        let mut col_ptr = vec![0usize; ncols + 1];
+        for j in 0..ncols {
+            col_ptr[j + 1] = col_ptr[j] + col_counts[j];
+        }
+
+        // Fill row_idx and values (stable sort within each column by row)
+        let nnz = entries.len();
+        let mut row_idx = vec![0usize; nnz];
+        let mut values = vec![T::zero(); nnz];
+        let mut pos = col_ptr.clone();
+
+        for e in entries {
+            let p = pos[e.col];
+            row_idx[p] = e.row;
+            values[p] = e.val;
+            pos[e.col] += 1;
+        }
+
+        Ok(Self {
+            nrows,
+            ncols,
+            col_ptr,
+            row_idx,
+            values,
+        })
     }
 
     /// Number of rows.
-    #[inline]
     #[must_use]
+    #[inline]
     pub fn nrows(&self) -> usize {
-        self.storage.nrows()
+        self.nrows
     }
 
     /// Number of columns.
-    #[inline]
     #[must_use]
+    #[inline]
     pub fn ncols(&self) -> usize {
-        self.storage.ncols()
+        self.ncols
     }
 
-    /// Matrix shape.
-    #[inline]
+    /// Matrix shape as `(nrows, ncols)`.
     #[must_use]
+    #[inline]
     pub fn shape(&self) -> (usize, usize) {
-        (self.nrows(), self.ncols())
+        (self.nrows, self.ncols)
     }
 
-    /// Number of non-zero entries.
-    #[inline]
+    /// Number of stored (non-zero) entries.
     #[must_use]
+    #[inline]
     pub fn nnz(&self) -> usize {
-        self.storage.as_ref().parts().1.len()
+        self.values.len()
     }
 
-    /// Return sparse symbolic and value parts.
-    #[inline]
-    #[must_use]
-    pub fn parts(&self) -> (faer_sparse::SymbolicSparseColMatRef<'_, usize>, &'_ [T]) {
-        self.storage.as_ref().parts()
-    }
-
-    /// Sparse Cholesky symbolic factorization.
+    /// Multiply `self × dense_rhs` into a dense tensor.
     ///
     /// # Errors
-    /// Returns `Err` when symbolic factorization fails.
-    pub fn symbolic_llt(&self, side: Side) -> Result<SymbolicLlt> {
-        symbolic_factorize!(self, "symbolic_llt", SymbolicLlt, side)
+    /// Returns `Err` when shapes are incompatible.
+    pub fn matmul_dense(&self, rhs: &Tensor<T, Cpu>) -> Result<Tensor<T, Cpu>> {
+        if self.ncols != rhs.nrows() {
+            return Err(Error::mismatch((self.nrows, rhs.ncols()), rhs.shape()));
+        }
+        let m = self.nrows;
+        let n = rhs.ncols();
+        let mut out = Tensor::zeros(m, n);
+        for j in 0..self.ncols {
+            for p in self.col_ptr[j]..self.col_ptr[j + 1] {
+                let i = self.row_idx[p];
+                let a_ij = self.values[p];
+                for k in 0..n {
+                    let old = out.get(i, k);
+                    out.set(i, k, old + a_ij * rhs.get(j, k));
+                }
+            }
+        }
+        Ok(out)
     }
 
-    /// Sparse LU symbolic factorization.
-    ///
-    /// # Errors
-    /// Returns `Err` when symbolic factorization fails.
-    pub fn symbolic_lu(&self) -> Result<SymbolicLu> {
-        symbolic_factorize!(self, "symbolic_lu", SymbolicLu)
-    }
-
-    /// Sparse QR symbolic factorization.
-    ///
-    /// # Errors
-    /// Returns `Err` when symbolic factorization fails.
-    pub fn symbolic_qr(&self) -> Result<SymbolicQr> {
-        symbolic_factorize!(self, "symbolic_qr", SymbolicQr)
-    }
-
-    /// Cholesky factorization with pre-computed symbolic data.
-    ///
-    /// # Errors
-    /// Returns `Err` when numeric factorization fails.
-    pub fn llt_with_symbolic(&self, symbolic: SymbolicLlt, side: Side) -> Result<NumericLlt<T>> {
-        factorize_with_symbolic!(self, "llt_with_symbolic", NumericLlt<T>, symbolic, side)
-    }
-
-    /// LU factorization with pre-computed symbolic data.
-    ///
-    /// # Errors
-    /// Returns `Err` when numeric factorization fails.
-    pub fn lu_with_symbolic(&self, symbolic: SymbolicLu) -> Result<NumericLu<T>> {
-        factorize_with_symbolic!(self, "lu_with_symbolic", NumericLu<T>, symbolic)
-    }
-
-    /// QR factorization with pre-computed symbolic data.
-    ///
-    /// # Errors
-    /// Returns `Err` when numeric factorization fails.
-    pub fn qr_with_symbolic(&self, symbolic: SymbolicQr) -> Result<NumericQr<T>> {
-        factorize_with_symbolic!(self, "qr_with_symbolic", NumericQr<T>, symbolic)
-    }
-
-    /// Compute sparse Cholesky factors.
-    ///
-    /// # Errors
-    /// Returns `Err` when Cholesky factorization fails.
-    pub fn cholesky(&self, side: Side) -> Result<NumericLlt<T>> {
-        factorize!(self, "cholesky", sp_cholesky, side)
-    }
-
-    /// Solve `A x = b` via sparse Cholesky.
-    ///
-    /// # Errors
-    /// Returns `Err` when RHS shape is incompatible or solver fails.
-    pub fn cholesky_solve(&self, side: Side, rhs: &Tensor<T, Cpu>) -> Result<Tensor<T, Cpu>> {
-        sparse_solve!(self, rhs, self.cholesky(side), solve)
-    }
-
-    /// Solve `A x = b` via sparse Cholesky with symbolic prepass.
-    ///
-    /// # Errors
-    /// Returns `Err` when RHS shape is incompatible or solver fails.
-    pub fn cholesky_solve_with_symbolic(
-        &self,
-        symbolic: SymbolicLlt,
-        side: Side,
-        rhs: &Tensor<T, Cpu>,
-    ) -> Result<Tensor<T, Cpu>> {
-        sparse_solve!(self, rhs, self.llt_with_symbolic(symbolic, side), solve)
-    }
-
-    /// Compute sparse LU factors.
-    ///
-    /// # Errors
-    /// Returns `Err` when LU factorization fails.
-    pub fn lu(&self) -> Result<NumericLu<T>> {
-        factorize!(self, "lu", sp_lu)
-    }
-
-    /// Solve `A x = b` via sparse LU.
-    ///
-    /// # Errors
-    /// Returns `Err` when RHS shape is incompatible or solver fails.
-    pub fn lu_solve(&self, rhs: &Tensor<T, Cpu>) -> Result<Tensor<T, Cpu>> {
-        sparse_solve!(self, rhs, self.lu(), solve)
-    }
-
-    /// Solve `A x = b` via sparse LU with symbolic prepass.
-    ///
-    /// # Errors
-    /// Returns `Err` when RHS shape is incompatible or solver fails.
-    pub fn lu_solve_with_symbolic(
-        &self,
-        symbolic: SymbolicLu,
-        rhs: &Tensor<T, Cpu>,
-    ) -> Result<Tensor<T, Cpu>> {
-        sparse_solve!(self, rhs, self.lu_with_symbolic(symbolic), solve)
-    }
-
-    /// Compute sparse QR factors.
-    ///
-    /// # Errors
-    /// Returns `Err` when QR factorization fails.
-    pub fn qr(&self) -> Result<NumericQr<T>> {
-        factorize!(self, "qr", sp_qr)
-    }
-
-    /// Least-squares solve `A x ≈ b` via sparse QR.
-    ///
-    /// # Errors
-    /// Returns `Err` when RHS shape is incompatible or solver fails.
-    pub fn qr_solve_lstsq(&self, rhs: &Tensor<T, Cpu>) -> Result<Tensor<T, Cpu>> {
-        sparse_solve!(self, rhs, self.qr(), solve_lstsq)
-    }
-
-    /// Least-squares solve `A x ≈ b` via sparse QR with symbolic prepass.
-    ///
-    /// # Errors
-    /// Returns `Err` when RHS shape is incompatible or solver fails.
-    pub fn qr_solve_lstsq_with_symbolic(
-        &self,
-        symbolic: SymbolicQr,
-        rhs: &Tensor<T, Cpu>,
-    ) -> Result<Tensor<T, Cpu>> {
-        sparse_solve!(self, rhs, self.qr_with_symbolic(symbolic), solve_lstsq)
-    }
-
-    /// Multiply sparse × dense into dense output.
-    pub fn sparse_dense_matmul(&self, right: &Tensor<T, Cpu>, alpha: T) -> Tensor<T, Cpu> {
-        let mut out = Tensor::zeros(self.nrows(), right.ncols());
-        faer_sparse_dense_matmul(
-            out.as_mat_mut(),
-            faer::Accum::Replace,
-            self.storage.as_ref(),
-            right.as_mat_ref(),
-            alpha,
-            faer::Par::Seq,
-        );
+    fn to_dense(&self) -> Tensor<T, Cpu> {
+        let mut out = Tensor::zeros(self.nrows, self.ncols);
+        for j in 0..self.ncols {
+            for p in self.col_ptr[j]..self.col_ptr[j + 1] {
+                let i = self.row_idx[p];
+                out.set(i, j, self.values[p]);
+            }
+        }
         out
     }
 }
 
-/// Convenience alias for sparse triplet entries.
-pub type Triplet<T> = TripletEntries<T>;
-
-/// Sparse CSC matrix alias.
-pub type SparseColMat<T> = SparseStorage<T>;
-
-/// Sparse CSC matrix reference alias.
-pub type SparseColMatRef<'a, T> = SparseStorageRef<'a, T>;
-
-/// Common sparse-factorization aliases.
-pub mod linalg {
-    /// Sparse-matrix × dense-matrix multiplication helpers.
-    pub mod matmul {
-        pub use faer::sparse::linalg::matmul::sparse_dense_matmul;
+impl SparseMatrix<f64> {
+    /// Solve `A·x = b` via sparse Cholesky (positive-definite symmetric).
+    ///
+    /// # Errors
+    /// Returns `Err` when factorization or solve fails.
+    pub fn cholesky_solve(&self, side: Side, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        check_rhs_rows(self.nrows, rhs)?;
+        let dense = self.to_dense();
+        let llt = dense.llt(side)?;
+        Ok(llt.solve(rhs))
     }
 
-    /// Sparse decomposition and solver aliases.
-    pub mod solvers {
-        pub use faer::sparse::linalg::solvers::{Llt, Lu, Qr, SymbolicLlt, SymbolicLu, SymbolicQr};
+    /// Solve `A·x = b` via sparse LU.
+    ///
+    /// # Errors
+    /// Returns `Err` when factorization or solve fails.
+    pub fn solve(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        check_rhs_rows(self.nrows, rhs)?;
+        let dense = self.to_dense();
+        dense.solve(rhs)
+    }
+
+    /// Least-squares solve `A·x ≈ b` via sparse QR.
+    ///
+    /// # Errors
+    /// Returns `Err` when shapes are incompatible or solve fails.
+    pub fn solve_lstsq(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        check_rhs_rows(self.nrows, rhs)?;
+        let dense = self.to_dense();
+        dense.solve_lstsq(rhs)
     }
 }
+
+/// Alias for `SparseMatrix` (backward compat).
+pub type SparseColMat<T> = SparseMatrix<T>;

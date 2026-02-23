@@ -1,187 +1,100 @@
-// backend.rs — Sealed Backend trait + Cpu implementation backed by faer 0.24.
+// backend.rs — Sealed Backend trait + Cpu implementation backed by CpuStorage (row-major Vec<T>).
 //
-// API adaptations vs. spec (faer 0.24 differences):
-//   - No `faer::Entity`; `faer::ComplexField` is the sole trait bound.
-//   - `Mat::from_fn` closure receives `usize` indices for dynamic matrices.
-//   - Element access uses `mat.get(row, col)` returning `&T`.
-//   - matmul: `faer::linalg::matmul::matmul(dst, Accum::Replace, lhs, rhs, one, Par::Seq)`.
-//   - Scalar multiply: `mat * faer::Scale(s)`.
-//   - Transpose collects via `Mat::from_fn` over the transposed view.
-
-use faer::{Accum, Mat, Par, Scale, linalg::matmul::matmul};
+// Element storage is a plain Vec<T> with
+// row-major layout: data[r * ncols + c].
+//
+// matmul_into uses a tiled i-k-j loop (TILE=64) for cache-friendly access.
 
 use crate::scalar::Scalar;
 
-// Abramowitz & Stegun polynomial approximation for erf (max error ~1.5e-7).
-#[inline]
-fn erf_approx(x: f64) -> f64 {
-    let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
-    let poly =
-        t * (0.254_829_592 + t * (-0.284_496_736 + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
-    let result = 1.0 - poly * (-x * x).exp();
-    if x >= 0.0 { result } else { -result }
+// Tiled matmul tile size — chosen to fit in L1 cache for f64.
+const TILE: usize = 64;
+
+/// Row-major owned storage for a 2-D CPU matrix.
+pub struct CpuStorage<T: Scalar> {
+    data: Vec<T>,
+    nrows: usize,
+    ncols: usize,
 }
 
-// Reduction helpers: sum identity and ordered comparison for all four Scalar types.
-// Used exclusively by sum_all/max_all/min_all/argmax_all/argmin_all — not part of the public API.
-pub(crate) trait ReductionOps: Sized + Copy {
-    /// Additive identity (zero) for folding sum.
-    fn reduction_zero() -> Self;
-    /// Accumulate `self + other` for sum reduction.
-    fn reduction_add(self, other: Self) -> Self;
-    /// Return the element with the larger magnitude (or value for real types).
-    fn reduction_max(self, other: Self) -> Self;
-    /// Return the element with the smaller magnitude (or value for real types).
-    fn reduction_min(self, other: Self) -> Self;
-    /// Returns `true` if `self` is strictly "greater than" `other`.
-    ///
-    /// For real types (`f32`/`f64`): standard `>` comparison.
-    /// For complex types (`c32`/`c64`): compares magnitudes `|self|² > |other|²`.
-    fn reduction_gt(self, other: Self) -> bool;
+// SAFETY: T: Send + Sync (required by Scalar supertrait).
+unsafe impl<T: Scalar> Send for CpuStorage<T> {}
+unsafe impl<T: Scalar> Sync for CpuStorage<T> {}
+
+impl<T: Scalar> CpuStorage<T> {
+    #[inline]
+    fn new_zeroed(nrows: usize, ncols: usize) -> Self {
+        Self {
+            data: vec![T::zero(); nrows * ncols],
+            nrows,
+            ncols,
+        }
+    }
+
+    #[inline]
+    fn idx(&self, row: usize, col: usize) -> usize {
+        row * self.ncols + col
+    }
+
+    #[inline]
+    fn get_unchecked(&self, row: usize, col: usize) -> T {
+        self.data[self.idx(row, col)]
+    }
+
+    #[inline]
+    fn set_unchecked(&mut self, row: usize, col: usize, val: T) {
+        let idx = self.idx(row, col);
+        self.data[idx] = val;
+    }
+
+    #[inline]
+    fn map_elem(&self, f: impl Fn(T) -> T) -> Self {
+        Self {
+            data: self.data.iter().map(|&x| f(x)).collect(),
+            nrows: self.nrows,
+            ncols: self.ncols,
+        }
+    }
+
+    #[inline]
+    fn zip_map(&self, other: &Self, f: impl Fn(T, T) -> T) -> Self {
+        Self {
+            data: self
+                .data
+                .iter()
+                .zip(other.data.iter())
+                .map(|(&x, &y)| f(x, y))
+                .collect(),
+            nrows: self.nrows,
+            ncols: self.ncols,
+        }
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn data_slice(&self) -> &[T] {
+        &self.data
+    }
 }
 
-/// Implement `ReductionOps` for a real type (`f32` / `f64`).
-macro_rules! impl_real_reduction {
-    ($ty:ty) => {
-        impl ReductionOps for $ty {
-            #[inline] fn reduction_zero() -> Self { 0.0 }
-            #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
-            #[inline] fn reduction_max(self, other: Self) -> Self { self.max(other) }
-            #[inline] fn reduction_min(self, other: Self) -> Self { self.min(other) }
-            #[inline] fn reduction_gt(self, other: Self) -> bool { self > other }
+// Internal macro: generate a Backend unary method that maps over CpuStorage elements.
+macro_rules! cpu_unary_op {
+    ($fn_name:ident, |$x:ident| $body:expr) => {
+        #[inline]
+        fn $fn_name<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
+            a.map_elem(|$x| $body)
         }
     };
 }
 
-impl_real_reduction!(f32);
-impl_real_reduction!(f64);
-
-/// Magnitude-squared for complex comparison: `re² + im²`.
-macro_rules! mag2 {
-    ($z:expr) => {
-        $z.re * $z.re + $z.im * $z.im
-    };
-}
-
-/// Implement `ReductionOps` for a complex type (`c32` / `c64`).
-macro_rules! impl_complex_reduction {
-    ($ty:ty) => {
-        impl ReductionOps for $ty {
-            #[inline] fn reduction_zero() -> Self { Self::new(0.0, 0.0) }
-            #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
-            #[inline] fn reduction_max(self, other: Self) -> Self {
-                if mag2!(self) >= mag2!(other) { self } else { other }
-            }
-            #[inline] fn reduction_min(self, other: Self) -> Self {
-                if mag2!(self) <= mag2!(other) { self } else { other }
-            }
-            #[inline] fn reduction_gt(self, other: Self) -> bool {
-                mag2!(self) > mag2!(other)
-            }
+// Internal macro: generate a Backend binary method that zips two CpuStorage.
+macro_rules! cpu_binary_op {
+    ($fn_name:ident, |$x:ident, $y:ident| $body:expr) => {
+        #[inline]
+        fn $fn_name<T: Scalar>(a: &CpuStorage<T>, b: &CpuStorage<T>) -> CpuStorage<T> {
+            a.zip_map(b, |$x, $y| $body)
         }
     };
-}
-
-impl_complex_reduction!(faer::c32);
-impl_complex_reduction!(faer::c64);
-
-// Elementwise math dispatch for all four Scalar types.
-// pub(crate) so that scalar::Scalar can use it as a supertrait bound.
-pub(crate) trait MathOps: Sized + Copy {
-    fn math_exp(self) -> Self;
-    fn math_ln(self) -> Self;
-    fn math_log1p(self) -> Self;
-    fn math_sin(self) -> Self;
-    fn math_cos(self) -> Self;
-    fn math_tanh(self) -> Self;
-    fn math_sqrt(self) -> Self;
-    fn math_abs(self) -> Self;
-    fn math_recip(self) -> Self;
-    fn math_erf(self) -> Self;
-    fn math_ceil(self) -> Self;
-    fn math_floor(self) -> Self;
-    fn math_round(self) -> Self;
-    fn math_powf(self, p: Self) -> Self;
-    fn math_mul(self, other: Self) -> Self;
-    fn math_div(self, other: Self) -> Self;
-}
-
-/// Implement `MathOps` for a real float type.
-macro_rules! impl_real_mathops {
-    ($ty:ty, $erf_conv:expr) => {
-        impl MathOps for $ty {
-            #[inline] fn math_exp(self) -> Self { self.exp() }
-            #[inline] fn math_ln(self) -> Self { self.ln() }
-            #[inline] fn math_log1p(self) -> Self { self.ln_1p() }
-            #[inline] fn math_sin(self) -> Self { self.sin() }
-            #[inline] fn math_cos(self) -> Self { self.cos() }
-            #[inline] fn math_tanh(self) -> Self { self.tanh() }
-            #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
-            #[inline] fn math_abs(self) -> Self { self.abs() }
-            #[inline] fn math_recip(self) -> Self { self.recip() }
-            #[inline]
-            #[allow(clippy::cast_possible_truncation)]
-            fn math_erf(self) -> Self { $erf_conv(self) }
-            #[inline] fn math_ceil(self) -> Self { self.ceil() }
-            #[inline] fn math_floor(self) -> Self { self.floor() }
-            #[inline] fn math_round(self) -> Self { self.round() }
-            #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p) }
-            #[inline] fn math_mul(self, other: Self) -> Self { self * other }
-            #[inline] fn math_div(self, other: Self) -> Self { self / other }
-        }
-    };
-}
-
-impl_real_mathops!(f32, |x: f32| erf_approx(f64::from(x)) as f32);
-impl_real_mathops!(f64, erf_approx);
-
-/// Implement `MathOps` for a complex type.
-macro_rules! impl_complex_mathops {
-    ($ty:ty, $real:ty) => {
-        impl MathOps for $ty {
-            #[inline] fn math_exp(self) -> Self { self.exp() }
-            #[inline] fn math_ln(self) -> Self { self.ln() }
-            #[inline] fn math_log1p(self) -> Self { (Self::new(1.0 + self.re, self.im)).ln() }
-            #[inline] fn math_sin(self) -> Self { self.sin() }
-            #[inline] fn math_cos(self) -> Self { self.cos() }
-            #[inline] fn math_tanh(self) -> Self { self.tanh() }
-            #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
-            #[inline] fn math_abs(self) -> Self { Self::new(self.norm(), 0.0) }
-            #[inline] fn math_recip(self) -> Self { self.inv() }
-            #[inline]
-            #[allow(clippy::cast_possible_truncation)]
-            fn math_erf(self) -> Self {
-                Self::new(
-                    erf_approx(self.re as f64) as $real,
-                    erf_approx(self.im as f64) as $real,
-                )
-            }
-            #[inline] fn math_ceil(self) -> Self { Self::new(self.re.ceil(), self.im.ceil()) }
-            #[inline] fn math_floor(self) -> Self { Self::new(self.re.floor(), self.im.floor()) }
-            #[inline] fn math_round(self) -> Self { Self::new(self.re.round(), self.im.round()) }
-            #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p.re) }
-            #[inline] fn math_mul(self, other: Self) -> Self { self * other }
-            #[inline] fn math_div(self, other: Self) -> Self { self / other }
-        }
-    };
-}
-
-impl_complex_mathops!(faer::c32, f32);
-impl_complex_mathops!(faer::c64, f64);
-
-// Macro: apply a MathOps method element-wise via Mat::from_fn.
-macro_rules! mat_elemwise_unary {
-    ($a:expr, $method:ident) => {{
-        let (r, c) = ($a.nrows(), $a.ncols());
-        Mat::from_fn(r, c, |i, j| (*$a.get(i, j)).$method())
-    }};
-}
-
-macro_rules! mat_elemwise_binary {
-    ($a:expr, $b:expr, $method:ident) => {{
-        let (r, c) = ($a.nrows(), $a.ncols());
-        Mat::from_fn(r, c, |i, j| (*$a.get(i, j)).$method(*$b.get(i, j)))
-    }};
 }
 
 mod private {
@@ -206,10 +119,9 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     /// Allocate an n×n identity matrix.
     ///
     /// GPU backends override this to launch a GPU identity kernel (no host intermediary).
+    #[must_use]
     fn identity<T: Scalar>(n: usize) -> Self::Storage<T> {
-        let zero = <T as faer_traits::ComplexField>::zero_impl();
-        let one  = <T as faer_traits::ComplexField>::one_impl();
-        Self::from_fn(n, n, |r, c| if r == c { one } else { zero })
+        Self::from_fn(n, n, |r, c| if r == c { T::one() } else { T::zero() })
     }
 
     /// Allocate a matrix and fill it by calling `f(row, col)`.
@@ -218,6 +130,18 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
         ncols: usize,
         f: impl FnMut(usize, usize) -> T,
     ) -> Self::Storage<T>;
+
+    /// Build storage from a pre-allocated row-major `Vec<T>` (zero-copy when possible).
+    ///
+    /// The default impl converts via `from_fn`. Backends that own a flat `Vec<T>`
+    /// should override this to move the `Vec` directly without copying.
+    #[must_use]
+    fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> Self::Storage<T> {
+        let mut v = data.into_iter();
+        Self::from_fn(nrows, ncols, |_, _| {
+            v.next().expect("from_vec: data length must equal nrows * ncols")
+        })
+    }
 
     /// Row count of `storage`.
     fn nrows<T: Scalar>(storage: &Self::Storage<T>) -> usize;
@@ -314,16 +238,10 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     fn powf<T: Scalar>(a: &Self::Storage<T>, p: T) -> Self::Storage<T>;
 
     /// Element-wise multiplication `a[i,j] * b[i,j]`.
-    fn mul_elem<T: Scalar>(
-        a: &Self::Storage<T>,
-        b: &Self::Storage<T>,
-    ) -> Self::Storage<T>;
+    fn mul_elem<T: Scalar>(a: &Self::Storage<T>, b: &Self::Storage<T>) -> Self::Storage<T>;
 
     /// Element-wise division `a[i,j] / b[i,j]`.
-    fn div_elem<T: Scalar>(
-        a: &Self::Storage<T>,
-        b: &Self::Storage<T>,
-    ) -> Self::Storage<T>;
+    fn div_elem<T: Scalar>(a: &Self::Storage<T>, b: &Self::Storage<T>) -> Self::Storage<T>;
 
     // --- Reduction operations (whole-matrix → scalar) ---
 
@@ -361,197 +279,222 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     fn argmin_all<T: Scalar>(a: &Self::Storage<T>) -> (usize, usize);
 }
 
-/// CPU backend using faer's native SIMD kernels.
+/// CPU backend — row-major `Vec<T>` storage, no external BLAS dependencies.
 pub struct Cpu;
 
 impl private::Sealed for Cpu {}
 
 impl Backend for Cpu {
-    type Storage<T: Scalar> = Mat<T>;
+    type Storage<T: Scalar> = CpuStorage<T>;
 
     #[inline]
-    fn zeros<T: Scalar>(nrows: usize, ncols: usize) -> Mat<T> {
-        Mat::zeros(nrows, ncols)
+    fn zeros<T: Scalar>(nrows: usize, ncols: usize) -> CpuStorage<T> {
+        CpuStorage::new_zeroed(nrows, ncols)
     }
 
     #[inline]
-    fn from_fn<T: Scalar>(nrows: usize, ncols: usize, f: impl FnMut(usize, usize) -> T) -> Mat<T> {
-        Mat::from_fn(nrows, ncols, f)
+    fn from_fn<T: Scalar>(
+        nrows: usize,
+        ncols: usize,
+        mut f: impl FnMut(usize, usize) -> T,
+    ) -> CpuStorage<T> {
+        let mut data = Vec::with_capacity(nrows * ncols);
+        for r in 0..nrows {
+            for c in 0..ncols {
+                data.push(f(r, c));
+            }
+        }
+        CpuStorage { data, nrows, ncols }
     }
 
     #[inline]
-    fn nrows<T: Scalar>(storage: &Mat<T>) -> usize {
-        storage.nrows()
+    fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> CpuStorage<T> {
+        CpuStorage { data, nrows, ncols }
     }
 
     #[inline]
-    fn ncols<T: Scalar>(storage: &Mat<T>) -> usize {
-        storage.ncols()
+    fn nrows<T: Scalar>(storage: &CpuStorage<T>) -> usize {
+        storage.nrows
     }
 
     #[inline]
-    fn get<T: Scalar>(storage: &Mat<T>, row: usize, col: usize) -> T {
-        *storage.get(row, col)
+    fn ncols<T: Scalar>(storage: &CpuStorage<T>) -> usize {
+        storage.ncols
     }
 
     #[inline]
-    fn set<T: Scalar>(storage: &mut Mat<T>, row: usize, col: usize, val: T) {
-        *storage.get_mut(row, col) = val;
+    fn get<T: Scalar>(storage: &CpuStorage<T>, row: usize, col: usize) -> T {
+        storage.get_unchecked(row, col)
     }
 
     #[inline]
-    fn matmul_into<T: Scalar>(out: &mut Mat<T>, a: &Mat<T>, b: &Mat<T>) {
-        matmul(out, Accum::Replace, a, b, T::one_impl(), Par::Seq);
+    fn set<T: Scalar>(storage: &mut CpuStorage<T>, row: usize, col: usize, val: T) {
+        storage.set_unchecked(row, col, val);
+    }
+
+    #[allow(clippy::many_single_char_names)]
+    fn matmul_into<T: Scalar>(out: &mut CpuStorage<T>, a: &CpuStorage<T>, b: &CpuStorage<T>) {
+        let (m, k, n) = (a.nrows, a.ncols, b.ncols);
+        // Zero the output buffer first.
+        for x in &mut out.data {
+            *x = T::zero();
+        }
+        // Tiled i-k-j loop: inner loop over j is contiguous in B (row-major), friendly for cache.
+        let mut ii = 0;
+        while ii < m {
+            let i_end = (ii + TILE).min(m);
+            let mut kk = 0;
+            while kk < k {
+                let k_end = (kk + TILE).min(k);
+                let mut jj = 0;
+                while jj < n {
+                    let j_end = (jj + TILE).min(n);
+                    for i in ii..i_end {
+                        let a_row = &a.data[i * k..(i + 1) * k];
+                        let out_row = &mut out.data[i * n..(i + 1) * n];
+                        // p indexes into both a_row and b's rows, which cannot share a single iterator.
+                        #[allow(clippy::needless_range_loop)]
+                        for p in kk..k_end {
+                            let a_ip = a_row[p];
+                            let b_row = &b.data[p * n..(p + 1) * n];
+                            for j in jj..j_end {
+                                // out[i,j] += a[i,p] * b[p,j]
+                                out_row[j] = out_row[j] + a_ip * b_row[j];
+                            }
+                        }
+                    }
+                    jj += TILE;
+                }
+                kk += TILE;
+            }
+            ii += TILE;
+        }
+    }
+
+    cpu_binary_op!(add, |x, y| x + y);
+
+    cpu_binary_op!(sub, |x, y| x - y);
+
+    cpu_unary_op!(neg, |x| -x);
+
+    #[inline]
+    fn transpose<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
+        // Block tiling (BLK=64) for cache-friendly reads and writes.
+        const BLK: usize = 64;
+        let (rows, cols) = (a.nrows, a.ncols);
+        let mut out = CpuStorage::new_zeroed(cols, rows);
+        let mut i0 = 0;
+        while i0 < rows {
+            let imax = (i0 + BLK).min(rows);
+            let mut j0 = 0;
+            while j0 < cols {
+                let jmax = (j0 + BLK).min(cols);
+                for i in i0..imax {
+                    for j in j0..jmax {
+                        out.data[j * rows + i] = a.data[i * cols + j];
+                    }
+                }
+                j0 += BLK;
+            }
+            i0 += BLK;
+        }
+        out
     }
 
     #[inline]
-    fn add<T: Scalar>(a: &Mat<T>, b: &Mat<T>) -> Mat<T> {
-        a + b
+    fn scale<T: Scalar>(a: &CpuStorage<T>, s: T) -> CpuStorage<T> {
+        a.map_elem(|x| x * s)
     }
 
     #[inline]
-    fn sub<T: Scalar>(a: &Mat<T>, b: &Mat<T>) -> Mat<T> {
-        a - b
+    fn clone_storage<T: Scalar>(storage: &CpuStorage<T>) -> CpuStorage<T> {
+        CpuStorage {
+            data: storage.data.clone(),
+            nrows: storage.nrows,
+            ncols: storage.ncols,
+        }
+    }
+
+    cpu_unary_op!(exp, |x| x.math_exp());
+
+    cpu_unary_op!(ln, |x| x.math_ln());
+
+    cpu_unary_op!(log1p, |x| x.math_log1p());
+
+    cpu_unary_op!(sin, |x| x.math_sin());
+
+    cpu_unary_op!(cos, |x| x.math_cos());
+
+    cpu_unary_op!(tanh, |x| x.math_tanh());
+
+    cpu_unary_op!(sqrt, |x| x.math_sqrt());
+
+    cpu_unary_op!(abs, |x| x.math_abs());
+
+    cpu_unary_op!(recip, |x| x.math_recip());
+
+    cpu_unary_op!(erf, |x| x.math_erf());
+
+    cpu_unary_op!(ceil, |x| x.math_ceil());
+
+    cpu_unary_op!(floor, |x| x.math_floor());
+
+    cpu_unary_op!(round, |x| x.math_round());
+
+    #[inline]
+    fn powf<T: Scalar>(a: &CpuStorage<T>, p: T) -> CpuStorage<T> {
+        a.map_elem(|x| x.math_powf(p))
+    }
+
+    cpu_binary_op!(mul_elem, |x, y| x.math_mul(y));
+
+    cpu_binary_op!(div_elem, |x, y| x.math_div(y));
+
+    #[inline]
+    fn sum_all<T: Scalar>(a: &CpuStorage<T>) -> T {
+        a.data
+            .iter()
+            .fold(T::zero(), |acc, &x| acc.reduction_add(x))
     }
 
     #[inline]
-    fn neg<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        -a
+    fn max_all<T: Scalar>(a: &CpuStorage<T>) -> T {
+        assert!(
+            a.nrows > 0 && a.ncols > 0,
+            "max_all: matrix must be non-empty"
+        );
+        let mut it = a.data.iter();
+        let init = *it.next().expect("non-empty checked above");
+        it.fold(init, |acc, &x| acc.reduction_max(x))
     }
 
     #[inline]
-    fn transpose<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        let t = a.as_ref().transpose();
-        Mat::from_fn(t.nrows(), t.ncols(), |r, c| *t.get(r, c))
+    fn min_all<T: Scalar>(a: &CpuStorage<T>) -> T {
+        assert!(
+            a.nrows > 0 && a.ncols > 0,
+            "min_all: matrix must be non-empty"
+        );
+        let mut it = a.data.iter();
+        let init = *it.next().expect("non-empty checked above");
+        it.fold(init, |acc, &x| acc.reduction_min(x))
     }
 
     #[inline]
-    fn scale<T: Scalar>(a: &Mat<T>, s: T) -> Mat<T> {
-        a * Scale(s)
-    }
-
-    #[inline]
-    fn clone_storage<T: Scalar>(storage: &Mat<T>) -> Mat<T> {
-        storage.clone()
-    }
-
-    #[inline]
-    fn exp<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_exp)
-    }
-
-    #[inline]
-    fn ln<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_ln)
-    }
-
-    #[inline]
-    fn log1p<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_log1p)
-    }
-
-    #[inline]
-    fn sin<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_sin)
-    }
-
-    #[inline]
-    fn cos<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_cos)
-    }
-
-    #[inline]
-    fn tanh<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_tanh)
-    }
-
-    #[inline]
-    fn sqrt<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_sqrt)
-    }
-
-    #[inline]
-    fn abs<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_abs)
-    }
-
-    #[inline]
-    fn recip<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_recip)
-    }
-
-    #[inline]
-    fn erf<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_erf)
-    }
-
-    #[inline]
-    fn ceil<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_ceil)
-    }
-
-    #[inline]
-    fn floor<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_floor)
-    }
-
-    #[inline]
-    fn round<T: Scalar>(a: &Mat<T>) -> Mat<T> {
-        mat_elemwise_unary!(a, math_round)
-    }
-
-    #[inline]
-    fn powf<T: Scalar>(a: &Mat<T>, p: T) -> Mat<T> {
-        let (r, c) = (a.nrows(), a.ncols());
-        Mat::from_fn(r, c, |i, j| (*a.get(i, j)).math_powf(p))
-    }
-
-    #[inline]
-    fn mul_elem<T: Scalar>(a: &Mat<T>, b: &Mat<T>) -> Mat<T> {
-        mat_elemwise_binary!(a, b, math_mul)
-    }
-
-    #[inline]
-    fn div_elem<T: Scalar>(a: &Mat<T>, b: &Mat<T>) -> Mat<T> {
-        mat_elemwise_binary!(a, b, math_div)
-    }
-
-    #[inline]
-    fn sum_all<T: Scalar>(a: &Mat<T>) -> T {
-        let (r, c) = (a.nrows(), a.ncols());
-        (0..r).flat_map(|i| (0..c).map(move |j| (i, j)))
-            .fold(T::reduction_zero(), |acc, (i, j)| acc.reduction_add(*a.get(i, j)))
-    }
-
-    #[inline]
-    fn max_all<T: Scalar>(a: &Mat<T>) -> T {
-        assert!(a.nrows() > 0 && a.ncols() > 0, "max_all: matrix must be non-empty");
-        let (r, c) = (a.nrows(), a.ncols());
-        let init = *a.get(0, 0);
-        (0..r).flat_map(|i| (0..c).map(move |j| (i, j)))
-            .skip(1)
-            .fold(init, |acc, (i, j)| acc.reduction_max(*a.get(i, j)))
-    }
-
-    #[inline]
-    fn min_all<T: Scalar>(a: &Mat<T>) -> T {
-        assert!(a.nrows() > 0 && a.ncols() > 0, "min_all: matrix must be non-empty");
-        let (r, c) = (a.nrows(), a.ncols());
-        let init = *a.get(0, 0);
-        (0..r).flat_map(|i| (0..c).map(move |j| (i, j)))
-            .skip(1)
-            .fold(init, |acc, (i, j)| acc.reduction_min(*a.get(i, j)))
-    }
-
-    #[inline]
-    fn argmax_all<T: Scalar>(a: &Mat<T>) -> (usize, usize) {
-        assert!(a.nrows() > 0 && a.ncols() > 0, "argmax_all: matrix must be non-empty");
-        let (r, c) = (a.nrows(), a.ncols());
+    fn argmax_all<T: Scalar>(a: &CpuStorage<T>) -> (usize, usize) {
+        assert!(
+            a.nrows > 0 && a.ncols > 0,
+            "argmax_all: matrix must be non-empty"
+        );
+        let (r, c) = (a.nrows, a.ncols);
         let mut best = (0usize, 0usize);
         for i in 0..r {
             for j in 0..c {
-                if i == 0 && j == 0 { continue; }
-                if (*a.get(i, j)).reduction_gt(*a.get(best.0, best.1)) {
+                if i == 0 && j == 0 {
+                    continue;
+                }
+                if a.get_unchecked(i, j)
+                    .reduction_gt(a.get_unchecked(best.0, best.1))
+                {
                     best = (i, j);
                 }
             }
@@ -560,14 +503,21 @@ impl Backend for Cpu {
     }
 
     #[inline]
-    fn argmin_all<T: Scalar>(a: &Mat<T>) -> (usize, usize) {
-        assert!(a.nrows() > 0 && a.ncols() > 0, "argmin_all: matrix must be non-empty");
-        let (r, c) = (a.nrows(), a.ncols());
+    fn argmin_all<T: Scalar>(a: &CpuStorage<T>) -> (usize, usize) {
+        assert!(
+            a.nrows > 0 && a.ncols > 0,
+            "argmin_all: matrix must be non-empty"
+        );
+        let (r, c) = (a.nrows, a.ncols);
         let mut best = (0usize, 0usize);
         for i in 0..r {
             for j in 0..c {
-                if i == 0 && j == 0 { continue; }
-                if (*a.get(best.0, best.1)).reduction_gt(*a.get(i, j)) {
+                if i == 0 && j == 0 {
+                    continue;
+                }
+                if a.get_unchecked(best.0, best.1)
+                    .reduction_gt(a.get_unchecked(i, j))
+                {
                     best = (i, j);
                 }
             }
@@ -576,39 +526,16 @@ impl Backend for Cpu {
     }
 }
 
-#[cfg(feature = "cuda")]
-/// CUDA backend — uses cubecl-cuda kernels for f32/f64, CPU fallback for c32/c64.
-pub struct Cuda;
+#[cfg(feature = "gpu")]
+/// GPU backend — wgpu + WGSL compute shaders (f32 only).
+pub struct Gpu;
 
-#[cfg(feature = "cuda")]
-impl private::Sealed for Cuda {}
+#[cfg(feature = "gpu")]
+impl private::Sealed for Gpu {}
 
-#[cfg(feature = "wgpu")]
-/// wgpu backend — uses cubecl-wgpu kernels for f32/f64, CPU fallback for c32/c64.
-pub struct Wgpu;
-
-#[cfg(feature = "wgpu")]
-impl private::Sealed for Wgpu {}
-
-#[cfg(feature = "hip")]
-/// HIP/ROCm backend — uses cubecl-hip kernels for f32/f64, CPU fallback for c32/c64.
-pub struct Hip;
-
-#[cfg(feature = "hip")]
-impl private::Sealed for Hip {}
-
-#[cfg(feature = "cuda")]
-/// Default backend: CUDA (highest priority when enabled).
-pub type DefaultBackend = Cuda;
-
-#[cfg(all(feature = "wgpu", not(feature = "cuda"), not(feature = "hip")))]
-/// Default backend: wgpu (used when cuda is not enabled).
-pub type DefaultBackend = Wgpu;
-
-#[cfg(all(feature = "hip", not(feature = "cuda"), not(feature = "wgpu")))]
-/// Default backend: HIP (used when cuda and wgpu are not enabled).
-pub type DefaultBackend = Hip;
-
-#[cfg(not(any(feature = "cuda", feature = "wgpu", feature = "hip")))]
-/// Default backend: CPU (fallback when no GPU feature is enabled).
+#[cfg(feature = "cpu")]
+/// Default backend selected at compile time.
 pub type DefaultBackend = Cpu;
+
+#[cfg(feature = "gpu")]
+pub type DefaultBackend = Gpu;

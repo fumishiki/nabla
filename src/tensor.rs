@@ -4,17 +4,22 @@
 // - Operator overloads are defined on references to avoid moves (Julia semantics).
 // - Shape mismatches in Add/Sub/Mul panic with a descriptive message (Option A).
 // - Adjoint uses `T::IS_REAL` const to choose between transpose and conj+transpose.
-// - `adjoint` delegates element-wise conjugation via `faer_traits::conj`.
+// - `adjoint` delegates element-wise conjugation via `scalar::math_utils::conj`.
 
 use core::fmt;
 use core::ops::{Add, Bound, Mul, Neg, RangeBounds, Sub};
 
-use crate::backend::{Backend, Cpu, DefaultBackend};
+#[cfg(feature = "cpu")]
+use rayon::prelude::*;
+
+#[cfg(feature = "cpu")]
+use crate::backend::Cpu;
+use crate::backend::{Backend, DefaultBackend};
 use crate::scalar::Scalar;
 
 /// A 2-D dense matrix backed by a pluggable [`Backend`].
 ///
-/// The default backend is [`crate::backend::Cpu`], which uses faer's SIMD kernels.
+/// The default backend is [`crate::backend::Cpu`], which uses nabla's CPU kernels.
 pub struct Tensor<T: Scalar, B: Backend = DefaultBackend> {
     storage: B::Storage<T>,
 }
@@ -150,18 +155,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[inline]
     pub(crate) fn from_storage(storage: B::Storage<T>) -> Self {
         Self { storage }
-    }
-
-    /// Borrow the underlying storage.
-    #[inline]
-    pub(crate) fn storage_ref(&self) -> &B::Storage<T> {
-        &self.storage
-    }
-
-    /// Mutably borrow the underlying storage.
-    #[inline]
-    pub(crate) fn storage_mut(&mut self) -> &mut B::Storage<T> {
-        &mut self.storage
     }
 
     /// Allocate a zero-filled matrix of shape `(nrows, ncols)`.
@@ -428,7 +421,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::from_storage(if T::IS_REAL {
             B::from_fn(c, r, |i, j| self.get(j, i))
         } else {
-            B::from_fn(c, r, |i, j| faer_traits::math_utils::conj(&self.get(j, i)))
+            B::from_fn(c, r, |i, j| {
+                crate::scalar::math_utils::conj(&self.get(j, i))
+            })
         })
     }
 
@@ -452,58 +447,60 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         );
         B::matmul_into(&mut out.storage, &a.storage, &b.storage);
     }
+}
 
-    /// Copy all elements into a tensor on a (possibly different) backend.
+#[cfg(feature = "cpu")]
+impl<T: Scalar, B: Backend> Tensor<T, B> {
+    /// Parallel `from_fn` — construct a matrix using rayon.
     ///
-    /// This is the general backend-conversion primitive.  Internally it calls
-    /// `get(r, c)` on every element and constructs the target tensor via
-    /// `B2::from_fn`, so it works across any pair of backends.
+    /// Each element `(i, j)` is computed by `f(i, j)` across rayon's thread pool.
+    /// Useful for expensive per-element closures on large matrices.
     ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use nabla::prelude::*;
-    /// let cpu_t: Tensor<f32, Cpu> = Tensor::from_fn(2, 2, |r, c| (r + c) as f32);
-    /// // round-trip through CPU (always available)
-    /// let cpu2 = cpu_t.to_backend::<Cpu>();
-    /// assert_eq!(cpu2.get(1, 1), 2.0_f32);
+    /// ```
+    /// use nabla::prelude::*;
+    /// let t: Tensor<f64> = Tensor::par_from_fn(100, 100, |r, c| (r * c) as f64);
+    /// assert_eq!(t.shape(), (100, 100));
     /// ```
     #[must_use]
-    pub fn to_backend<B2: Backend>(&self) -> Tensor<T, B2> {
-        let (rows, cols) = self.shape();
-        Tensor {
-            storage: B2::from_fn(rows, cols, |r, c| self.get(r, c)),
-        }
+    pub fn par_from_fn(
+        nrows: usize,
+        ncols: usize,
+        f: impl Fn(usize, usize) -> T + Send + Sync,
+    ) -> Self {
+        // Single allocation: rayon collects directly into Vec, then wrap without copy.
+        let data: Vec<T> = (0..nrows * ncols)
+            .into_par_iter()
+            .map(|idx| f(idx / ncols, idx % ncols))
+            .collect();
+        Self::from_storage(B::from_vec(nrows, ncols, data))
     }
 
-    /// Copy into a CPU-backed tensor.
+    /// Parallel element-wise transform — applies `f` to every element using rayon.
     ///
-    /// Equivalent to `self.to_backend::<Cpu>()`.  Always available regardless
-    /// of which backend features are enabled.
+    /// ```
+    /// use nabla::prelude::*;
+    /// let a: Tensor<f64> = Tensor::from_fn(4, 4, |r, c| (r + c) as f64);
+    /// let b = a.par_map(|x| x * 2.0);
+    /// assert!((b.get(0, 1) - 2.0).abs() < 1e-12);
+    /// ```
     #[must_use]
-    #[inline]
-    pub fn to_cpu(&self) -> Tensor<T, crate::backend::Cpu> {
-        self.to_backend::<crate::backend::Cpu>()
+    pub fn par_map(&self, f: impl Fn(T) -> T + Send + Sync) -> Self {
+        let (nrows, ncols) = self.shape();
+        // Single pass: parallel transform → collect into one Vec, wrap without copy.
+        let data: Vec<T> = (0..nrows * ncols)
+            .into_par_iter()
+            .map(|idx| f(B::get(&self.storage, idx / ncols, idx % ncols)))
+            .collect();
+        Self::from_storage(B::from_vec(nrows, ncols, data))
     }
 }
 
-#[cfg(feature = "cuda")]
-impl<T: Scalar, B: crate::backend::Backend> Tensor<T, B> {
-    /// Copy into a CUDA-backed tensor (requires `cuda` feature).
-    #[must_use]
+#[cfg(feature = "cpu")]
+impl<T: Scalar> Tensor<T, Cpu> {
+    /// Borrow the underlying row-major data slice (zero-copy).
     #[inline]
-    pub fn to_cuda(&self) -> Tensor<T, crate::backend::Cuda> {
-        self.to_backend::<crate::backend::Cuda>()
-    }
-}
-
-#[cfg(feature = "wgpu")]
-impl<T: Scalar, B: crate::backend::Backend> Tensor<T, B> {
-    /// Copy into a wgpu-backed tensor (requires `wgpu` feature).
-    #[must_use]
-    #[inline]
-    pub fn to_wgpu(&self) -> Tensor<T, crate::backend::Wgpu> {
-        self.to_backend::<crate::backend::Wgpu>()
+    pub(crate) fn as_slice(&self) -> &[T] {
+        self.storage.data_slice()
     }
 }
 
@@ -597,7 +594,7 @@ impl<T: Scalar + fmt::Debug, B: Backend> fmt::Debug for Tensor<T, B> {
 /// N-dimensional tensor stored as a flat `Vec<T>` in row-major (C-order) layout.
 ///
 /// Designed for use with `einsum!` macro's N-D contraction support.
-/// For 2-D operations, prefer [`Tensor<T, B>`] which uses faer's optimised kernels.
+/// For 2-D operations, prefer [`Tensor<T, B>`] which uses nabla's optimised kernels.
 ///
 /// # Examples
 ///
@@ -658,9 +655,8 @@ impl<T: Scalar> NdTensor<T> {
     #[must_use]
     pub fn zeros(shape: &[usize]) -> Self {
         let n: usize = shape.iter().product();
-        let zero: T = faer_traits::math_utils::zero();
         Self {
-            data: vec![zero; n],
+            data: vec![T::zero(); n],
             shape: shape.to_vec(),
             strides: Self::compute_strides(shape),
         }
@@ -751,6 +747,10 @@ impl<T: Scalar> NdTensor<T> {
     /// all preceding batch dimensions.
     ///
     /// `batch_indices` must have length `ndim() - 2`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `batch_indices.len() != ndim() - 2`.
     #[must_use]
     pub fn slice_2d(&self, batch_indices: &[usize]) -> Tensor<T> {
         assert_eq!(
@@ -777,6 +777,10 @@ impl<T: Scalar> NdTensor<T> {
 
     /// Set a 2-D slice in the **last two dimensions**, fixing all
     /// preceding batch dimensions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `batch_indices.len() != ndim() - 2`.
     pub fn set_slice_2d(&mut self, batch_indices: &[usize], tensor: &Tensor<T>) {
         assert_eq!(
             batch_indices.len() + 2,
@@ -805,6 +809,10 @@ impl<T: Scalar> NdTensor<T> {
     ///
     /// Equivalent to `self.dim(ndim - 2)`. Allows `NdTensor` to be used
     /// in generated code that calls `.nrows()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ndim() < 2`.
     #[must_use]
     #[inline]
     pub fn nrows(&self) -> usize {
@@ -813,6 +821,10 @@ impl<T: Scalar> NdTensor<T> {
     }
 
     /// Convenience: number of cols for the last dimension.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ndim() < 1`.
     #[must_use]
     #[inline]
     pub fn ncols(&self) -> usize {
@@ -920,7 +932,7 @@ impl<T: Scalar, const R: usize, const C: usize> StaticMatrix<T, R, C> {
         if T::IS_REAL {
             return self.t();
         }
-        StaticMatrix::<T, C, R>::from_fn(|r, c| faer_traits::math_utils::conj(&self.data[c][r]))
+        StaticMatrix::<T, C, R>::from_fn(|r, c| crate::scalar::math_utils::conj(&self.data[c][r]))
     }
 
     /// Matrix multiply `self (R×K) * rhs (K×N)` → `StaticMatrix<T, R, N>`.
@@ -1034,6 +1046,7 @@ pub trait Array<T: Scalar> {
     fn get(&self, row: usize, col: usize) -> T;
 }
 
+#[cfg(feature = "cpu")]
 /// Matrix algebra trait extending [`Array`].
 ///
 /// `t_dyn` and `matmul_dyn` always return a CPU-backed [`Tensor`] so the
@@ -1045,6 +1058,7 @@ pub trait Matrix<T: Scalar>: Array<T> {
     fn matmul_dyn(&self, rhs: &dyn Array<T>) -> Tensor<T, Cpu>;
 }
 
+#[cfg(feature = "cpu")]
 /// Shared matmul logic for any pair of `Array<T>` implementors.
 fn dyn_matmul<T: Scalar>(lhs: &dyn Array<T>, rhs: &dyn Array<T>) -> Tensor<T, Cpu> {
     let (m, k) = lhs.shape();
@@ -1073,9 +1087,11 @@ impl<T: Scalar, B: Backend> Array<T> for Tensor<T, B> {
     }
 }
 
+#[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Matrix<T> for Tensor<T, B> {
     fn t_dyn(&self) -> Tensor<T, Cpu> {
-        self.to_cpu().t()
+        let (r, c) = self.shape();
+        Tensor::from_fn(c, r, |i, j| self.get(j, i))
     }
     fn matmul_dyn(&self, rhs: &dyn Array<T>) -> Tensor<T, Cpu> {
         dyn_matmul(self, rhs)
@@ -1097,6 +1113,7 @@ impl<T: Scalar, const R: usize, const C: usize> Array<T> for StaticMatrix<T, R, 
     }
 }
 
+#[cfg(feature = "cpu")]
 impl<T: Scalar, const R: usize, const C: usize> Matrix<T> for StaticMatrix<T, R, C> {
     fn t_dyn(&self) -> Tensor<T, Cpu> {
         Tensor::from_fn(C, R, |r, c| self.get(c, r))
@@ -1113,6 +1130,7 @@ impl<T: Scalar, const R: usize, const C: usize> Matrix<T> for StaticMatrix<T, R,
 // via `match` rather than vtable.  New variants can be added per feature flag
 // (Orphan-rule safe because this enum lives in the same crate as both backends).
 
+#[cfg(feature = "cpu")]
 /// A type-erased 2-D dense matrix that can live on any enabled backend.
 ///
 /// Provides Julia-style closed multiple dispatch: at runtime, operations
@@ -1133,6 +1151,7 @@ pub enum DynTensor {
     Cpu(Tensor<f32, Cpu>),
 }
 
+#[cfg(feature = "cpu")]
 /// Dispatch a method through all `DynTensor` variants.
 macro_rules! dyn_dispatch {
     // Single-operand: &self → value
@@ -1145,6 +1164,7 @@ macro_rules! dyn_dispatch {
     };
 }
 
+#[cfg(feature = "cpu")]
 impl DynTensor {
     /// Construct a `DynTensor` on the CPU backend.
     pub fn cpu_f32(nrows: usize, ncols: usize, f: impl FnMut(usize, usize) -> f32) -> Self {
@@ -1152,23 +1172,42 @@ impl DynTensor {
     }
 
     /// Number of rows.
-    pub fn nrows(&self) -> usize { dyn_dispatch!(ref self, nrows) }
+    #[must_use]
+    pub fn nrows(&self) -> usize {
+        dyn_dispatch!(ref self, nrows)
+    }
     /// Number of columns.
-    pub fn ncols(&self) -> usize { dyn_dispatch!(ref self, ncols) }
+    #[must_use]
+    pub fn ncols(&self) -> usize {
+        dyn_dispatch!(ref self, ncols)
+    }
     /// Shape as `(nrows, ncols)`.
-    pub fn shape(&self) -> (usize, usize) { (self.nrows(), self.ncols()) }
+    #[must_use]
+    pub fn shape(&self) -> (usize, usize) {
+        (self.nrows(), self.ncols())
+    }
 
     /// Read element at `(row, col)`.
+    #[must_use]
     pub fn get(&self, row: usize, col: usize) -> f32 {
-        match self { Self::Cpu(t) => t.get(row, col) }
+        match self {
+            Self::Cpu(t) => t.get(row, col),
+        }
     }
 
     /// Element-wise addition. Panics if shapes differ.
-    pub fn add(&self, rhs: &Self) -> Self { dyn_dispatch!(binop self, rhs, +) }
+    #[must_use]
+    pub fn add(&self, rhs: &Self) -> Self {
+        dyn_dispatch!(binop self, rhs, +)
+    }
     /// Element-wise subtraction. Panics if shapes differ.
-    pub fn sub(&self, rhs: &Self) -> Self { dyn_dispatch!(binop self, rhs, -) }
+    #[must_use]
+    pub fn sub(&self, rhs: &Self) -> Self {
+        dyn_dispatch!(binop self, rhs, -)
+    }
 
     /// Matrix multiplication (`self × rhs`). Panics if shapes are incompatible.
+    #[must_use]
     pub fn matmul(&self, rhs: &Self) -> Self {
         match (self, rhs) {
             (Self::Cpu(a), Self::Cpu(b)) => {
@@ -1180,7 +1219,10 @@ impl DynTensor {
     }
 
     /// Move to CPU-backed tensor (always a clone for the Cpu variant).
+    #[must_use]
     pub fn to_cpu(&self) -> Tensor<f32, Cpu> {
-        match self { Self::Cpu(t) => t.clone() }
+        match self {
+            Self::Cpu(t) => t.clone(),
+        }
     }
 }

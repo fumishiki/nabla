@@ -1,41 +1,579 @@
-// gpu.rs — Handle-based GPU storage and CubeCL kernel dispatch.
+// gpu.rs — wgpu-backed GPU storage and WGSL compute shader dispatch.
 //
 // Design:
-//   - GpuStorage<T> owns a cubecl_runtime Handle (RAII GPU memory, Arc-backed Clone).
-//   - GPU ops dispatch via TypeId: f32/f64 → GPU kernels, c32/c64 → CPU fallback.
-//   - Byte conversion via raw slice reinterpretation (no bytemuck dependency).
-//   - get/set use a lazy Mutex<Option<Vec<T>>> host_cache (readback on first access).
+//   - GpuContext (OnceLock singleton) owns wgpu::Device + wgpu::Queue.
+//   - GpuStorage<T> owns a wgpu::Buffer (RAII, Arc-backed via wgpu internals).
+//   - GPU ops are f32-only; TypeId dispatch guards all entry points.
+//   - host_cache: Mutex<Option<Vec<T>>> — lazily populated on first get/readback.
+//   - Pipeline cache: Mutex<HashMap<&'static str, wgpu::ComputePipeline>>.
 
-// CubeCL proc-macro (#[cube]) generates code that appends format!(..) to String;
-// suppress the resulting false-positive lint for this entire module.
-#![allow(clippy::format_push_string)]
+use std::any::TypeId;
+use std::sync::{Mutex, OnceLock};
 
-use cubecl::prelude::*;
-use cubecl_core as cubecl;
+use wgpu::util::DeviceExt;
 
-use std::sync::Mutex;
-
-use crate::error::Error;
 use crate::scalar::Scalar;
 
 // ── Byte conversion helpers ───────────────────────────────────────────────────
 
-// SAFETY: all Scalar types (f32/f64/c32/c64) are POD with stable layout.
+// SAFETY: all Scalar types (f32) are POD with stable layout.
 unsafe fn scalar_to_bytes<T: Scalar>(data: &[T]) -> &[u8] {
-    unsafe {
-        core::slice::from_raw_parts(data.as_ptr().cast::<u8>(), core::mem::size_of_val(data))
-    }
+    // SAFETY: T is a POD type; reinterpreted as bytes.
+    unsafe { core::slice::from_raw_parts(data.as_ptr().cast::<u8>(), core::mem::size_of_val(data)) }
 }
 
 // SAFETY: bytes originated from a [T] slice with correct alignment and length.
 unsafe fn bytes_to_scalar<T: Scalar>(bytes: &[u8]) -> Vec<T> {
+    // SAFETY: bytes came from a valid [T] allocation.
     unsafe {
         let len = bytes.len() / core::mem::size_of::<T>();
         core::slice::from_raw_parts(bytes.as_ptr().cast::<T>(), len).to_vec()
     }
 }
 
+fn bytes_to_u32(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+// ── GpuContext singleton ──────────────────────────────────────────────────────
+
+struct GpuContext {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+fn get_context() -> &'static GpuContext {
+    static CTX: OnceLock<GpuContext> = OnceLock::new();
+    CTX.get_or_init(|| pollster::block_on(init_gpu()))
+}
+
+async fn init_gpu() -> GpuContext {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        ..Default::default()
+    });
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })
+        .await
+        .expect("no GPU adapter found");
+    let (device, queue) = adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("nabla"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+            },
+            None,
+        )
+        .await
+        .expect("failed to create wgpu device");
+    GpuContext { device, queue }
+}
+
+fn create_pipeline(ctx: &GpuContext, shader_src: &str) -> wgpu::ComputePipeline {
+    let module = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+        });
+    ctx.device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        })
+}
+
+// ── Dispatch helper ───────────────────────────────────────────────────────────
+
+/// Bind group entries builder: storage buffers (read-only or read-write).
+fn bind_group(
+    ctx: &GpuContext,
+    pipeline: &wgpu::ComputePipeline,
+    buffers: &[(&wgpu::Buffer, bool)], // (buffer, read_only)
+) -> wgpu::BindGroup {
+    let layout = pipeline.get_bind_group_layout(0);
+    let entries: Vec<wgpu::BindGroupEntry<'_>> = buffers
+        .iter()
+        .enumerate()
+        .map(|(i, (buf, _ro))| wgpu::BindGroupEntry {
+            binding: i as u32,
+            resource: buf.as_entire_binding(),
+        })
+        .collect();
+    ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &entries,
+    })
+}
+
+/// Submit a compute pass and wait for completion.
+fn dispatch_and_wait(
+    ctx: &GpuContext,
+    pipeline: &wgpu::ComputePipeline,
+    bind_group: &wgpu::BindGroup,
+    workgroups_x: u32,
+) {
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.dispatch_workgroups(workgroups_x, 1, 1);
+    }
+    ctx.queue.submit(std::iter::once(encoder.finish()));
+    ctx.device.poll(wgpu::MaintainBase::Wait).panic_on_timeout();
+}
+
+/// Read a GPU buffer back to host as bytes.
+fn readback(ctx: &GpuContext, buf: &wgpu::Buffer, size_bytes: u64) -> Vec<u8> {
+    let staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: size_bytes,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    encoder.copy_buffer_to_buffer(buf, 0, &staging, 0, size_bytes);
+    ctx.queue.submit(std::iter::once(encoder.finish()));
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    ctx.device.poll(wgpu::MaintainBase::Wait).panic_on_timeout();
+    let data = slice.get_mapped_range().to_vec();
+    drop(staging);
+    data
+}
+
+// ── WGSL shader sources ───────────────────────────────────────────────────────
+
+// Uniform struct for passing parameters to kernels.
+// All parameter buffers use a simple u32 array layout.
+
+// Binary ops: op_type 0=add 1=sub 2=mul_elem 3=div_elem
+const SHADER_BINARY: &str = r#"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+@group(0) @binding(3) var<storage, read> params: array<u32>; // [n, op_type]
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = params[0];
+    let op = params[1];
+    if i >= n { return; }
+    if op == 0u { out[i] = a[i] + b[i]; }
+    else if op == 1u { out[i] = a[i] - b[i]; }
+    else if op == 2u { out[i] = a[i] * b[i]; }
+    else { out[i] = a[i] / b[i]; }
+}
+"#;
+
+// Scale: out[i] = a[i] * scalar
+// params: [n] as u32, scalar passed as bitcast u32
+const SHADER_SCALE: &str = r#"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>; // [n, scalar_bits]
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = params[0];
+    if i >= n { return; }
+    let scalar = bitcast<f32>(params[1]);
+    out[i] = a[i] * scalar;
+}
+"#;
+
+// Unary ops: op_type 0=neg 1=exp 2=ln 3=log1p 4=sin 5=cos 6=tanh 7=sqrt 8=abs 9=recip
+//            10=erf 11=ceil 12=floor 13=round
+const SHADER_UNARY: &str = r#"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>; // [n, op_type]
+
+// Abramowitz & Stegun polynomial erf (max error ~1.5e-7)
+fn erf_approx(x: f32) -> f32 {
+    let ax = abs(x);
+    let t = 1.0 / (1.0 + 0.3275911 * ax);
+    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    let r = 1.0 - poly * exp(-ax * ax);
+    return select(-r, r, x >= 0.0);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = params[0];
+    let op = params[1];
+    if i >= n { return; }
+    let v = a[i];
+    if op == 0u { out[i] = -v; }
+    else if op == 1u { out[i] = exp(v); }
+    else if op == 2u { out[i] = log(v); }
+    else if op == 3u { out[i] = log(1.0 + v); }
+    else if op == 4u { out[i] = sin(v); }
+    else if op == 5u { out[i] = cos(v); }
+    else if op == 6u { out[i] = tanh(v); }
+    else if op == 7u { out[i] = sqrt(v); }
+    else if op == 8u { out[i] = abs(v); }
+    else if op == 9u { out[i] = 1.0 / v; }
+    else if op == 10u { out[i] = erf_approx(v); }
+    else if op == 11u { out[i] = ceil(v); }
+    else if op == 12u { out[i] = floor(v); }
+    else { out[i] = round(v); }
+}
+"#;
+
+// powf: out[i] = a[i]^p
+const SHADER_POWF: &str = r#"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>; // [n, power_bits]
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = params[0];
+    if i >= n { return; }
+    let p = bitcast<f32>(params[1]);
+    out[i] = pow(a[i], p);
+}
+"#;
+
+// Transpose: out[col*rows + row] = a[row*cols + col]
+const SHADER_TRANSPOSE: &str = r#"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>; // [rows, cols]
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let rows = params[0];
+    let cols = params[1];
+    if i >= rows * cols { return; }
+    let row = i / cols;
+    let col = i % cols;
+    out[col * rows + row] = a[i];
+}
+"#;
+
+// Copy: out[i] = a[i]
+const SHADER_COPY: &str = r#"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>; // [n]
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= params[0] { return; }
+    out[i] = a[i];
+}
+"#;
+
+// Tiled matmul: TILE=16, workgroup 16×16
+const SHADER_MATMUL: &str = r#"
+var<workgroup> tile_a: array<f32, 256>;
+var<workgroup> tile_b: array<f32, 256>;
+
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+@group(0) @binding(3) var<storage, read> params: array<u32>; // [m, k, n, grid_cols]
+
+@compute @workgroup_size(16, 16)
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(workgroup_id) wgid: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+) {
+    let m = params[0];
+    let k = params[1];
+    let n = params[2];
+    let grid_cols = params[3];
+
+    let block_row = wgid.x / grid_cols;
+    let block_col = wgid.x % grid_cols;
+    let ty = lid.y;
+    let tx = lid.x;
+    let row = block_row * 16u + ty;
+    let col = block_col * 16u + tx;
+
+    var sum: f32 = 0.0;
+    let n_tiles = (k + 15u) / 16u;
+
+    for (var t: u32 = 0u; t < n_tiles; t++) {
+        let a_col = t * 16u + tx;
+        if row < m && a_col < k {
+            tile_a[ty * 16u + tx] = a[row * k + a_col];
+        } else {
+            tile_a[ty * 16u + tx] = 0.0;
+        }
+        let b_row = t * 16u + ty;
+        if b_row < k && col < n {
+            tile_b[ty * 16u + tx] = b[b_row * n + col];
+        } else {
+            tile_b[ty * 16u + tx] = 0.0;
+        }
+        workgroupBarrier();
+        for (var kk: u32 = 0u; kk < 16u; kk++) {
+            sum += tile_a[ty * 16u + kk] * tile_b[kk * 16u + tx];
+        }
+        workgroupBarrier();
+    }
+    if row < m && col < n {
+        out[row * n + col] = sum;
+    }
+}
+"#;
+
+// Fill zeros
+const SHADER_FILL_ZEROS: &str = r#"
+@group(0) @binding(0) var<storage, read_write> out: array<f32>;
+@group(0) @binding(1) var<storage, read> params: array<u32>; // [n]
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x >= params[0] { return; }
+    out[gid.x] = 0.0;
+}
+"#;
+
+// Fill scalar
+const SHADER_FILL_SCALAR: &str = r#"
+@group(0) @binding(0) var<storage, read_write> out: array<f32>;
+@group(0) @binding(1) var<storage, read> params: array<u32>; // [n, val_bits]
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x >= params[0] { return; }
+    out[gid.x] = bitcast<f32>(params[1]);
+}
+"#;
+
+// Fill identity matrix
+const SHADER_FILL_IDENTITY: &str = r#"
+@group(0) @binding(0) var<storage, read_write> out: array<f32>;
+@group(0) @binding(1) var<storage, read> params: array<u32>; // [n]
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = params[0];
+    if i >= n * n { return; }
+    let row = i / n;
+    let col = i % n;
+    out[i] = select(0.0, 1.0, row == col);
+}
+"#;
+
+// Reduction sum: each workgroup (256 threads) writes partial sum to out[workgroup_id]
+const SHADER_REDUCE_SUM: &str = r#"
+var<workgroup> shared: array<f32, 256>;
+
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>; // [n]
+
+@compute @workgroup_size(256)
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wgid: vec3<u32>,
+) {
+    let n = params[0];
+    let i = gid.x;
+    let pos = lid.x;
+    shared[pos] = select(0.0, input[i], i < n);
+    workgroupBarrier();
+    if pos == 0u {
+        var acc: f32 = 0.0;
+        for (var k: u32 = 0u; k < 256u; k++) { acc += shared[k]; }
+        out[wgid.x] = acc;
+    }
+}
+"#;
+
+// Reduction max
+const SHADER_REDUCE_MAX: &str = r#"
+var<workgroup> shared: array<f32, 256>;
+
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>; // [n]
+
+@compute @workgroup_size(256)
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wgid: vec3<u32>,
+) {
+    let n = params[0];
+    let i = gid.x;
+    let pos = lid.x;
+    shared[pos] = select(-3.4028235e+38, input[i], i < n);
+    workgroupBarrier();
+    if pos == 0u {
+        var acc: f32 = shared[0];
+        for (var k: u32 = 1u; k < 256u; k++) {
+            if shared[k] > acc { acc = shared[k]; }
+        }
+        out[wgid.x] = acc;
+    }
+}
+"#;
+
+// Reduction min
+const SHADER_REDUCE_MIN: &str = r#"
+var<workgroup> shared: array<f32, 256>;
+
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>; // [n]
+
+@compute @workgroup_size(256)
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wgid: vec3<u32>,
+) {
+    let n = params[0];
+    let i = gid.x;
+    let pos = lid.x;
+    shared[pos] = select(3.4028235e+38, input[i], i < n);
+    workgroupBarrier();
+    if pos == 0u {
+        var acc: f32 = shared[0];
+        for (var k: u32 = 1u; k < 256u; k++) {
+            if shared[k] < acc { acc = shared[k]; }
+        }
+        out[wgid.x] = acc;
+    }
+}
+"#;
+
+// Argmax: each workgroup writes (best_val, best_idx) to vals[wgid] / idxs[wgid]
+const SHADER_ARGMAX: &str = r#"
+var<workgroup> shared_v: array<f32, 256>;
+var<workgroup> shared_i: array<u32, 256>;
+
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> vals: array<f32>;
+@group(0) @binding(2) var<storage, read_write> idxs: array<u32>;
+@group(0) @binding(3) var<storage, read> params: array<u32>; // [n]
+
+@compute @workgroup_size(256)
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wgid: vec3<u32>,
+) {
+    let n = params[0];
+    let i = gid.x;
+    let pos = lid.x;
+    if i < n {
+        shared_v[pos] = input[i];
+        shared_i[pos] = i;
+    } else {
+        shared_v[pos] = -3.4028235e+38;
+        shared_i[pos] = 0xFFFFFFFFu;
+    }
+    workgroupBarrier();
+    if pos == 0u {
+        var bv: f32 = shared_v[0];
+        var bi: u32 = shared_i[0];
+        for (var k: u32 = 1u; k < 256u; k++) {
+            let v = shared_v[k];
+            let ki = shared_i[k];
+            if v > bv || (v == bv && ki < bi) { bv = v; bi = ki; }
+        }
+        vals[wgid.x] = bv;
+        idxs[wgid.x] = bi;
+    }
+}
+"#;
+
+// Argmin
+const SHADER_ARGMIN: &str = r#"
+var<workgroup> shared_v: array<f32, 256>;
+var<workgroup> shared_i: array<u32, 256>;
+
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> vals: array<f32>;
+@group(0) @binding(2) var<storage, read_write> idxs: array<u32>;
+@group(0) @binding(3) var<storage, read> params: array<u32>; // [n]
+
+@compute @workgroup_size(256)
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wgid: vec3<u32>,
+) {
+    let n = params[0];
+    let i = gid.x;
+    let pos = lid.x;
+    if i < n {
+        shared_v[pos] = input[i];
+        shared_i[pos] = i;
+    } else {
+        shared_v[pos] = 3.4028235e+38;
+        shared_i[pos] = 0xFFFFFFFFu;
+    }
+    workgroupBarrier();
+    if pos == 0u {
+        var bv: f32 = shared_v[0];
+        var bi: u32 = shared_i[0];
+        for (var k: u32 = 1u; k < 256u; k++) {
+            let v = shared_v[k];
+            let ki = shared_i[k];
+            if v < bv || (v == bv && ki < bi) { bv = v; bi = ki; }
+        }
+        vals[wgid.x] = bv;
+        idxs[wgid.x] = bi;
+    }
+}
+"#;
+
 // ── GpuStorage ───────────────────────────────────────────────────────────────
+
+/// Row-major GPU-backed matrix.
+///
+/// `buffer` owns device memory (RAII via wgpu's Arc-backed buffer).
+/// `host_cache` is populated lazily on the first `get` call and invalidated on `set`.
+pub struct GpuStorage<T: Scalar> {
+    pub(crate) nrows: usize,
+    pub(crate) ncols: usize,
+    buffer: wgpu::Buffer,
+    host_cache: Mutex<Option<Vec<T>>>,
+}
+
+// SAFETY: wgpu::Buffer is Send+Sync (Arc-backed). Mutex<Option<Vec<T>>> is
+// Send+Sync when T: Send+Sync, which the Scalar bound guarantees.
+unsafe impl<T: Scalar> Send for GpuStorage<T> {}
+unsafe impl<T: Scalar> Sync for GpuStorage<T> {}
 
 /// Lock a mutex, recovering from poisoned state.
 #[inline]
@@ -43,69 +581,59 @@ fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Row-major GPU-backed matrix.
-///
-/// `handle` owns device memory (RAII via Arc-backed ref-count).
-/// `host_cache` is populated lazily on the first `get` call and invalidated on `set`.
-pub struct GpuStorage<T: Scalar> {
-    pub(crate) nrows: usize,
-    pub(crate) ncols: usize,
-    handle: cubecl_runtime::server::Handle,
-    host_cache: Mutex<Option<Vec<T>>>,
-}
-
-// SAFETY: cubecl_runtime::server::Handle is Send+Sync (Arc-backed). Mutex<Option<Vec<T>>> is
-// Send+Sync when T: Send+Sync, which the Scalar bound guarantees.
-unsafe impl<T: Scalar> Send for GpuStorage<T> {}
-unsafe impl<T: Scalar> Sync for GpuStorage<T> {}
-
 impl<T: Scalar> GpuStorage<T> {
-    fn from_handle(nrows: usize, ncols: usize, handle: cubecl_runtime::server::Handle) -> Self {
-        Self { nrows, ncols, handle, host_cache: Mutex::new(None) }
-    }
-
-    fn from_handle_cached(
-        nrows: usize,
-        ncols: usize,
-        handle: cubecl_runtime::server::Handle,
-        cache: Vec<T>,
-    ) -> Self {
-        Self { nrows, ncols, handle, host_cache: Mutex::new(Some(cache)) }
-    }
-
-    fn upload<R: Runtime>(nrows: usize, ncols: usize, data: Vec<T>) -> Self
-    where
-        R::Device: Default,
-    {
-        let client = R::client(&R::Device::default());
-        // SAFETY: T is a Scalar POD type; reinterpreted as bytes for GPU upload.
-        let handle = client.create_from_slice(unsafe { scalar_to_bytes(&data) });
-        Self::from_handle_cached(nrows, ncols, handle, data)
-    }
-
-    fn download<R: Runtime>(&self) -> Vec<T>
-    where
-        R::Device: Default,
-    {
-        let guard = lock_or_recover(&self.host_cache);
-        if let Some(ref v) = *guard {
-            return v.clone();
+    fn from_buffer(nrows: usize, ncols: usize, buffer: wgpu::Buffer) -> Self {
+        Self {
+            nrows,
+            ncols,
+            buffer,
+            host_cache: Mutex::new(None),
         }
-        drop(guard);
-        let client = R::client(&R::Device::default());
-        let bytes = client.read_one(self.handle.clone());
-        // SAFETY: bytes originated from a [T] slice via scalar_to_bytes.
-        unsafe { bytes_to_scalar::<T>(&bytes) }
     }
 
-    fn fill_cache<R: Runtime>(&self) -> std::sync::MutexGuard<'_, Option<Vec<T>>>
-    where
-        R::Device: Default,
-    {
+    fn from_buffer_cached(nrows: usize, ncols: usize, buffer: wgpu::Buffer, cache: Vec<T>) -> Self {
+        Self {
+            nrows,
+            ncols,
+            buffer,
+            host_cache: Mutex::new(Some(cache)),
+        }
+    }
+
+    fn upload(nrows: usize, ncols: usize, data: Vec<T>) -> Self {
+        let ctx = get_context();
+        // SAFETY: T is a Scalar POD type; reinterpreted as bytes for GPU upload.
+        let bytes = unsafe { scalar_to_bytes(&data) };
+        let buffer = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytes,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+            });
+        Self::from_buffer_cached(nrows, ncols, buffer, data)
+    }
+
+    fn empty_buf(n_bytes: u64) -> wgpu::Buffer {
+        let ctx = get_context();
+        ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: n_bytes,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn fill_cache_mut(&self) -> std::sync::MutexGuard<'_, Option<Vec<T>>> {
         let mut guard = lock_or_recover(&self.host_cache);
         if guard.is_none() {
-            let client = R::client(&R::Device::default());
-            let bytes = client.read_one(self.handle.clone());
+            let ctx = get_context();
+            let size_bytes = (self.nrows * self.ncols * core::mem::size_of::<T>()) as u64;
+            let bytes = readback(ctx, &self.buffer, size_bytes);
             // SAFETY: bytes originated from a [T] slice via scalar_to_bytes.
             *guard = Some(unsafe { bytes_to_scalar::<T>(&bytes) });
         }
@@ -113,1378 +641,709 @@ impl<T: Scalar> GpuStorage<T> {
     }
 }
 
-// ── CubeCL kernels ────────────────────────────────────────────────────────────
-// #[allow] attrs suppress false-positive lints from CubeCL proc-macro expansion.
+// ── Params buffer helpers ─────────────────────────────────────────────────────
 
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_add_kernel<F: Float>(lhs: &Array<F>, rhs: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = lhs[i] + rhs[i];
-    }
+fn params_buf(data: &[u32]) -> wgpu::Buffer {
+    let ctx = get_context();
+    let bytes: &[u8] = bytemuck_cast_u32(data);
+    ctx.device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        })
 }
 
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_sub_kernel<F: Float>(lhs: &Array<F>, rhs: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = lhs[i] - rhs[i];
-    }
+fn bytemuck_cast_u32(data: &[u32]) -> &[u8] {
+    // SAFETY: u32 is 4 bytes, plain old data.
+    unsafe { core::slice::from_raw_parts(data.as_ptr().cast::<u8>(), data.len() * 4) }
 }
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_neg_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = -input[i];
-    }
-}
-
-/// Unified scale kernel — scalar arg requires [`CubeElement`] bound.
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_scale_kernel<F: Float + CubeElement>(
-    input: &Array<F>,
-    out: &mut Array<F>,
-    scalar: F,
-) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = input[i] * scalar;
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn transpose_kernel<F: Float>(
-    input: &Array<F>,
-    out: &mut Array<F>,
-    rows: usize,
-    cols: usize,
-) {
-    let i = ABSOLUTE_POS;
-    if i < rows * cols {
-        let row = i / cols;
-        let col = i % cols;
-        out[col * rows + row] = input[i];
-    }
-}
-
-#[allow(clippy::format_push_string, clippy::many_single_char_names)]
-#[cube(launch)]
-fn matmul_naive_kernel<F: Float>(
-    a: &Array<F>,
-    b: &Array<F>,
-    out: &mut Array<F>,
-    k_dim: usize,
-    n_dim: usize,
-) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        let row = i / n_dim;
-        let col = i % n_dim;
-        let mut acc = F::new(0.0_f32);
-        for k in 0..k_dim {
-            acc += a[row * k_dim + k] * b[k * n_dim + col];
-        }
-        out[i] = acc;
-    }
-}
-
-// Tiled matmul using SharedMemory (TILE=16).
-//
-// Mapping: 1D CubeCount (grid_rows*grid_cols blocks), CubeDim=256 (16×16 tile per block).
-// Each block handles one 16×16 tile of C.
-// SharedMemory holds two 16×16 tiles of A and B for cache-friendly accumulation.
-#[allow(clippy::format_push_string, clippy::many_single_char_names)]
-#[cube(launch)]
-fn matmul_tiled_kernel<F: Float>(
-    a: &Array<F>,
-    b: &Array<F>,
-    out: &mut Array<F>,
-    m: usize,
-    k_dim: usize,
-    n_dim: usize,
-    grid_cols: usize,
-) {
-    // ABSOLUTE_POS is the global thread id (type-compatible with usize kernel params).
-    // With CubeDim=256, each block spans 256 consecutive threads.
-    let global_id = ABSOLUTE_POS;
-    let block_id = global_id / 256_usize;
-    let local_id = global_id % 256_usize;
-
-    // Map flat block → 2D tile position
-    let block_row = block_id / grid_cols;
-    let block_col = block_id % grid_cols;
-
-    // Map local thread → 2D position within 16×16 tile
-    let ty = local_id / 16_usize;
-    let tx = local_id % 16_usize;
-
-    // Global row and column for this thread's output element
-    let row = block_row * 16_usize + ty;
-    let col = block_col * 16_usize + tx;
-
-    let mut sum = F::new(0.0_f32);
-
-    // Shared memory for 16×16 tiles of A and B (256 elements each)
-    let mut tile_a = SharedMemory::<F>::new(comptime!(256usize));
-    let mut tile_b = SharedMemory::<F>::new(comptime!(256usize));
-
-    let n_tiles = (k_dim + 15_usize) / 16_usize;
-
-    for t in 0..n_tiles {
-        // Load tile of A: A[row][t*16 + tx]
-        let a_col = t * 16_usize + tx;
-        tile_a[ty * 16_usize + tx] = if row < m && a_col < k_dim {
-            a[row * k_dim + a_col]
-        } else {
-            F::new(0.0_f32)
-        };
-
-        // Load tile of B: B[t*16 + ty][col]
-        let b_row = t * 16_usize + ty;
-        tile_b[ty * 16_usize + tx] = if b_row < k_dim && col < n_dim {
-            b[b_row * n_dim + col]
-        } else {
-            F::new(0.0_f32)
-        };
-
-        sync_cube();
-
-        // Compute partial dot product for this tile
-        for k in 0..16_usize {
-            sum += tile_a[ty * 16_usize + k] * tile_b[k * 16_usize + tx];
-        }
-
-        sync_cube();
-    }
-
-    if row < m && col < n_dim {
-        out[row * n_dim + col] = sum;
-    }
-}
-
-// ── GPU construction kernels (Wave 8) ─────────────────────────────────────────
-
-/// Fill every element with zero.
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn fill_zeros_kernel<F: Float>(out: &mut Array<F>, n: usize) {
-    let i = ABSOLUTE_POS;
-    if i < n {
-        out[i] = F::new(0.0_f32);
-    }
-}
-
-/// Fill every element with a constant scalar value.
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn fill_scalar_kernel<F: Float + CubeElement>(out: &mut Array<F>, n: usize, val: F) {
-    let i = ABSOLUTE_POS;
-    if i < n {
-        out[i] = val;
-    }
-}
-
-/// Fill an n×n matrix as an identity matrix (1 on diagonal, 0 elsewhere).
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn fill_identity_kernel<F: Float + CubeElement>(out: &mut Array<F>, n: usize) {
-    let i = ABSOLUTE_POS;
-    if i < n * n {
-        let row = i / n;
-        let col = i % n;
-        out[i] = if row == col { F::new(1.0_f32) } else { F::new(0.0_f32) };
-    }
-}
-
-// ── Elementwise math kernels (unary) ─────────────────────────────────────────
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_exp_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Exp::exp(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_ln_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Log::ln(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_log1p_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Log1p::log1p(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_sin_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Sin::sin(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_cos_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Cos::cos(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_tanh_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Tanh::tanh(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_sqrt_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Sqrt::sqrt(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_abs_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Abs::abs(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_recip_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Recip::recip(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_erf_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Erf::erf(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_ceil_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Ceil::ceil(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_floor_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Floor::floor(input[i]);
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_round_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Round::round(input[i]);
-    }
-}
-
-// powf: scalar power exponent requires CubeElement bound
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_powf_kernel<F: Float + CubeElement>(
-    input: &Array<F>,
-    out: &mut Array<F>,
-    power: F,
-) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = Powf::powf(input[i], power);
-    }
-}
-
-// ── Elementwise math kernels (binary) ────────────────────────────────────────
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_mul_kernel<F: Float>(lhs: &Array<F>, rhs: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = lhs[i] * rhs[i];
-    }
-}
-
-#[allow(clippy::format_push_string)]
-#[cube(launch)]
-fn elementwise_div_kernel<F: Float>(lhs: &Array<F>, rhs: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = lhs[i] / rhs[i];
-    }
-}
-
-// ── cube_count ────────────────────────────────────────────────────────────────
 
 #[inline]
-fn cube_count(n: usize) -> CubeCount {
+fn workgroups(n: usize) -> u32 {
     #[allow(clippy::cast_possible_truncation)]
-    CubeCount::Static(n.div_ceil(256) as u32, 1, 1)
-}
-
-// ── GPU kernel helpers ────────────────────────────────────────────────────────
-
-fn gpu_binary_kernel<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    h_a: &cubecl_runtime::server::Handle,
-    h_b: &cubecl_runtime::server::Handle,
-    n: usize,
-    is_sub: bool,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let h_out = client.empty(n * std::mem::size_of::<E>());
-    // SAFETY: h_a, h_b, h_out are valid GPU allocations for exactly `n` elements of type E.
-    unsafe {
-        let la = ArrayArg::<R>::from_raw_parts::<E>(h_a, n, 1);
-        let lb = ArrayArg::<R>::from_raw_parts::<E>(h_b, n, 1);
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
-        let res = if is_sub {
-            elementwise_sub_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), la, lb, lout)
-        } else {
-            elementwise_add_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), la, lb, lout)
-        };
-        res.map(|()| h_out).map_err(|e| Error::invalid(format!("GPU binary kernel failed: {e}")))
+    {
+        n.div_ceil(256) as u32
     }
 }
 
-fn gpu_neg_kernel<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    h_in: &cubecl_runtime::server::Handle,
+// ── Core dispatch operations ──────────────────────────────────────────────────
+
+fn run_binary_f32(
+    ctx: &GpuContext,
+    a: &wgpu::Buffer,
+    b: &wgpu::Buffer,
     n: usize,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let h_out = client.empty(n * std::mem::size_of::<E>());
-    // SAFETY: h_in and h_out are valid GPU allocations for exactly `n` elements of type E.
-    unsafe {
-        let lin = ArrayArg::<R>::from_raw_parts::<E>(h_in, n, 1);
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
-        elementwise_neg_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), lin, lout)
-            .map(|()| h_out)
-            .map_err(|e| Error::invalid(format!("GPU neg kernel failed: {e}")))
-    }
+    op_type: u32,
+) -> wgpu::Buffer {
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[n as u32, op_type]);
+    let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
+    let pipeline = create_pipeline(ctx, SHADER_BINARY);
+    let bg = bind_group(
+        ctx,
+        &pipeline,
+        &[(a, true), (b, true), (&out, false), (&params, true)],
+    );
+    dispatch_and_wait(ctx, &pipeline, &bg, workgroups(n));
+    out
 }
 
-fn gpu_scale_kernel<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    h_in: &cubecl_runtime::server::Handle,
-    n: usize,
-    scalar: E,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let h_out = client.empty(n * std::mem::size_of::<E>());
-    // SAFETY: h_in and h_out are valid GPU allocations for exactly `n` elements of type E.
-    unsafe {
-        let lin = ArrayArg::<R>::from_raw_parts::<E>(h_in, n, 1);
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
-        elementwise_scale_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), lin, lout, ScalarArg::new(scalar))
-            .map(|()| h_out)
-            .map_err(|e| Error::invalid(format!("GPU scale kernel failed: {e}")))
-    }
+fn run_scale_f32(ctx: &GpuContext, a: &wgpu::Buffer, n: usize, scalar: f32) -> wgpu::Buffer {
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[n as u32, scalar.to_bits()]);
+    let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
+    let pipeline = create_pipeline(ctx, SHADER_SCALE);
+    let bg = bind_group(ctx, &pipeline, &[(a, true), (&out, false), (&params, true)]);
+    dispatch_and_wait(ctx, &pipeline, &bg, workgroups(n));
+    out
 }
 
-fn gpu_transpose_kernel<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    h_in: &cubecl_runtime::server::Handle,
-    rows: usize,
-    cols: usize,
-) -> Result<cubecl_runtime::server::Handle, Error> {
+fn run_unary_f32(ctx: &GpuContext, a: &wgpu::Buffer, n: usize, op_type: u32) -> wgpu::Buffer {
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[n as u32, op_type]);
+    let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
+    let pipeline = create_pipeline(ctx, SHADER_UNARY);
+    let bg = bind_group(ctx, &pipeline, &[(a, true), (&out, false), (&params, true)]);
+    dispatch_and_wait(ctx, &pipeline, &bg, workgroups(n));
+    out
+}
+
+fn run_powf_f32(ctx: &GpuContext, a: &wgpu::Buffer, n: usize, power: f32) -> wgpu::Buffer {
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[n as u32, power.to_bits()]);
+    let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
+    let pipeline = create_pipeline(ctx, SHADER_POWF);
+    let bg = bind_group(ctx, &pipeline, &[(a, true), (&out, false), (&params, true)]);
+    dispatch_and_wait(ctx, &pipeline, &bg, workgroups(n));
+    out
+}
+
+fn run_transpose_f32(ctx: &GpuContext, a: &wgpu::Buffer, rows: usize, cols: usize) -> wgpu::Buffer {
     let n = rows * cols;
-    let h_out = client.empty(n * std::mem::size_of::<E>());
-    // SAFETY: h_in and h_out are valid GPU allocations for exactly `n` elements of type E.
-    unsafe {
-        let lin = ArrayArg::<R>::from_raw_parts::<E>(h_in, n, 1);
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
-        transpose_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), lin, lout, ScalarArg::new(rows), ScalarArg::new(cols))
-            .map(|()| h_out)
-            .map_err(|e| Error::invalid(format!("GPU transpose kernel failed: {e}")))
-    }
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[rows as u32, cols as u32]);
+    let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
+    let pipeline = create_pipeline(ctx, SHADER_TRANSPOSE);
+    let bg = bind_group(ctx, &pipeline, &[(a, true), (&out, false), (&params, true)]);
+    dispatch_and_wait(ctx, &pipeline, &bg, workgroups(n));
+    out
 }
 
-/// Tiled matmul using SharedMemory (TILE=16). Preferred over naive for large matrices.
-fn gpu_matmul_tiled_kernel<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    h_a: &cubecl_runtime::server::Handle,
-    h_b: &cubecl_runtime::server::Handle,
+fn run_copy_f32(ctx: &GpuContext, a: &wgpu::Buffer, n: usize) -> wgpu::Buffer {
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[n as u32]);
+    let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
+    let pipeline = create_pipeline(ctx, SHADER_COPY);
+    let bg = bind_group(ctx, &pipeline, &[(a, true), (&out, false), (&params, true)]);
+    dispatch_and_wait(ctx, &pipeline, &bg, workgroups(n));
+    out
+}
+
+fn run_matmul_f32(
+    ctx: &GpuContext,
+    a: &wgpu::Buffer,
+    b: &wgpu::Buffer,
     m: usize,
     k: usize,
     n: usize,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let out_n = m * n;
-    let h_out = client.empty(out_n * std::mem::size_of::<E>());
+) -> wgpu::Buffer {
     let grid_cols = n.div_ceil(16);
     let grid_rows = m.div_ceil(16);
     let grid_size = grid_rows * grid_cols;
-    // SAFETY: h_a, h_b, h_out are valid GPU allocations of correct sizes.
-    unsafe {
-        let la = ArrayArg::<R>::from_raw_parts::<E>(h_a, m * k, 1);
-        let lb = ArrayArg::<R>::from_raw_parts::<E>(h_b, k * n, 1);
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, out_n, 1);
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[m as u32, k as u32, n as u32, grid_cols as u32]);
+    let out = GpuStorage::<f32>::empty_buf((m * n * 4) as u64);
+    let pipeline = create_pipeline(ctx, SHADER_MATMUL);
+    let bg = bind_group(
+        ctx,
+        &pipeline,
+        &[(a, true), (b, true), (&out, false), (&params, true)],
+    );
+    // Matmul uses workgroup_size(16,16); dispatch grid_size workgroups
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bg, &[]);
         #[allow(clippy::cast_possible_truncation)]
-        matmul_tiled_kernel::launch::<E, R>(
-            client,
-            CubeCount::Static(grid_size as u32, 1, 1),
-            CubeDim::new_1d(256),
-            la, lb, lout,
-            ScalarArg::new(m),
-            ScalarArg::new(k),
-            ScalarArg::new(n),
-            ScalarArg::new(grid_cols),
-        )
-        .map(|()| h_out)
-        .map_err(|e| Error::invalid(format!("GPU tiled matmul failed: {e}")))
+        pass.dispatch_workgroups(grid_size as u32, 1, 1);
     }
+    ctx.queue.submit(std::iter::once(encoder.finish()));
+    ctx.device.poll(wgpu::MaintainBase::Wait).panic_on_timeout();
+    out
 }
 
-// ── GPU construction kernel helpers (Wave 8) ──────────────────────────────────
+fn run_fill_zeros_f32(ctx: &GpuContext, n: usize) -> wgpu::Buffer {
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[n as u32]);
+    let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
+    let pipeline = create_pipeline(ctx, SHADER_FILL_ZEROS);
+    let bg = bind_group(ctx, &pipeline, &[(&out, false), (&params, true)]);
+    dispatch_and_wait(ctx, &pipeline, &bg, workgroups(n));
+    out
+}
 
-fn gpu_zeros_kernel_helper<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
+fn run_fill_scalar_f32(ctx: &GpuContext, n: usize, val: f32) -> wgpu::Buffer {
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[n as u32, val.to_bits()]);
+    let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
+    let pipeline = create_pipeline(ctx, SHADER_FILL_SCALAR);
+    let bg = bind_group(ctx, &pipeline, &[(&out, false), (&params, true)]);
+    dispatch_and_wait(ctx, &pipeline, &bg, workgroups(n));
+    out
+}
+
+fn run_fill_identity_f32(ctx: &GpuContext, n: usize) -> wgpu::Buffer {
+    let total = n * n;
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[n as u32]);
+    let out = GpuStorage::<f32>::empty_buf((total * 4) as u64);
+    let pipeline = create_pipeline(ctx, SHADER_FILL_IDENTITY);
+    let bg = bind_group(ctx, &pipeline, &[(&out, false), (&params, true)]);
+    dispatch_and_wait(ctx, &pipeline, &bg, workgroups(total));
+    out
+}
+
+// Reduction helpers — return raw bytes of partial results
+
+fn run_reduce_f32(ctx: &GpuContext, a: &wgpu::Buffer, n: usize, shader: &str) -> Vec<f32> {
+    let num_blocks = n.div_ceil(256);
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[n as u32]);
+    let out = GpuStorage::<f32>::empty_buf((num_blocks * 4) as u64);
+    let pipeline = create_pipeline(ctx, shader);
+    let bg = bind_group(ctx, &pipeline, &[(a, true), (&out, false), (&params, true)]);
+    #[allow(clippy::cast_possible_truncation)]
+    dispatch_and_wait(ctx, &pipeline, &bg, num_blocks as u32);
+    let bytes = readback(ctx, &out, (num_blocks * 4) as u64);
+    // SAFETY: bytes from f32 buffer.
+    unsafe { bytes_to_scalar::<f32>(&bytes) }
+}
+
+fn run_argreduce_f32(
+    ctx: &GpuContext,
+    a: &wgpu::Buffer,
     n: usize,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let h_out = client.empty(n * core::mem::size_of::<E>());
-    // SAFETY: h_out is a valid GPU allocation for `n` elements of type E.
-    unsafe {
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
-        fill_zeros_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), lout, ScalarArg::new(n))
-            .map(|()| h_out)
-            .map_err(|e| Error::invalid(format!("GPU zeros kernel failed: {e}")))
-    }
+    shader: &str,
+) -> (Vec<f32>, Vec<u32>) {
+    let num_blocks = n.div_ceil(256);
+    #[allow(clippy::cast_possible_truncation)]
+    let params = params_buf(&[n as u32]);
+    let out_vals = GpuStorage::<f32>::empty_buf((num_blocks * 4) as u64);
+    let out_idxs = GpuStorage::<f32>::empty_buf((num_blocks * 4) as u64);
+    let pipeline = create_pipeline(ctx, shader);
+    let bg = bind_group(
+        ctx,
+        &pipeline,
+        &[
+            (a, true),
+            (&out_vals, false),
+            (&out_idxs, false),
+            (&params, true),
+        ],
+    );
+    #[allow(clippy::cast_possible_truncation)]
+    dispatch_and_wait(ctx, &pipeline, &bg, num_blocks as u32);
+    let vbytes = readback(ctx, &out_vals, (num_blocks * 4) as u64);
+    let ibytes = readback(ctx, &out_idxs, (num_blocks * 4) as u64);
+    // SAFETY: bytes from valid f32 buffer.
+    let vals: Vec<f32> = unsafe { bytes_to_scalar::<f32>(&vbytes) };
+    let idxs: Vec<u32> = bytes_to_u32(&ibytes);
+    (vals, idxs)
 }
 
-fn gpu_fill_kernel_helper<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    n: usize,
-    val: E,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let h_out = client.empty(n * core::mem::size_of::<E>());
-    // SAFETY: h_out is a valid GPU allocation for `n` elements of type E.
-    unsafe {
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
-        fill_scalar_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), lout, ScalarArg::new(n), ScalarArg::new(val))
-            .map(|()| h_out)
-            .map_err(|e| Error::invalid(format!("GPU fill kernel failed: {e}")))
-    }
+// ── pub(crate) GPU dispatch functions ────────────────────────────────────────
+
+// TypeId guard: GPU only supports f32 (f64/c32/c64 → unreachable!())
+
+pub(crate) fn gpu_zeros<T: Scalar>(nrows: usize, ncols: usize) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let buf = run_fill_zeros_f32(ctx, nrows * ncols);
+    GpuStorage::from_buffer(nrows, ncols, buf)
 }
 
-fn gpu_identity_kernel_helper<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    n: usize,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let h_out = client.empty(n * n * core::mem::size_of::<E>());
-    // SAFETY: h_out is a valid GPU allocation for `n*n` elements of type E.
-    unsafe {
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n * n, 1);
-        fill_identity_kernel::launch::<E, R>(client, cube_count(n * n), CubeDim::new_1d(256), lout, ScalarArg::new(n))
-            .map(|()| h_out)
-            .map_err(|e| Error::invalid(format!("GPU identity kernel failed: {e}")))
-    }
+pub(crate) fn gpu_fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    // SAFETY: TypeId confirmed T == f32; reinterpret bits via pointer cast.
+    #[allow(clippy::borrow_as_ptr, clippy::ptr_cast_constness)]
+    let f32_val: f32 = unsafe { *std::ptr::from_ref(&val).cast::<f32>() };
+    let buf = run_fill_scalar_f32(ctx, nrows * ncols, f32_val);
+    GpuStorage::from_buffer(nrows, ncols, buf)
 }
 
-// ── Unary math kernel helpers (macro to reduce boilerplate) ──────────────────
-
-macro_rules! impl_gpu_unary_math_helper {
-    ($name:ident, $kernel:ident) => {
-        fn $name<E: Float + CubeElement, R: Runtime>(
-            client: &ComputeClient<R>,
-            h_in: &cubecl_runtime::server::Handle,
-            n: usize,
-        ) -> Result<cubecl_runtime::server::Handle, Error> {
-            let h_out = client.empty(n * std::mem::size_of::<E>());
-            // SAFETY: h_in and h_out are valid GPU allocations for exactly `n` elements of type E.
-            unsafe {
-                let lin = ArrayArg::<R>::from_raw_parts::<E>(h_in, n, 1);
-                let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
-                $kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), lin, lout)
-                    .map(|()| h_out)
-                    .map_err(|e| {
-                        Error::invalid(format!("GPU {} failed: {e}", stringify!($name)))
-                    })
-            }
-        }
-    };
+pub(crate) fn gpu_identity<T: Scalar>(n: usize) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let buf = run_fill_identity_f32(ctx, n);
+    GpuStorage::from_buffer(n, n, buf)
 }
 
-impl_gpu_unary_math_helper!(gpu_exp_helper, elementwise_exp_kernel);
-impl_gpu_unary_math_helper!(gpu_ln_helper, elementwise_ln_kernel);
-impl_gpu_unary_math_helper!(gpu_log1p_helper, elementwise_log1p_kernel);
-impl_gpu_unary_math_helper!(gpu_sin_helper, elementwise_sin_kernel);
-impl_gpu_unary_math_helper!(gpu_cos_helper, elementwise_cos_kernel);
-impl_gpu_unary_math_helper!(gpu_tanh_helper, elementwise_tanh_kernel);
-impl_gpu_unary_math_helper!(gpu_sqrt_helper, elementwise_sqrt_kernel);
-impl_gpu_unary_math_helper!(gpu_abs_helper, elementwise_abs_kernel);
-impl_gpu_unary_math_helper!(gpu_recip_helper, elementwise_recip_kernel);
-impl_gpu_unary_math_helper!(gpu_erf_helper, elementwise_erf_kernel);
-impl_gpu_unary_math_helper!(gpu_ceil_helper, elementwise_ceil_kernel);
-impl_gpu_unary_math_helper!(gpu_floor_helper, elementwise_floor_kernel);
-impl_gpu_unary_math_helper!(gpu_round_helper, elementwise_round_kernel);
-
-// ── Binary math kernel helpers ────────────────────────────────────────────────
-
-fn gpu_mul_elem_helper<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    h_a: &cubecl_runtime::server::Handle,
-    h_b: &cubecl_runtime::server::Handle,
-    n: usize,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let h_out = client.empty(n * std::mem::size_of::<E>());
-    // SAFETY: h_a, h_b, h_out are valid GPU allocations for exactly `n` elements of type E.
-    unsafe {
-        let la = ArrayArg::<R>::from_raw_parts::<E>(h_a, n, 1);
-        let lb = ArrayArg::<R>::from_raw_parts::<E>(h_b, n, 1);
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
-        elementwise_mul_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), la, lb, lout)
-            .map(|()| h_out)
-            .map_err(|e| Error::invalid(format!("GPU mul_elem failed: {e}")))
-    }
-}
-
-fn gpu_div_elem_helper<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    h_a: &cubecl_runtime::server::Handle,
-    h_b: &cubecl_runtime::server::Handle,
-    n: usize,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let h_out = client.empty(n * std::mem::size_of::<E>());
-    // SAFETY: h_a, h_b, h_out are valid GPU allocations for exactly `n` elements of type E.
-    unsafe {
-        let la = ArrayArg::<R>::from_raw_parts::<E>(h_a, n, 1);
-        let lb = ArrayArg::<R>::from_raw_parts::<E>(h_b, n, 1);
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
-        elementwise_div_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), la, lb, lout)
-            .map(|()| h_out)
-            .map_err(|e| Error::invalid(format!("GPU div_elem failed: {e}")))
-    }
-}
-
-fn gpu_powf_helper<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    h_in: &cubecl_runtime::server::Handle,
-    n: usize,
-    power: E,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let h_out = client.empty(n * std::mem::size_of::<E>());
-    // SAFETY: h_in and h_out are valid GPU allocations for exactly `n` elements of type E.
-    unsafe {
-        let lin = ArrayArg::<R>::from_raw_parts::<E>(h_in, n, 1);
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
-        elementwise_powf_kernel::launch::<E, R>(
-            client,
-            cube_count(n),
-            CubeDim::new_1d(256),
-            lin,
-            lout,
-            ScalarArg::new(power),
-        )
-        .map(|()| h_out)
-        .map_err(|e| Error::invalid(format!("GPU powf failed: {e}")))
-    }
-}
-
-// ── Unary math dispatch macro ─────────────────────────────────────────────────
-// TypeId dispatch: f32/f64 → GPU kernels, c32/c64 → CPU fallback via MathOps.
-
-macro_rules! impl_gpu_unary_math_dispatch {
-    ($name:ident, $helper:ident, $cpu_method:ident) => {
-        pub(crate) fn $name<T: Scalar, R: Runtime>(a: &GpuStorage<T>) -> GpuStorage<T>
-        where
-            R::Device: Default,
-        {
-            let n = a.nrows * a.ncols;
-            let client = R::client(&R::Device::default());
-            if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-                let h = $helper::<f32, R>(&client, &a.handle, n)
-                    .unwrap_or_else(|e| panic!("{e}"));
-                GpuStorage::from_handle(a.nrows, a.ncols, h)
-            } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-                let h = $helper::<f64, R>(&client, &a.handle, n)
-                    .unwrap_or_else(|e| panic!("{e}"));
-                GpuStorage::from_handle(a.nrows, a.ncols, h)
-            } else {
-                // c32/c64: CPU fallback via MathOps
-                let ha = a.download::<R>();
-                let data: Vec<T> = ha.iter()
-                    .map(|&x| crate::backend::MathOps::$cpu_method(x))
-                    .collect();
-                GpuStorage::upload::<R>(a.nrows, a.ncols, data)
-            }
-        }
-    };
-}
-
-impl_gpu_unary_math_dispatch!(gpu_exp, gpu_exp_helper, math_exp);
-impl_gpu_unary_math_dispatch!(gpu_ln, gpu_ln_helper, math_ln);
-impl_gpu_unary_math_dispatch!(gpu_log1p, gpu_log1p_helper, math_log1p);
-impl_gpu_unary_math_dispatch!(gpu_sin, gpu_sin_helper, math_sin);
-impl_gpu_unary_math_dispatch!(gpu_cos, gpu_cos_helper, math_cos);
-impl_gpu_unary_math_dispatch!(gpu_tanh, gpu_tanh_helper, math_tanh);
-impl_gpu_unary_math_dispatch!(gpu_sqrt, gpu_sqrt_helper, math_sqrt);
-impl_gpu_unary_math_dispatch!(gpu_abs, gpu_abs_helper, math_abs);
-impl_gpu_unary_math_dispatch!(gpu_recip, gpu_recip_helper, math_recip);
-impl_gpu_unary_math_dispatch!(gpu_erf, gpu_erf_helper, math_erf);
-impl_gpu_unary_math_dispatch!(gpu_ceil, gpu_ceil_helper, math_ceil);
-impl_gpu_unary_math_dispatch!(gpu_floor, gpu_floor_helper, math_floor);
-impl_gpu_unary_math_dispatch!(gpu_round, gpu_round_helper, math_round);
-
-// ── Binary math dispatch functions ───────────────────────────────────────────
-
-pub(crate) fn gpu_mul_elem<T: Scalar, R: Runtime>(
-    a: &GpuStorage<T>,
-    b: &GpuStorage<T>,
-) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let n = a.nrows * a.ncols;
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let h = gpu_mul_elem_helper::<f32, R>(&client, &a.handle, &b.handle, n)
-            .unwrap_or_else(|e| panic!("{e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let h = gpu_mul_elem_helper::<f64, R>(&client, &a.handle, &b.handle, n)
-            .unwrap_or_else(|e| panic!("{e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else {
-        let ha = a.download::<R>();
-        let hb = b.download::<R>();
-        let data: Vec<T> = ha.iter()
-            .zip(hb.iter())
-            .map(|(&x, &y)| crate::backend::MathOps::math_mul(x, y))
-            .collect();
-        GpuStorage::upload::<R>(a.nrows, a.ncols, data)
-    }
-}
-
-pub(crate) fn gpu_div_elem<T: Scalar, R: Runtime>(
-    a: &GpuStorage<T>,
-    b: &GpuStorage<T>,
-) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let n = a.nrows * a.ncols;
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let h = gpu_div_elem_helper::<f32, R>(&client, &a.handle, &b.handle, n)
-            .unwrap_or_else(|e| panic!("{e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let h = gpu_div_elem_helper::<f64, R>(&client, &a.handle, &b.handle, n)
-            .unwrap_or_else(|e| panic!("{e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else {
-        let ha = a.download::<R>();
-        let hb = b.download::<R>();
-        let data: Vec<T> = ha.iter()
-            .zip(hb.iter())
-            .map(|(&x, &y)| crate::backend::MathOps::math_div(x, y))
-            .collect();
-        GpuStorage::upload::<R>(a.nrows, a.ncols, data)
-    }
-}
-
-pub(crate) fn gpu_powf<T: Scalar, R: Runtime>(a: &GpuStorage<T>, p: T) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let n = a.nrows * a.ncols;
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let power = (&p as &dyn std::any::Any)
-            .downcast_ref::<f32>()
-            .copied()
-            .expect("T is f32");
-        let h = gpu_powf_helper::<f32, R>(&client, &a.handle, n, power)
-            .unwrap_or_else(|e| panic!("{e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let power = (&p as &dyn std::any::Any)
-            .downcast_ref::<f64>()
-            .copied()
-            .expect("T is f64");
-        let h = gpu_powf_helper::<f64, R>(&client, &a.handle, n, power)
-            .unwrap_or_else(|e| panic!("{e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else {
-        let ha = a.download::<R>();
-        let data: Vec<T> = ha.iter()
-            .map(|&x| crate::backend::MathOps::math_powf(x, p))
-            .collect();
-        GpuStorage::upload::<R>(a.nrows, a.ncols, data)
-    }
-}
-
-// ── Public gpu_* dispatch functions ──────────────────────────────────────────
-// TypeId dispatch: f32/f64 -> GPU kernels, c32/c64 -> CPU fallback.
-
-pub(crate) fn gpu_zeros<T: Scalar, R: Runtime>(nrows: usize, ncols: usize) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let n = nrows * ncols;
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let h = gpu_zeros_kernel_helper::<f32, R>(&client, n)
-            .unwrap_or_else(|e| panic!("GPU zeros failed: {e}"));
-        GpuStorage::from_handle(nrows, ncols, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let h = gpu_zeros_kernel_helper::<f64, R>(&client, n)
-            .unwrap_or_else(|e| panic!("GPU zeros failed: {e}"));
-        GpuStorage::from_handle(nrows, ncols, h)
-    } else {
-        let data = vec![<T as faer_traits::ComplexField>::zero_impl(); n];
-        GpuStorage::upload::<R>(nrows, ncols, data)
-    }
-}
-
-/// Create a GPU tensor filled with a scalar constant (Wave 8: fill kernel).
-///
-/// For `f32`/`f64`: uses a GPU fill kernel (no host intermediary).
-/// For `c32`/`c64`: uploads from host.
-pub(crate) fn gpu_fill<T: Scalar, R: Runtime>(nrows: usize, ncols: usize, val: T) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let n = nrows * ncols;
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        // SAFETY: TypeId confirmed T == f32.
-        let f32_val: f32 = unsafe { *(&val as *const T as *const f32) };
-        let h = gpu_fill_kernel_helper::<f32, R>(&client, n, f32_val)
-            .unwrap_or_else(|e| panic!("GPU fill failed: {e}"));
-        GpuStorage::from_handle(nrows, ncols, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let f64_val: f64 = unsafe { *(&val as *const T as *const f64) };
-        let h = gpu_fill_kernel_helper::<f64, R>(&client, n, f64_val)
-            .unwrap_or_else(|e| panic!("GPU fill failed: {e}"));
-        GpuStorage::from_handle(nrows, ncols, h)
-    } else {
-        let data = vec![val; n];
-        GpuStorage::upload::<R>(nrows, ncols, data)
-    }
-}
-
-/// Create an n×n identity matrix on the GPU (Wave 8: identity kernel).
-///
-/// For `f32`/`f64`: uses a GPU identity kernel (no host intermediary).
-/// For `c32`/`c64`: uploads from host.
-pub(crate) fn gpu_identity<T: Scalar, R: Runtime>(n: usize) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let h = gpu_identity_kernel_helper::<f32, R>(&client, n)
-            .unwrap_or_else(|e| panic!("GPU identity failed: {e}"));
-        GpuStorage::from_handle(n, n, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let h = gpu_identity_kernel_helper::<f64, R>(&client, n)
-            .unwrap_or_else(|e| panic!("GPU identity failed: {e}"));
-        GpuStorage::from_handle(n, n, h)
-    } else {
-        let zero = <T as faer_traits::ComplexField>::zero_impl();
-        let one = <T as faer_traits::ComplexField>::one_impl();
-        let data: Vec<T> = (0..n * n).map(|i| if i / n == i % n { one } else { zero }).collect();
-        GpuStorage::upload::<R>(n, n, data)
-    }
-}
-
-pub(crate) fn gpu_from_fn<T: Scalar, R: Runtime>(
+pub(crate) fn gpu_from_fn<T: Scalar>(
     nrows: usize,
     ncols: usize,
     mut f: impl FnMut(usize, usize) -> T,
-) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let data: Vec<T> = (0..nrows * ncols).map(|i| f(i / ncols, i % ncols)).collect();
-    GpuStorage::upload::<R>(nrows, ncols, data)
+) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let data: Vec<T> = (0..nrows * ncols)
+        .map(|i| f(i / ncols, i % ncols))
+        .collect();
+    GpuStorage::upload(nrows, ncols, data)
 }
 
-pub(crate) fn gpu_get<T: Scalar, R: Runtime>(s: &GpuStorage<T>, r: usize, c: usize) -> T
-where
-    R::Device: Default,
-{
-    let guard = s.fill_cache::<R>();
+pub(crate) fn gpu_get<T: Scalar>(s: &GpuStorage<T>, r: usize, c: usize) -> T {
+    assert_is_f32::<T>();
+    let guard = s.fill_cache_mut();
     guard.as_ref().expect("cache populated")[r * s.ncols + c]
 }
 
-pub(crate) fn gpu_set<T: Scalar, R: Runtime>(
-    s: &mut GpuStorage<T>,
-    r: usize,
-    c: usize,
-    v: T,
-) where
-    R::Device: Default,
-{
+pub(crate) fn gpu_set<T: Scalar>(s: &mut GpuStorage<T>, r: usize, c: usize, v: T) {
+    assert_is_f32::<T>();
     {
-        let mut guard = s.fill_cache::<R>();
+        let mut guard = s.fill_cache_mut();
         guard.as_mut().expect("cache populated")[r * s.ncols + c] = v;
     }
     let guard = lock_or_recover(&s.host_cache);
     let data = guard.as_ref().expect("cache populated");
-    let client = R::client(&R::Device::default());
+    let ctx = get_context();
     // SAFETY: data is a valid [T] slice; reinterpreted as bytes for upload.
-    s.handle = client.create_from_slice(unsafe { scalar_to_bytes(data) });
+    let bytes = unsafe { scalar_to_bytes(data) };
+    s.buffer = ctx
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytes,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+        });
 }
 
-pub(crate) fn gpu_clone<T: Scalar, R: Runtime>(s: &GpuStorage<T>) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let guard = lock_or_recover(&s.host_cache);
-    let client = R::client(&R::Device::default());
-    let new_handle = if let Some(ref data) = *guard {
-        // SAFETY: data is a valid [T] slice.
-        client.create_from_slice(unsafe { scalar_to_bytes(data) })
-    } else {
-        drop(guard);
-        let bytes = client.read_one(s.handle.clone());
-        client.create_from_slice(&bytes)
-    };
-    GpuStorage::from_handle(s.nrows, s.ncols, new_handle)
+pub(crate) fn gpu_clone<T: Scalar>(s: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n = s.nrows * s.ncols;
+    let buf = run_copy_f32(ctx, &s.buffer, n);
+    GpuStorage::from_buffer(s.nrows, s.ncols, buf)
 }
 
-pub(crate) fn gpu_add<T: Scalar, R: Runtime>(
-    a: &GpuStorage<T>,
-    b: &GpuStorage<T>,
-) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
+pub(crate) fn gpu_add<T: Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
     let n = a.nrows * a.ncols;
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let h = gpu_binary_kernel::<f32, R>(&client, &a.handle, &b.handle, n, false)
-            .unwrap_or_else(|e| panic!("GPU add failed: {e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let h = gpu_binary_kernel::<f64, R>(&client, &a.handle, &b.handle, n, false)
-            .unwrap_or_else(|e| panic!("GPU add failed: {e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else {
-        let ha = a.download::<R>();
-        let hb = b.download::<R>();
-        let data: Vec<T> = ha.iter().zip(hb.iter()).map(|(&x, &y)| x + y).collect();
-        GpuStorage::upload::<R>(a.nrows, a.ncols, data)
-    }
+    let buf = run_binary_f32(ctx, &a.buffer, &b.buffer, n, 0);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
-pub(crate) fn gpu_sub<T: Scalar, R: Runtime>(
-    a: &GpuStorage<T>,
-    b: &GpuStorage<T>,
-) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
+pub(crate) fn gpu_sub<T: Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
     let n = a.nrows * a.ncols;
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let h = gpu_binary_kernel::<f32, R>(&client, &a.handle, &b.handle, n, true)
-            .unwrap_or_else(|e| panic!("GPU sub failed: {e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let h = gpu_binary_kernel::<f64, R>(&client, &a.handle, &b.handle, n, true)
-            .unwrap_or_else(|e| panic!("GPU sub failed: {e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else {
-        let ha = a.download::<R>();
-        let hb = b.download::<R>();
-        let data: Vec<T> = ha.iter().zip(hb.iter()).map(|(&x, &y)| x - y).collect();
-        GpuStorage::upload::<R>(a.nrows, a.ncols, data)
-    }
+    let buf = run_binary_f32(ctx, &a.buffer, &b.buffer, n, 1);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
-pub(crate) fn gpu_neg<T: Scalar, R: Runtime>(a: &GpuStorage<T>) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
+pub(crate) fn gpu_neg<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
     let n = a.nrows * a.ncols;
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let h = gpu_neg_kernel::<f32, R>(&client, &a.handle, n)
-            .unwrap_or_else(|e| panic!("GPU neg failed: {e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let h = gpu_neg_kernel::<f64, R>(&client, &a.handle, n)
-            .unwrap_or_else(|e| panic!("GPU neg failed: {e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else {
-        let ha = a.download::<R>();
-        let data: Vec<T> = ha.iter().map(|&x| -x).collect();
-        GpuStorage::upload::<R>(a.nrows, a.ncols, data)
-    }
+    let buf = run_unary_f32(ctx, &a.buffer, n, 0); // op 0 = neg
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
-pub(crate) fn gpu_scale<T: Scalar, R: Runtime>(a: &GpuStorage<T>, s: T) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
+pub(crate) fn gpu_scale<T: Scalar>(a: &GpuStorage<T>, s: T) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
     let n = a.nrows * a.ncols;
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let scalar = (&s as &dyn std::any::Any)
-            .downcast_ref::<f32>()
-            .copied()
-            .expect("T is f32");
-        let h = gpu_scale_kernel::<f32, R>(&client, &a.handle, n, scalar)
-            .unwrap_or_else(|e| panic!("GPU scale failed: {e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let scalar = (&s as &dyn std::any::Any)
-            .downcast_ref::<f64>()
-            .copied()
-            .expect("T is f64");
-        let h = gpu_scale_kernel::<f64, R>(&client, &a.handle, n, scalar)
-            .unwrap_or_else(|e| panic!("GPU scale failed: {e}"));
-        GpuStorage::from_handle(a.nrows, a.ncols, h)
-    } else {
-        let ha = a.download::<R>();
-        let data: Vec<T> = ha.iter().map(|&x| x * s).collect();
-        GpuStorage::upload::<R>(a.nrows, a.ncols, data)
-    }
+    // SAFETY: TypeId confirmed T == f32.
+    #[allow(clippy::borrow_as_ptr, clippy::ptr_cast_constness)]
+    let scalar: f32 = unsafe { *std::ptr::from_ref(&s).cast::<f32>() };
+    let buf = run_scale_f32(ctx, &a.buffer, n, scalar);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
-pub(crate) fn gpu_transpose<T: Scalar, R: Runtime>(a: &GpuStorage<T>) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let h = gpu_transpose_kernel::<f32, R>(&client, &a.handle, a.nrows, a.ncols)
-            .unwrap_or_else(|e| panic!("GPU transpose failed: {e}"));
-        GpuStorage::from_handle(a.ncols, a.nrows, h)
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let h = gpu_transpose_kernel::<f64, R>(&client, &a.handle, a.nrows, a.ncols)
-            .unwrap_or_else(|e| panic!("GPU transpose failed: {e}"));
-        GpuStorage::from_handle(a.ncols, a.nrows, h)
-    } else {
-        let (rows, cols) = (a.nrows, a.ncols);
-        let host = a.download::<R>();
-        let zero = <T as faer_traits::ComplexField>::zero_impl();
-        let mut buf = vec![zero; rows * cols];
-        for r in 0..rows {
-            for c in 0..cols {
-                buf[c * rows + r] = host[r * cols + c];
-            }
-        }
-        GpuStorage::upload::<R>(cols, rows, buf)
-    }
+pub(crate) fn gpu_transpose<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let buf = run_transpose_f32(ctx, &a.buffer, a.nrows, a.ncols);
+    GpuStorage::from_buffer(a.ncols, a.nrows, buf)
 }
 
-pub(crate) fn gpu_matmul<T: Scalar, R: Runtime>(
-    out: &mut GpuStorage<T>,
-    a: &GpuStorage<T>,
-    b: &GpuStorage<T>,
-) where
-    R::Device: Default,
-{
+pub(crate) fn gpu_matmul<T: Scalar>(out: &mut GpuStorage<T>, a: &GpuStorage<T>, b: &GpuStorage<T>) {
+    assert_is_f32::<T>();
+    let ctx = get_context();
     let (rows, kdim, cols) = (a.nrows, a.ncols, b.ncols);
-    let client = R::client(&R::Device::default());
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let h = gpu_matmul_tiled_kernel::<f32, R>(&client, &a.handle, &b.handle, rows, kdim, cols)
-            .unwrap_or_else(|e| panic!("GPU matmul failed: {e}"));
-        out.handle = h;
-        out.nrows = rows;
-        out.ncols = cols;
-        let mut guard = lock_or_recover(&out.host_cache);
-        *guard = None;
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let h = gpu_matmul_tiled_kernel::<f64, R>(&client, &a.handle, &b.handle, rows, kdim, cols)
-            .unwrap_or_else(|e| panic!("GPU matmul failed: {e}"));
-        out.handle = h;
-        out.nrows = rows;
-        out.ncols = cols;
-        let mut guard = lock_or_recover(&out.host_cache);
-        *guard = None;
-    } else {
-        let ha = a.download::<R>();
-        let hb = b.download::<R>();
-        let zero = <T as faer_traits::ComplexField>::zero_impl();
-        let mut buf = vec![zero; rows * cols];
-        for ri in 0..rows {
-            for ci in 0..cols {
-                buf[ri * cols + ci] = (0..kdim)
-                    .fold(zero, |acc, l| acc + ha[ri * kdim + l] * hb[l * cols + ci]);
-            }
-        }
-        let new = GpuStorage::upload::<R>(rows, cols, buf);
-        out.handle = new.handle;
-        out.nrows = rows;
-        out.ncols = cols;
-        let mut guard = lock_or_recover(&out.host_cache);
-        *guard = new.host_cache.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
-    }
+    let buf = run_matmul_f32(ctx, &a.buffer, &b.buffer, rows, kdim, cols);
+    out.buffer = buf;
+    out.nrows = rows;
+    out.ncols = cols;
+    *lock_or_recover(&out.host_cache) = None;
 }
 
-// ── GPU reduction dispatch functions ─────────────────────────────────────────
-// Wave 6: sum/max/min/argmax/argmin — CPU fallback via download.
-// The result is always a host scalar, so full download cost is paid regardless.
-// Proper GPU-side partial reduction kernels (plane_sum + SharedMemory) can be
-// added as an optimization once CubeCL subgroup size portability is confirmed.
-
-pub(crate) fn gpu_sum_all<T: Scalar, R: Runtime>(s: &GpuStorage<T>) -> T
-where
-    R::Device: Default,
-{
-    let data = s.download::<R>();
-    data.iter().fold(T::reduction_zero(), |acc, &x| acc.reduction_add(x))
+pub(crate) fn gpu_mul_elem<T: Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n = a.nrows * a.ncols;
+    let buf = run_binary_f32(ctx, &a.buffer, &b.buffer, n, 2);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
-pub(crate) fn gpu_max_all<T: Scalar, R: Runtime>(s: &GpuStorage<T>) -> T
-where
-    R::Device: Default,
-{
-    assert!(s.nrows > 0 && s.ncols > 0, "max_all: matrix must be non-empty");
-    let data = s.download::<R>();
-    data[1..].iter().fold(data[0], |acc, &x| acc.reduction_max(x))
+pub(crate) fn gpu_div_elem<T: Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n = a.nrows * a.ncols;
+    let buf = run_binary_f32(ctx, &a.buffer, &b.buffer, n, 3);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
-pub(crate) fn gpu_min_all<T: Scalar, R: Runtime>(s: &GpuStorage<T>) -> T
-where
-    R::Device: Default,
-{
-    assert!(s.nrows > 0 && s.ncols > 0, "min_all: matrix must be non-empty");
-    let data = s.download::<R>();
-    data[1..].iter().fold(data[0], |acc, &x| acc.reduction_min(x))
+pub(crate) fn gpu_powf<T: Scalar>(a: &GpuStorage<T>, p: T) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n = a.nrows * a.ncols;
+    // SAFETY: TypeId confirmed T == f32.
+    #[allow(clippy::borrow_as_ptr, clippy::ptr_cast_constness)]
+    let power: f32 = unsafe { *std::ptr::from_ref(&p).cast::<f32>() };
+    let buf = run_powf_f32(ctx, &a.buffer, n, power);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
-pub(crate) fn gpu_argmax_all<T: Scalar, R: Runtime>(s: &GpuStorage<T>) -> (usize, usize)
-where
-    R::Device: Default,
-{
-    assert!(s.nrows > 0 && s.ncols > 0, "argmax_all: matrix must be non-empty");
-    let data = s.download::<R>();
-    let ncols = s.ncols;
-    let mut best_idx = 0usize;
-    for i in 1..(s.nrows * s.ncols) {
-        if data[i].reduction_gt(data[best_idx]) {
-            best_idx = i;
-        }
-    }
-    (best_idx / ncols, best_idx % ncols)
-}
+// Unary math ops: indexed by op_type matching SHADER_UNARY
+// 0=neg(already covered), 1=exp, 2=ln, 3=log1p, 4=sin, 5=cos, 6=tanh, 7=sqrt,
+// 8=abs, 9=recip, 10=erf, 11=ceil, 12=floor, 13=round
 
-pub(crate) fn gpu_argmin_all<T: Scalar, R: Runtime>(s: &GpuStorage<T>) -> (usize, usize)
-where
-    R::Device: Default,
-{
-    assert!(s.nrows > 0 && s.ncols > 0, "argmin_all: matrix must be non-empty");
-    let data = s.download::<R>();
-    let ncols = s.ncols;
-    let mut best_idx = 0usize;
-    for i in 1..(s.nrows * s.ncols) {
-        if data[best_idx].reduction_gt(data[i]) {
-            best_idx = i;
-        }
-    }
-    (best_idx / ncols, best_idx % ncols)
-}
-
-// ── impl_gpu_backend! macro + invocations ────────────────────────────────────
-
-macro_rules! impl_gpu_backend {
-    ($Backend:ty, $Runtime:path) => {
-        impl crate::backend::Backend for $Backend {
-            type Storage<T: crate::scalar::Scalar> = crate::gpu::GpuStorage<T>;
-
-            #[inline]
-            fn zeros<T: crate::scalar::Scalar>(r: usize, c: usize) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_zeros::<T, $Runtime>(r, c)
-            }
-
-            #[inline]
-            fn from_fn<T: crate::scalar::Scalar>(
-                r: usize,
-                c: usize,
-                f: impl FnMut(usize, usize) -> T,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_from_fn::<T, $Runtime>(r, c, f)
-            }
-
-            #[inline]
-            fn nrows<T: crate::scalar::Scalar>(s: &crate::gpu::GpuStorage<T>) -> usize {
-                s.nrows
-            }
-
-            #[inline]
-            fn ncols<T: crate::scalar::Scalar>(s: &crate::gpu::GpuStorage<T>) -> usize {
-                s.ncols
-            }
-
-            #[inline]
-            fn get<T: crate::scalar::Scalar>(
-                s: &crate::gpu::GpuStorage<T>,
-                r: usize,
-                c: usize,
-            ) -> T {
-                crate::gpu::gpu_get::<T, $Runtime>(s, r, c)
-            }
-
-            #[inline]
-            fn set<T: crate::scalar::Scalar>(
-                s: &mut crate::gpu::GpuStorage<T>,
-                r: usize,
-                c: usize,
-                v: T,
-            ) {
-                crate::gpu::gpu_set::<T, $Runtime>(s, r, c, v)
-            }
-
-            #[inline]
-            fn matmul_into<T: crate::scalar::Scalar>(
-                out: &mut crate::gpu::GpuStorage<T>,
-                a: &crate::gpu::GpuStorage<T>,
-                b: &crate::gpu::GpuStorage<T>,
-            ) {
-                crate::gpu::gpu_matmul::<T, $Runtime>(out, a, b)
-            }
-
-            #[inline]
-            fn add<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-                b: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_add::<T, $Runtime>(a, b)
-            }
-
-            #[inline]
-            fn sub<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-                b: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_sub::<T, $Runtime>(a, b)
-            }
-
-            #[inline]
-            fn neg<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_neg::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn transpose<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_transpose::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn scale<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-                s: T,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_scale::<T, $Runtime>(a, s)
-            }
-
-            #[inline]
-            fn clone_storage<T: crate::scalar::Scalar>(
-                s: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_clone::<T, $Runtime>(s)
-            }
-
-            #[inline]
-            fn exp<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_exp::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn ln<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_ln::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn log1p<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_log1p::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn sin<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_sin::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn cos<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_cos::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn tanh<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_tanh::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn sqrt<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_sqrt::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn abs<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_abs::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn recip<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_recip::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn erf<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_erf::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn ceil<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_ceil::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn floor<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_floor::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn round<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_round::<T, $Runtime>(a)
-            }
-
-            #[inline]
-            fn powf<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-                p: T,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_powf::<T, $Runtime>(a, p)
-            }
-
-            #[inline]
-            fn mul_elem<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-                b: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_mul_elem::<T, $Runtime>(a, b)
-            }
-
-            #[inline]
-            fn div_elem<T: crate::scalar::Scalar>(
-                a: &crate::gpu::GpuStorage<T>,
-                b: &crate::gpu::GpuStorage<T>,
-            ) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_div_elem::<T, $Runtime>(a, b)
-            }
-
-            #[inline]
-            fn sum_all<T: crate::scalar::Scalar>(s: &crate::gpu::GpuStorage<T>) -> T {
-                crate::gpu::gpu_sum_all::<T, $Runtime>(s)
-            }
-
-            #[inline]
-            fn max_all<T: crate::scalar::Scalar>(s: &crate::gpu::GpuStorage<T>) -> T {
-                crate::gpu::gpu_max_all::<T, $Runtime>(s)
-            }
-
-            #[inline]
-            fn min_all<T: crate::scalar::Scalar>(s: &crate::gpu::GpuStorage<T>) -> T {
-                crate::gpu::gpu_min_all::<T, $Runtime>(s)
-            }
-
-            #[inline]
-            fn argmax_all<T: crate::scalar::Scalar>(
-                s: &crate::gpu::GpuStorage<T>,
-            ) -> (usize, usize) {
-                crate::gpu::gpu_argmax_all::<T, $Runtime>(s)
-            }
-
-            #[inline]
-            fn fill<T: crate::scalar::Scalar>(r: usize, c: usize, val: T) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_fill::<T, $Runtime>(r, c, val)
-            }
-
-            #[inline]
-            fn identity<T: crate::scalar::Scalar>(n: usize) -> crate::gpu::GpuStorage<T> {
-                crate::gpu::gpu_identity::<T, $Runtime>(n)
-            }
-
-            #[inline]
-            fn argmin_all<T: crate::scalar::Scalar>(
-                s: &crate::gpu::GpuStorage<T>,
-            ) -> (usize, usize) {
-                crate::gpu::gpu_argmin_all::<T, $Runtime>(s)
-            }
+macro_rules! impl_gpu_unary {
+    ($name:ident, $op:expr) => {
+        pub(crate) fn $name<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+            assert_is_f32::<T>();
+            let ctx = get_context();
+            let n = a.nrows * a.ncols;
+            let buf = run_unary_f32(ctx, &a.buffer, n, $op);
+            GpuStorage::from_buffer(a.nrows, a.ncols, buf)
         }
     };
 }
 
-#[cfg(feature = "cuda")]
-impl_gpu_backend!(crate::backend::Cuda, cubecl_cuda::CudaRuntime);
+impl_gpu_unary!(gpu_exp, 1);
+impl_gpu_unary!(gpu_ln, 2);
+impl_gpu_unary!(gpu_log1p, 3);
+impl_gpu_unary!(gpu_sin, 4);
+impl_gpu_unary!(gpu_cos, 5);
+impl_gpu_unary!(gpu_tanh, 6);
+impl_gpu_unary!(gpu_sqrt, 7);
+impl_gpu_unary!(gpu_abs, 8);
+impl_gpu_unary!(gpu_recip, 9);
+impl_gpu_unary!(gpu_erf, 10);
+impl_gpu_unary!(gpu_ceil, 11);
+impl_gpu_unary!(gpu_floor, 12);
+impl_gpu_unary!(gpu_round, 13);
 
-#[cfg(feature = "wgpu")]
-impl_gpu_backend!(crate::backend::Wgpu, cubecl_wgpu::WgpuRuntime);
+// ── Reduction ops ─────────────────────────────────────────────────────────────
 
-#[cfg(feature = "hip")]
-impl_gpu_backend!(crate::backend::Hip, cubecl_hip::HipRuntime);
+pub(crate) fn gpu_sum_all<T: Scalar>(s: &GpuStorage<T>) -> T {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n = s.nrows * s.ncols;
+    let partials = run_reduce_f32(ctx, &s.buffer, n, SHADER_REDUCE_SUM);
+    let total: f32 = partials.iter().copied().sum();
+    // SAFETY: T == f32 confirmed by assert_is_f32; same size/align.
+    #[allow(clippy::borrow_as_ptr, clippy::ptr_cast_constness)]
+    unsafe {
+        *std::ptr::from_ref(&total).cast::<T>()
+    }
+}
+
+pub(crate) fn gpu_max_all<T: Scalar>(s: &GpuStorage<T>) -> T {
+    assert!(
+        s.nrows > 0 && s.ncols > 0,
+        "max_all: matrix must be non-empty"
+    );
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n = s.nrows * s.ncols;
+    let partials = run_reduce_f32(ctx, &s.buffer, n, SHADER_REDUCE_MAX);
+    let total: f32 = partials.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    // SAFETY: T == f32 confirmed by assert_is_f32; same size/align.
+    #[allow(clippy::borrow_as_ptr, clippy::ptr_cast_constness)]
+    unsafe {
+        *std::ptr::from_ref(&total).cast::<T>()
+    }
+}
+
+pub(crate) fn gpu_min_all<T: Scalar>(s: &GpuStorage<T>) -> T {
+    assert!(
+        s.nrows > 0 && s.ncols > 0,
+        "min_all: matrix must be non-empty"
+    );
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n = s.nrows * s.ncols;
+    let partials = run_reduce_f32(ctx, &s.buffer, n, SHADER_REDUCE_MIN);
+    let total: f32 = partials.iter().copied().fold(f32::INFINITY, f32::min);
+    // SAFETY: T == f32 confirmed by assert_is_f32; same size/align.
+    #[allow(clippy::borrow_as_ptr, clippy::ptr_cast_constness)]
+    unsafe {
+        *std::ptr::from_ref(&total).cast::<T>()
+    }
+}
+
+pub(crate) fn gpu_argmax_all<T: Scalar>(s: &GpuStorage<T>) -> (usize, usize) {
+    assert!(
+        s.nrows > 0 && s.ncols > 0,
+        "argmax_all: matrix must be non-empty"
+    );
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n = s.nrows * s.ncols;
+    let ncols = s.ncols;
+    let (vals, idxs) = run_argreduce_f32(ctx, &s.buffer, n, SHADER_ARGMAX);
+    let mut best_v = f32::NEG_INFINITY;
+    let mut best_i = 0u32;
+    for (v, i) in vals.iter().zip(idxs.iter()) {
+        // Exact equality is intentional: tie-break by index from GPU partial results.
+        #[allow(clippy::float_cmp)]
+        let tie = *v == best_v;
+        if *v > best_v || (tie && *i < best_i) {
+            best_v = *v;
+            best_i = *i;
+        }
+    }
+    let flat = best_i as usize;
+    (flat / ncols, flat % ncols)
+}
+
+pub(crate) fn gpu_argmin_all<T: Scalar>(s: &GpuStorage<T>) -> (usize, usize) {
+    assert!(
+        s.nrows > 0 && s.ncols > 0,
+        "argmin_all: matrix must be non-empty"
+    );
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n = s.nrows * s.ncols;
+    let ncols = s.ncols;
+    let (vals, idxs) = run_argreduce_f32(ctx, &s.buffer, n, SHADER_ARGMIN);
+    let mut best_v = f32::INFINITY;
+    let mut best_i = 0u32;
+    for (v, i) in vals.iter().zip(idxs.iter()) {
+        // Exact equality is intentional: tie-break by index from GPU partial results.
+        #[allow(clippy::float_cmp)]
+        let tie = *v == best_v;
+        if *v < best_v || (tie && *i < best_i) {
+            best_v = *v;
+            best_i = *i;
+        }
+    }
+    let flat = best_i as usize;
+    (flat / ncols, flat % ncols)
+}
+
+// ── TypeId guard ──────────────────────────────────────────────────────────────
+
+#[inline]
+fn assert_is_f32<T: Scalar>() {
+    assert!(
+        TypeId::of::<T>() == TypeId::of::<f32>(),
+        "GPU backend only supports f32; got a different scalar type"
+    );
+}
+
+// ── Backend impl for Gpu ──────────────────────────────────────────────────────
+
+#[cfg(feature = "gpu")]
+impl crate::backend::Backend for crate::backend::Gpu {
+    type Storage<T: crate::scalar::Scalar> = GpuStorage<T>;
+
+    #[inline]
+    fn zeros<T: crate::scalar::Scalar>(r: usize, c: usize) -> GpuStorage<T> {
+        gpu_zeros::<T>(r, c)
+    }
+
+    #[inline]
+    fn fill<T: crate::scalar::Scalar>(r: usize, c: usize, val: T) -> GpuStorage<T> {
+        gpu_fill::<T>(r, c, val)
+    }
+
+    #[inline]
+    fn identity<T: crate::scalar::Scalar>(n: usize) -> GpuStorage<T> {
+        gpu_identity::<T>(n)
+    }
+
+    #[inline]
+    fn from_fn<T: crate::scalar::Scalar>(
+        r: usize,
+        c: usize,
+        f: impl FnMut(usize, usize) -> T,
+    ) -> GpuStorage<T> {
+        gpu_from_fn::<T>(r, c, f)
+    }
+
+    #[inline]
+    fn nrows<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> usize {
+        s.nrows
+    }
+
+    #[inline]
+    fn ncols<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> usize {
+        s.ncols
+    }
+
+    #[inline]
+    fn get<T: crate::scalar::Scalar>(s: &GpuStorage<T>, r: usize, c: usize) -> T {
+        gpu_get::<T>(s, r, c)
+    }
+
+    #[inline]
+    fn set<T: crate::scalar::Scalar>(s: &mut GpuStorage<T>, r: usize, c: usize, v: T) {
+        gpu_set::<T>(s, r, c, v)
+    }
+
+    #[inline]
+    fn matmul_into<T: crate::scalar::Scalar>(
+        out: &mut GpuStorage<T>,
+        a: &GpuStorage<T>,
+        b: &GpuStorage<T>,
+    ) {
+        gpu_matmul::<T>(out, a, b)
+    }
+
+    #[inline]
+    fn add<T: crate::scalar::Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_add::<T>(a, b)
+    }
+
+    #[inline]
+    fn sub<T: crate::scalar::Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_sub::<T>(a, b)
+    }
+
+    #[inline]
+    fn neg<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_neg::<T>(a)
+    }
+
+    #[inline]
+    fn transpose<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_transpose::<T>(a)
+    }
+
+    #[inline]
+    fn scale<T: crate::scalar::Scalar>(a: &GpuStorage<T>, s: T) -> GpuStorage<T> {
+        gpu_scale::<T>(a, s)
+    }
+
+    #[inline]
+    fn clone_storage<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_clone::<T>(s)
+    }
+
+    #[inline]
+    fn exp<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_exp::<T>(a)
+    }
+
+    #[inline]
+    fn ln<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_ln::<T>(a)
+    }
+
+    #[inline]
+    fn log1p<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_log1p::<T>(a)
+    }
+
+    #[inline]
+    fn sin<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_sin::<T>(a)
+    }
+
+    #[inline]
+    fn cos<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_cos::<T>(a)
+    }
+
+    #[inline]
+    fn tanh<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_tanh::<T>(a)
+    }
+
+    #[inline]
+    fn sqrt<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_sqrt::<T>(a)
+    }
+
+    #[inline]
+    fn abs<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_abs::<T>(a)
+    }
+
+    #[inline]
+    fn recip<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_recip::<T>(a)
+    }
+
+    #[inline]
+    fn erf<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_erf::<T>(a)
+    }
+
+    #[inline]
+    fn ceil<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_ceil::<T>(a)
+    }
+
+    #[inline]
+    fn floor<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_floor::<T>(a)
+    }
+
+    #[inline]
+    fn round<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_round::<T>(a)
+    }
+
+    #[inline]
+    fn powf<T: crate::scalar::Scalar>(a: &GpuStorage<T>, p: T) -> GpuStorage<T> {
+        gpu_powf::<T>(a, p)
+    }
+
+    #[inline]
+    fn mul_elem<T: crate::scalar::Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_mul_elem::<T>(a, b)
+    }
+
+    #[inline]
+    fn div_elem<T: crate::scalar::Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_div_elem::<T>(a, b)
+    }
+
+    #[inline]
+    fn sum_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> T {
+        gpu_sum_all::<T>(s)
+    }
+
+    #[inline]
+    fn max_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> T {
+        gpu_max_all::<T>(s)
+    }
+
+    #[inline]
+    fn min_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> T {
+        gpu_min_all::<T>(s)
+    }
+
+    #[inline]
+    fn argmax_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> (usize, usize) {
+        gpu_argmax_all::<T>(s)
+    }
+
+    #[inline]
+    fn argmin_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> (usize, usize) {
+        gpu_argmin_all::<T>(s)
+    }
+}
