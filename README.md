@@ -11,6 +11,7 @@ nabla provides a macro notation layer (`mat!`, `einsum!`, `bcast!`) over faer's 
 ## Table of contents
 
 - [Why nabla?](#why-nabla)
+- [Julia → nabla conversion guide](#julia--nabla-conversion-guide)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Usage scenarios](#usage-scenarios)
@@ -72,6 +73,111 @@ let e: Tensor<f64> = einsum!(c[i,j] = a[i,k] * b[k,j]);  // Einstein notation
 - **Not a replacement for faer** — nabla is a DSL layer on top. All heavy computation delegates to faer's SIMD kernels.
 - **Not a training framework** — no autodiff, no backpropagation, no optimizer. Use Burn or Candle for training.
 - **Not a full NumPy clone** — focused on 2-D linear algebra for inference. No N-D tensor, no dataframe, no plotting.
+
+---
+
+## Julia → nabla conversion guide
+
+**Rule: Rust で数学的行列操作をするときは常に nabla を使用すること。** faer の raw API を直接呼ばず、nabla の DSL 経由で記述する。
+
+### Core syntax
+
+| Julia | nabla / Rust | Notes |
+|---|---|---|
+| `[1 2; 3 4]` | `mat![[1.0, 2.0], [3.0, 4.0]]` | proc macro |
+| `zeros(m, n)` | `Tensor::zeros(m, n)` | |
+| `ones(m, n)` | `Tensor::from_fn(m, n, \|_,_\| 1.0)` | |
+| `I(n)` / `Matrix{Float64}(I, n, n)` | `Tensor::identity(n)` | |
+| `rand(m, n)` | `Tensor::from_fn(m, n, \|_,_\| rng.gen())` | bring your own RNG |
+| `A[i, j]` | `a.get(i, j)` | 0-indexed |
+| `A[i, j] = v` | `a.set(i, j, v)` | 0-indexed |
+| `size(A)` | `a.shape()` → `(usize, usize)` | |
+| `size(A, 1)` / `size(A, 2)` | `a.nrows()` / `a.ncols()` | |
+| `copy(A)` | `a.clone()` | deep copy |
+| `2 + 3im` | `c64(2.0, 3.0)` | `c32` for f32 |
+| `0 < x < 1` | `between!(0.0, x, 1.0)` | macro |
+| `0.0:0.1:1.0` | `frange!(0.0_f64, 0.1, 1.0)` | `Vec<f64>` |
+| `range(0, 1, length=n)` | `linspace(0.0, 1.0, n)` | `Vec<f64>` |
+| `let α = 3.14` | `let α = 3.14_f64;` | Rust native Unicode ident |
+| `a, b = f()` | `let (a, b) = f();` | native |
+| `SMatrix{3,3}(...)` | `StaticMatrix::<f64, 3, 3>::from_fn(\|r,c\| ...)` | stack-allocated |
+
+### Arithmetic & views
+
+| Julia | nabla / Rust | Notes |
+|---|---|---|
+| `A + B` | `&a + &b` | ref-based operators |
+| `A - B` | `&a - &b` | |
+| `-A` | `-&a` | |
+| `A * B` | `&a * &b` | matmul |
+| `A * s` / `s * A` | `&a * s` | scalar mul |
+| `mul!(C, A, B)` | `Tensor::matmul_into(&mut c, &a, &b)` | zero-alloc |
+| `transpose(A)` | `a.t()` | |
+| `A'` / `adjoint(A)` | `a.adjoint()` | conj+transpose for complex |
+| `A[1:3, 2:4]` | `a.slice(0..3, 1..4)` | 0-indexed, exclusive end |
+| `A[1:3, :]` | `a.slice_rows(0..3)` | |
+| `A[:, 2:4]` | `a.slice_cols(1..4)` | |
+| `@view A[...]` | faer default (zero-copy) | automatic |
+
+### Broadcasting
+
+| Julia | nabla / Rust | Notes |
+|---|---|---|
+| `f.(A)` | `bcast!(\|x\| f(x), &a)` | allocating |
+| `f.(A, B)` | `bcast!(\|x,y\| f(x,y), &a, &b)` | binary |
+| `A .= f.(B)` | `zip_map!(a, \|x\| f(x), &b)` | in-place |
+| `A .= f.(B, C)` | `zip_map!(a, \|x,y\| f(x,y), &b, &c)` | in-place binary |
+| `@. y = sin(x)^2` | `bcast!(\|x\| x.sin().powi(2), &x)` | manual expansion |
+
+### Linear algebra
+
+| Julia | nabla / Rust | Notes |
+|---|---|---|
+| `A \ b` | `a.solve(&b)?` | LU internally |
+| `A \ b` (overdetermined) | `a.solve_lstsq(&b)?` | thin SVD |
+| `b / A` | `a.rsolve(&b)?` | |
+| `inv(A)` | `a.inv()?` | |
+| `lu(A)` | `a.factorize_lu()?` | partial pivot |
+| `qr(A)` | `a.factorize_qr()` | |
+| `cholesky(A)` | `a.factorize_llt()?` | LL^T |
+| `ldlt(A)` | `a.factorize_ldlt()?` | LDL^T |
+| `svd(A)` | `a.factorize_svd()?` | full USV^H |
+| `svdvals(A)` | `a.singular_values()?` | values only |
+| `eigen(Symmetric(A))` | `Symmetric::new(a, Side::Lower)?.eigen()?` | |
+| `F.L`, `F.U` | `lu.reconstruct()` | |
+| `F \ b` | `lu.solve(&b)` | reuse factorization |
+| `Diagonal(v)` | `Diagonal::new(v)` | |
+| `Symmetric(A, :L)` | `Symmetric::new(a, Side::Lower)?` | |
+| `LowerTriangular(A)` | `Triangular::new(a, TriKind::Lower)?` | |
+
+### Sparse
+
+| Julia | nabla / Rust | Notes |
+|---|---|---|
+| `sparse(I, J, V, m, n)` | `SparseMatrix::try_new_from_triplets(m, n, &trips)?` | COO → CSC |
+| `nnz(S)` | `s.nnz()` | |
+| `size(S)` | `s.shape()` | |
+| `S \ b` | `s.solve(&b)?` | sparse LU |
+| `S \ b` (lstsq) | `s.solve_lstsq(&b)?` | sparse QR |
+| `S * D` | `s.matmul_dense(&d)?` | sparse × dense |
+| `cholesky(S)` | `s.cholesky_solve(side, &b)?` | one-shot |
+
+### Einsum / Tullio
+
+| Julia | nabla / Rust | Notes |
+|---|---|---|
+| `@tullio C[i,j] := A[i,k] * B[k,j]` | `einsum!(c[i,j] = a[i,k] * b[k,j])` | matmul |
+| `@tullio C[i,j] := A[i,j] * B[i,j]` | `einsum!(c[i,j] = a[i,j] * b[i,j])` | Hadamard |
+| `@tullio s := A[i,i]` | `einsum!(s = a[i,i])` | trace → scalar |
+| `[x^2 for x in 1:10]` | `(1..=10).map(\|x\| x * x).collect::<Vec<_>>()` | native Rust |
+
+### Performance annotations
+
+| Julia | nabla / Rust | Notes |
+|---|---|---|
+| `@inbounds` | iterator auto-elim | LLVM optimizes |
+| `@simd` | LLVM auto-vectorization + faer `pulp` | implicit |
+| `@views` | faer default views | zero-copy automatic |
 
 ---
 
