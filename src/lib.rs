@@ -289,6 +289,30 @@ pub mod util {
             }
         }};
     }
+
+    /// Julia-style pipe operator: `pipe!(val, f, g)` expands to `g(f(val))`.
+    ///
+    /// Supports an arbitrary chain of function references or closures.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nabla::pipe;
+    /// let result = pipe!(2.0_f64, f64::sqrt, f64::ln);
+    /// assert!((result - f64::ln(f64::sqrt(2.0_f64))).abs() < 1e-10);
+    /// ```
+    #[macro_export]
+    macro_rules! pipe {
+        ($val:expr) => {
+            $val
+        };
+        ($val:expr, $f:expr) => {
+            $f($val)
+        };
+        ($val:expr, $f:expr $(, $rest:expr)*) => {
+            pipe!($f($val) $(, $rest)*)
+        };
+    }
 }
 
 /// Prelude for convenient imports.
@@ -299,7 +323,7 @@ pub mod prelude {
     pub use crate::scalar::Scalar;
     pub use crate::sparse::*;
     pub use crate::tensor::Tensor;
-    pub use crate::tensor::{Array, Matrix, StaticMatrix};
+    pub use crate::tensor::{Array, DynTensor, Matrix, StaticMatrix};
     pub use crate::util::{c32, c64, linspace};
     pub use nabla_macros::{einsum, mat};
 

@@ -12,7 +12,7 @@ default = ["cpu"]
 cpu  = []
 cuda = ["dep:cubecl-cuda", "dep:cubecl-core", "dep:cubecl-runtime"]
 wgpu = ["dep:cubecl-wgpu", "dep:cubecl-core", "dep:cubecl-runtime"]
-hip = ["dep:cubecl-hip"]
+hip = ["dep:cubecl-hip", "dep:cubecl-core", "dep:cubecl-runtime"]
 
 [dependencies]
 faer = "0.24"

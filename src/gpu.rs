@@ -532,28 +532,6 @@ fn gpu_transpose_kernel<E: Float + CubeElement, R: Runtime>(
     }
 }
 
-fn gpu_matmul_kernel<E: Float + CubeElement, R: Runtime>(
-    client: &ComputeClient<R>,
-    h_a: &cubecl_runtime::server::Handle,
-    h_b: &cubecl_runtime::server::Handle,
-    m: usize,
-    k: usize,
-    n: usize,
-) -> Result<cubecl_runtime::server::Handle, Error> {
-    let out_n = m * n;
-    let h_out = client.empty(out_n * std::mem::size_of::<E>());
-    // SAFETY: h_a, h_b are valid GPU allocations for m*k and k*n elements of type E.
-    // h_out is valid for m*n elements of type E.
-    unsafe {
-        let la = ArrayArg::<R>::from_raw_parts::<E>(h_a, m * k, 1);
-        let lb = ArrayArg::<R>::from_raw_parts::<E>(h_b, k * n, 1);
-        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, out_n, 1);
-        matmul_naive_kernel::launch::<E, R>(client, cube_count(out_n), CubeDim::new_1d(256), la, lb, lout, ScalarArg::new(k), ScalarArg::new(n))
-            .map(|()| h_out)
-            .map_err(|e| Error::invalid(format!("GPU matmul kernel failed: {e}")))
-    }
-}
-
 /// Tiled matmul using SharedMemory (TILE=16). Preferred over naive for large matrices.
 fn gpu_matmul_tiled_kernel<E: Float + CubeElement, R: Runtime>(
     client: &ComputeClient<R>,
@@ -1501,3 +1479,6 @@ impl_gpu_backend!(crate::backend::Cuda, cubecl_cuda::CudaRuntime);
 
 #[cfg(feature = "wgpu")]
 impl_gpu_backend!(crate::backend::Wgpu, cubecl_wgpu::WgpuRuntime);
+
+#[cfg(feature = "hip")]
+impl_gpu_backend!(crate::backend::Hip, cubecl_hip::HipRuntime);

@@ -900,3 +900,99 @@ impl<T: Scalar, const R: usize, const C: usize> Matrix<T> for StaticMatrix<T, R,
         dyn_matmul(self, rhs)
     }
 }
+
+// ── DynTensor: enum-based closed multiple dispatch (D1) ──────────────────────
+//
+// Allows runtime polymorphism over backends without `dyn Trait`.
+// The enum variants mirror the enabled GPU backends; operations are dispatched
+// via `match` rather than vtable.  New variants can be added per feature flag
+// (Orphan-rule safe because this enum lives in the same crate as both backends).
+
+/// A type-erased 2-D dense matrix that can live on any enabled backend.
+///
+/// Provides Julia-style closed multiple dispatch: at runtime, operations
+/// `match` on the backend variant rather than going through a vtable.
+///
+/// # Examples
+///
+/// ```rust
+/// use nabla::tensor::DynTensor;
+///
+/// let a = DynTensor::cpu_f32(3, 3, |i, j| (i * 3 + j) as f32);
+/// let b = DynTensor::cpu_f32(3, 3, |i, j| (i + j) as f32);
+/// let c = a.add(&b);
+/// assert_eq!(c.shape(), (3, 3));
+/// ```
+pub enum DynTensor {
+    /// CPU backend (always available).
+    Cpu(Tensor<f32, Cpu>),
+}
+
+impl DynTensor {
+    /// Construct a `DynTensor` on the CPU backend.
+    pub fn cpu_f32(nrows: usize, ncols: usize, f: impl FnMut(usize, usize) -> f32) -> Self {
+        Self::Cpu(Tensor::from_fn(nrows, ncols, f))
+    }
+
+    /// Number of rows.
+    pub fn nrows(&self) -> usize {
+        match self {
+            Self::Cpu(t) => t.nrows(),
+        }
+    }
+
+    /// Number of columns.
+    pub fn ncols(&self) -> usize {
+        match self {
+            Self::Cpu(t) => t.ncols(),
+        }
+    }
+
+    /// Shape as `(nrows, ncols)`.
+    pub fn shape(&self) -> (usize, usize) {
+        (self.nrows(), self.ncols())
+    }
+
+    /// Read element at `(row, col)`.
+    pub fn get(&self, row: usize, col: usize) -> f32 {
+        match self {
+            Self::Cpu(t) => t.get(row, col),
+        }
+    }
+
+    /// Element-wise addition. Panics if shapes differ.
+    ///
+    /// Both operands must use the same backend variant.
+    pub fn add(&self, rhs: &Self) -> Self {
+        match (self, rhs) {
+            (Self::Cpu(a), Self::Cpu(b)) => Self::Cpu(a + b),
+        }
+    }
+
+    /// Element-wise subtraction. Panics if shapes differ.
+    pub fn sub(&self, rhs: &Self) -> Self {
+        match (self, rhs) {
+            (Self::Cpu(a), Self::Cpu(b)) => Self::Cpu(a - b),
+        }
+    }
+
+    /// Matrix multiplication (`self × rhs`). Panics if shapes are incompatible.
+    pub fn matmul(&self, rhs: &Self) -> Self {
+        match (self, rhs) {
+            (Self::Cpu(a), Self::Cpu(b)) => {
+                let (m, _) = a.shape();
+                let (_, n) = b.shape();
+                let mut out = Tensor::<f32, Cpu>::zeros(m, n);
+                Tensor::matmul_into(&mut out, a, b);
+                Self::Cpu(out)
+            }
+        }
+    }
+
+    /// Move to CPU-backed tensor (always a clone for the Cpu variant).
+    pub fn to_cpu(&self) -> Tensor<f32, Cpu> {
+        match self {
+            Self::Cpu(t) => t.clone(),
+        }
+    }
+}
