@@ -8,7 +8,7 @@
 //   - Scalar multiply: `mat * faer::Scale(s)`.
 //   - Transpose collects via `Mat::from_fn` over the transposed view.
 
-use faer::{linalg::matmul::matmul, Accum, Mat, Par, Scale};
+use faer::{Accum, Mat, Par, Scale, linalg::matmul::matmul};
 
 use crate::scalar::Scalar;
 
@@ -77,11 +77,7 @@ impl Backend for Cpu {
     }
 
     #[inline]
-    fn from_fn<T: Scalar>(
-        nrows: usize,
-        ncols: usize,
-        f: impl FnMut(usize, usize) -> T,
-    ) -> Mat<T> {
+    fn from_fn<T: Scalar>(nrows: usize, ncols: usize, f: impl FnMut(usize, usize) -> T) -> Mat<T> {
         Mat::from_fn(nrows, ncols, f)
     }
 

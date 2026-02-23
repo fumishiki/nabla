@@ -1,12 +1,10 @@
 use core::fmt;
 
 use faer::{
+    Accum, Par, Side,
     linalg::solvers::{self, DenseSolveCore},
     prelude::*,
     sparse::linalg::matmul::sparse_dense_matmul,
-    Accum,
-    Par,
-    Side,
 };
 
 use crate::backend::Cpu;
@@ -20,11 +18,7 @@ fn shape_mismatch(expected: (usize, usize), got: (usize, usize)) -> Error {
 }
 
 #[inline]
-    fn factorization_failed<T: fmt::Debug>(
-    op: &'static str,
-    shape: (usize, usize),
-    err: T,
-) -> Error {
+fn factorization_failed<T: fmt::Debug>(op: &'static str, shape: (usize, usize), err: T) -> Error {
     Error::invalid(format!("{op} failed for matrix {shape:?}: {err:?}"))
 }
 
@@ -42,7 +36,9 @@ fn require_square(shape: (usize, usize), op: &'static str) -> Result<()> {
     if shape.0 == shape.1 {
         Ok(())
     } else {
-        Err(Error::invalid(format!("{op} requires square input: {shape:?}")))
+        Err(Error::invalid(format!(
+            "{op} requires square input: {shape:?}"
+        )))
     }
 }
 
@@ -95,7 +91,8 @@ impl<T: Scalar> Tensor<T, Cpu> {
     /// Returns `Err` if the matrix is not square or factorization fails.
     pub fn llt(&self, side: Side) -> Result<solvers::Llt<T>> {
         require_square(self.shape(), "llt")?;
-        self.as_mat_ref().llt(side)
+        self.as_mat_ref()
+            .llt(side)
             .map_err(|e| factorization_failed("llt", self.shape(), e))
     }
 
@@ -122,7 +119,8 @@ impl<T: Scalar> Tensor<T, Cpu> {
     /// # Errors
     /// Returns `Err` when SVD fails to converge.
     pub fn svd(&self) -> Result<solvers::Svd<T>> {
-        self.as_mat_ref().svd()
+        self.as_mat_ref()
+            .svd()
             .map_err(|e| factorization_failed("svd", self.shape(), e))
     }
 
@@ -131,7 +129,8 @@ impl<T: Scalar> Tensor<T, Cpu> {
     /// # Errors
     /// Returns `Err` when SVD fails to converge.
     pub fn thin_svd(&self) -> Result<solvers::Svd<T>> {
-        self.as_mat_ref().thin_svd()
+        self.as_mat_ref()
+            .thin_svd()
             .map_err(|e| factorization_failed("thin_svd", self.shape(), e))
     }
 
@@ -140,7 +139,8 @@ impl<T: Scalar> Tensor<T, Cpu> {
     /// # Errors
     /// Returns `Err` when SVD fails to converge.
     pub fn singular_values(&self) -> Result<Vec<T::Real>> {
-        self.as_mat_ref().singular_values()
+        self.as_mat_ref()
+            .singular_values()
             .map_err(|e| factorization_failed("singular_values", self.shape(), e))
     }
 
@@ -161,9 +161,9 @@ impl<T: Scalar> Tensor<T, Cpu> {
     /// Returns `Err` if the matrix is not square or eigensolver fails.
     pub fn self_adjoint_eigenvalues(&self, side: Side) -> Result<Vec<T::Real>> {
         require_square(self.shape(), "self_adjoint_eigenvalues")?;
-        self.as_mat_ref().self_adjoint_eigenvalues(side).map_err(|e| {
-            factorization_failed("self_adjoint_eigenvalues", self.shape(), e)
-        })
+        self.as_mat_ref()
+            .self_adjoint_eigenvalues(side)
+            .map_err(|e| factorization_failed("self_adjoint_eigenvalues", self.shape(), e))
     }
 
     /// Solve `A x = b`.
@@ -212,7 +212,8 @@ impl<T: Scalar> Tensor<T, Cpu> {
     /// Returns `Err` when dimensions mismatch or solve fails.
     pub fn solve_transpose_in_place(&self, rhs: &mut Self) -> Result<()> {
         check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        self.partial_piv_lu().solve_transpose_in_place(rhs.as_mat_mut());
+        self.partial_piv_lu()
+            .solve_transpose_in_place(rhs.as_mat_mut());
         Ok(())
     }
 
@@ -222,7 +223,8 @@ impl<T: Scalar> Tensor<T, Cpu> {
     /// Returns `Err` when dimensions mismatch or solve fails.
     pub fn solve_adjoint_in_place(&self, rhs: &mut Self) -> Result<()> {
         check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        self.partial_piv_lu().solve_adjoint_in_place(rhs.as_mat_mut());
+        self.partial_piv_lu()
+            .solve_adjoint_in_place(rhs.as_mat_mut());
         Ok(())
     }
 
@@ -295,7 +297,8 @@ impl<T: Scalar> Tensor<T, Cpu> {
     pub fn solve_lower_triangular_in_place(&self, rhs: &mut Self) -> Result<()> {
         require_square(self.shape(), "solve_lower_triangular_in_place")?;
         check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        self.as_mat_ref().solve_lower_triangular_in_place(rhs.as_mat_mut());
+        self.as_mat_ref()
+            .solve_lower_triangular_in_place(rhs.as_mat_mut());
         Ok(())
     }
 
@@ -306,7 +309,8 @@ impl<T: Scalar> Tensor<T, Cpu> {
     pub fn solve_upper_triangular_in_place(&self, rhs: &mut Self) -> Result<()> {
         require_square(self.shape(), "solve_upper_triangular_in_place")?;
         check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
-        self.as_mat_ref().solve_upper_triangular_in_place(rhs.as_mat_mut());
+        self.as_mat_ref()
+            .solve_upper_triangular_in_place(rhs.as_mat_mut());
         Ok(())
     }
 
@@ -314,10 +318,7 @@ impl<T: Scalar> Tensor<T, Cpu> {
     ///
     /// # Errors
     /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_unit_lower_triangular_in_place(
-        &self,
-        rhs: &mut Self,
-    ) -> Result<()> {
+    pub fn solve_unit_lower_triangular_in_place(&self, rhs: &mut Self) -> Result<()> {
         require_square(self.shape(), "solve_unit_lower_triangular_in_place")?;
         check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
         self.as_mat_ref()
@@ -329,10 +330,7 @@ impl<T: Scalar> Tensor<T, Cpu> {
     ///
     /// # Errors
     /// Returns `Err` when dimensions mismatch or solve fails.
-    pub fn solve_unit_upper_triangular_in_place(
-        &self,
-        rhs: &mut Self,
-    ) -> Result<()> {
+    pub fn solve_unit_upper_triangular_in_place(&self, rhs: &mut Self) -> Result<()> {
         require_square(self.shape(), "solve_unit_upper_triangular_in_place")?;
         check_shape((self.nrows(), rhs.ncols()), rhs.shape())?;
         self.as_mat_ref()

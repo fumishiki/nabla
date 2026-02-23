@@ -60,12 +60,8 @@ fn matmul_2x2() {
     // a = [[1,2],[3,4]], b = [[5,6],[7,8]]
     // a*b = [[1*5+2*7, 1*6+2*8],[3*5+4*7, 3*6+4*8]]
     //     = [[19, 22],[43, 50]]
-    let a: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| {
-        [[1.0_f64, 2.0], [3.0, 4.0]][i][j]
-    });
-    let b: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| {
-        [[5.0_f64, 6.0], [7.0, 8.0]][i][j]
-    });
+    let a: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| [[1.0_f64, 2.0], [3.0, 4.0]][i][j]);
+    let b: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| [[5.0_f64, 6.0], [7.0, 8.0]][i][j]);
     let c = &a * &b;
     assert_eq!(c.shape(), (2, 2));
     assert!(approx_eq(c.get(0, 0), 19.0));
@@ -133,12 +129,8 @@ fn adjoint_real_equals_transpose() {
 #[test]
 fn matmul_into_correctness() {
     // Same 2x2 case as matmul_2x2 but via zero-alloc path.
-    let a: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| {
-        [[1.0_f64, 2.0], [3.0, 4.0]][i][j]
-    });
-    let b: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| {
-        [[5.0_f64, 6.0], [7.0, 8.0]][i][j]
-    });
+    let a: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| [[1.0_f64, 2.0], [3.0, 4.0]][i][j]);
+    let b: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| [[5.0_f64, 6.0], [7.0, 8.0]][i][j]);
     let mut out: Tensor<f64> = Tensor::zeros(2, 2);
     Tensor::matmul_into(&mut out, &a, &b);
     assert!(approx_eq(out.get(0, 0), 19.0));

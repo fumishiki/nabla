@@ -28,7 +28,7 @@ pub mod prelude {
     pub use crate::backend::{Backend, Cpu, DefaultBackend};
     pub use crate::error::{Error, Result};
     pub use crate::scalar::Scalar;
-    pub use crate::tensor::Tensor;
     pub use crate::sparse::*;
+    pub use crate::tensor::Tensor;
     pub use nabla_macros::mat;
 }

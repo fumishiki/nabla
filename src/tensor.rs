@@ -30,7 +30,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     #[inline]
     fn check_half_open(name: &str, start: usize, end: usize, bound: usize) {
-        assert!(start <= end, "{name} start ({start}) must be <= end ({end})");
+        assert!(
+            start <= end,
+            "{name} start ({start}) must be <= end ({end})"
+        );
         assert!(end <= bound, "{name} end ({end}) must be <= {bound}");
     }
 
@@ -148,11 +151,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// Split into four quadrants: `(top-left, top-right, bottom-left, bottom-right)`.
     #[must_use]
-    pub fn split_at(
-        &self,
-        row: usize,
-        col: usize,
-    ) -> (Self, Self, Self, Self) {
+    pub fn split_at(&self, row: usize, col: usize) -> (Self, Self, Self, Self) {
         Self::check_half_open("split row", 0, row, self.nrows());
         Self::check_half_open("split col", 0, col, self.ncols());
         let top_left = self.submatrix(0, row, 0, col);
@@ -181,7 +180,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             return self.t();
         }
         let (r, c) = self.shape();
-        let conj = B::from_fn(r, c, |i, j| faer_traits::math_utils::conj(&B::get(&self.storage, i, j)));
+        let conj = B::from_fn(r, c, |i, j| {
+            faer_traits::math_utils::conj(&B::get(&self.storage, i, j))
+        });
         Self { storage: conj }.t()
     }
 

@@ -1,7 +1,10 @@
 use core::fmt;
 use std::convert::TryFrom;
 
-use faer::{prelude::*, sparse as faer_sparse, sparse::linalg::matmul::sparse_dense_matmul as faer_sparse_dense_matmul, Side};
+use faer::{
+    Side, prelude::*, sparse as faer_sparse,
+    sparse::linalg::matmul::sparse_dense_matmul as faer_sparse_dense_matmul,
+};
 
 use crate::error::{Error, Result};
 use crate::scalar::Scalar;
@@ -43,7 +46,11 @@ impl<T: Scalar> SparseMatrix<T> {
     ///
     /// # Errors
     /// Returns `Err` when COO data is invalid or matrix shape is unsupported.
-    pub fn try_new_from_triplets(nrows: usize, ncols: usize, entries: &[Triplet<T>]) -> Result<Self> {
+    pub fn try_new_from_triplets(
+        nrows: usize,
+        ncols: usize,
+        entries: &[Triplet<T>],
+    ) -> Result<Self> {
         let storage = SparseStorage::try_new_from_triplets(nrows, ncols, entries)
             .map_err(|err| sparse_error("try_new_from_triplets", (nrows, ncols), err))?;
         Ok(Self { storage })
@@ -60,16 +67,24 @@ impl<T: Scalar> SparseMatrix<T> {
     ) -> Result<Self> {
         let entries = entries
             .iter()
-            .map(|entry| -> core::result::Result<TripletEntriesNonNegative<T>, Error> {
-                let row = isize::try_from(entry.row)
-                    .map_err(|_| Error::invalid("triplet row index does not fit in isize"))?;
-                let col = isize::try_from(entry.col)
-                    .map_err(|_| Error::invalid("triplet col index does not fit in isize"))?;
-                Ok(TripletEntriesNonNegative { row, col, val: entry.val })
-            })
+            .map(
+                |entry| -> core::result::Result<TripletEntriesNonNegative<T>, Error> {
+                    let row = isize::try_from(entry.row)
+                        .map_err(|_| Error::invalid("triplet row index does not fit in isize"))?;
+                    let col = isize::try_from(entry.col)
+                        .map_err(|_| Error::invalid("triplet col index does not fit in isize"))?;
+                    Ok(TripletEntriesNonNegative {
+                        row,
+                        col,
+                        val: entry.val,
+                    })
+                },
+            )
             .collect::<core::result::Result<Vec<_>, _>>()?;
         let storage = SparseStorage::try_new_from_nonnegative_triplets(nrows, ncols, &entries)
-            .map_err(|err| sparse_error("try_new_from_nonnegative_triplets", (nrows, ncols), err))?;
+            .map_err(|err| {
+                sparse_error("try_new_from_nonnegative_triplets", (nrows, ncols), err)
+            })?;
         Ok(Self { storage })
     }
 
@@ -235,7 +250,11 @@ impl<T: Scalar> SparseMatrix<T> {
     ///
     /// # Errors
     /// Returns `Err` when RHS shape is incompatible or solver fails.
-    pub fn lu_solve_with_symbolic(&self, symbolic: SymbolicLu, rhs: &Tensor<T>) -> Result<Tensor<T>> {
+    pub fn lu_solve_with_symbolic(
+        &self,
+        symbolic: SymbolicLu,
+        rhs: &Tensor<T>,
+    ) -> Result<Tensor<T>> {
         check_rhs_rows(self.nrows(), rhs)?;
         let lu = self.lu_with_symbolic(symbolic)?;
         Ok(Tensor::from_storage(lu.solve(rhs.as_mat_ref())))
@@ -308,6 +327,6 @@ pub mod linalg {
 
     /// Sparse decomposition and solver aliases.
     pub mod solvers {
-        pub use faer::sparse::linalg::solvers::{Lu, Llt, Qr, SymbolicLlt, SymbolicLu, SymbolicQr};
+        pub use faer::sparse::linalg::solvers::{Llt, Lu, Qr, SymbolicLlt, SymbolicLu, SymbolicQr};
     }
 }

@@ -2,10 +2,10 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
+    Error, Expr, Result,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     token::Comma,
-    Error, Expr, Result,
 };
 
 // Parse `[[e00, e01], [e10, e11], ...]`.
