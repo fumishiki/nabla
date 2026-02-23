@@ -5,10 +5,10 @@ use faer::{
     sparse::linalg::matmul::sparse_dense_matmul as faer_sparse_dense_matmul,
 };
 
+use crate::backend::Cpu;
 use crate::error::{Error, Result};
 use crate::scalar::Scalar;
 use crate::tensor::Tensor;
-use crate::backend::Cpu;
 
 type TripletEntriesNonNegative<T> = faer_sparse::Triplet<isize, isize, T>;
 type TripletEntries<T> = faer_sparse::Triplet<usize, usize, T>;
@@ -109,7 +109,11 @@ impl<T: Scalar> SparseMatrix<T> {
                     .col
                     .try_into()
                     .map_err(|_| Error::invalid("triplet col index does not fit in isize"))?;
-                Ok(TripletEntriesNonNegative { row, col, val: entry.val })
+                Ok(TripletEntriesNonNegative {
+                    row,
+                    col,
+                    val: entry.val,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         let storage = SparseStorage::try_new_from_nonnegative_triplets(nrows, ncols, &entries)

@@ -21,7 +21,9 @@ pub struct Tensor<T: Scalar, B: Backend = DefaultBackend> {
 
 impl<T: Scalar, B: Backend> Clone for Tensor<T, B> {
     fn clone(&self) -> Self {
-        Self { storage: B::clone_storage(&self.storage) }
+        Self {
+            storage: B::clone_storage(&self.storage),
+        }
     }
 }
 
@@ -132,7 +134,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Allocate an `n × n` identity matrix.
     #[must_use]
     pub fn identity(n: usize) -> Self {
-        Self::from_fn(n, n, |r, c| if r == c { T::one_impl() } else { T::zero_impl() })
+        Self::from_fn(n, n, |r, c| {
+            if r == c {
+                T::one_impl()
+            } else {
+                T::zero_impl()
+            }
+        })
     }
 
     /// Number of rows.
@@ -405,7 +413,13 @@ impl<T: Scalar, B: Backend> Mul<T> for &Tensor<T, B> {
 impl<T: Scalar + fmt::Display, B: Backend> fmt::Display for Tensor<T, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (rows, cols) = self.shape();
-        fmt_matrix(rows, cols, |r, c, f| write!(f, "{}", self.get(r, c)), f, None)
+        fmt_matrix(
+            rows,
+            cols,
+            |r, c, f| write!(f, "{}", self.get(r, c)),
+            f,
+            None,
+        )
     }
 }
 
@@ -413,7 +427,13 @@ impl<T: Scalar + fmt::Debug, B: Backend> fmt::Debug for Tensor<T, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (rows, cols) = self.shape();
         let prefix = format!("Tensor({rows}x{cols})");
-        fmt_matrix(rows, cols, |r, c, f| write!(f, "{:?}", self.get(r, c)), f, Some(&prefix))
+        fmt_matrix(
+            rows,
+            cols,
+            |r, c, f| write!(f, "{:?}", self.get(r, c)),
+            f,
+            Some(&prefix),
+        )
     }
 }
 
@@ -435,7 +455,9 @@ impl<T: Scalar, const R: usize, const C: usize> StaticMatrix<T, R, C> {
     /// Zero-filled `R × C` matrix.
     #[must_use]
     pub fn zeros() -> Self {
-        Self { data: [[T::zero_impl(); C]; R] }
+        Self {
+            data: [[T::zero_impl(); C]; R],
+        }
     }
 
     /// Matrix whose `(r, c)` element is `f(r, c)`.
@@ -453,32 +475,48 @@ impl<T: Scalar, const R: usize, const C: usize> StaticMatrix<T, R, C> {
     /// Identity-like matrix: `1` on the diagonal, `0` elsewhere.
     #[must_use]
     pub fn identity() -> Self {
-        Self::from_fn(|r, c| if r == c { T::one_impl() } else { T::zero_impl() })
+        Self::from_fn(|r, c| {
+            if r == c {
+                T::one_impl()
+            } else {
+                T::zero_impl()
+            }
+        })
     }
 
     /// Number of rows (always `R`).
     #[must_use]
     #[inline]
-    pub const fn nrows(&self) -> usize { R }
+    pub const fn nrows(&self) -> usize {
+        R
+    }
 
     /// Number of columns (always `C`).
     #[must_use]
     #[inline]
-    pub const fn ncols(&self) -> usize { C }
+    pub const fn ncols(&self) -> usize {
+        C
+    }
 
     /// Shape `(R, C)`.
     #[must_use]
     #[inline]
-    pub const fn shape(&self) -> (usize, usize) { (R, C) }
+    pub const fn shape(&self) -> (usize, usize) {
+        (R, C)
+    }
 
     /// Read element at `(row, col)`.
     #[must_use]
     #[inline]
-    pub fn get(&self, row: usize, col: usize) -> T { self.data[row][col] }
+    pub fn get(&self, row: usize, col: usize) -> T {
+        self.data[row][col]
+    }
 
     /// Write element at `(row, col)`.
     #[inline]
-    pub fn set(&mut self, row: usize, col: usize, val: T) { self.data[row][col] = val; }
+    pub fn set(&mut self, row: usize, col: usize, val: T) {
+        self.data[row][col] = val;
+    }
 
     /// Transpose: returns a new `C × R` static matrix (stack-only).
     #[must_use]
@@ -489,7 +527,9 @@ impl<T: Scalar, const R: usize, const C: usize> StaticMatrix<T, R, C> {
     /// Conjugate-transpose (adjoint).
     #[must_use]
     pub fn adjoint(&self) -> StaticMatrix<T, C, R> {
-        if T::IS_REAL { return self.t(); }
+        if T::IS_REAL {
+            return self.t();
+        }
         StaticMatrix::<T, C, R>::from_fn(|r, c| faer_traits::math_utils::conj(&self.data[c][r]))
     }
 
@@ -497,7 +537,9 @@ impl<T: Scalar, const R: usize, const C: usize> StaticMatrix<T, R, C> {
     #[must_use]
     pub fn matmul<const N: usize>(&self, rhs: &StaticMatrix<T, C, N>) -> StaticMatrix<T, R, N> {
         StaticMatrix::<T, R, N>::from_fn(|r, c| {
-            (0..C).fold(T::zero_impl(), |acc, k| acc + self.data[r][k] * rhs.data[k][c])
+            (0..C).fold(T::zero_impl(), |acc, k| {
+                acc + self.data[r][k] * rhs.data[k][c]
+            })
         })
     }
 
@@ -513,8 +555,12 @@ impl<T: Scalar, const R: usize, const C: usize> StaticMatrix<T, R, C> {
     /// Panics if `tensor.shape() != (R, C)`.
     #[must_use]
     pub fn from_tensor(tensor: &Tensor<T, DefaultBackend>) -> Self {
-        assert_eq!(tensor.shape(), (R, C),
-            "StaticMatrix::from_tensor shape mismatch: expected ({R}, {C}), got {:?}", tensor.shape());
+        assert_eq!(
+            tensor.shape(),
+            (R, C),
+            "StaticMatrix::from_tensor shape mismatch: expected ({R}, {C}), got {:?}",
+            tensor.shape()
+        );
         Self::from_fn(|r, c| tensor.get(r, c))
     }
 }
@@ -551,14 +597,18 @@ impl_static_binop!(binary: Sub, sub, -);
 impl_static_binop!(unary: Neg, neg, -);
 impl_static_binop!(scalar: Mul, mul, *);
 
-impl<T: Scalar, const R: usize, const K: usize, const N: usize>
-    Mul<StaticMatrix<T, K, N>> for StaticMatrix<T, R, K>
+impl<T: Scalar, const R: usize, const K: usize, const N: usize> Mul<StaticMatrix<T, K, N>>
+    for StaticMatrix<T, R, K>
 {
     type Output = StaticMatrix<T, R, N>;
-    fn mul(self, rhs: StaticMatrix<T, K, N>) -> Self::Output { self.matmul(&rhs) }
+    fn mul(self, rhs: StaticMatrix<T, K, N>) -> Self::Output {
+        self.matmul(&rhs)
+    }
 }
 
-impl<T: Scalar + fmt::Display, const R: usize, const C: usize> fmt::Display for StaticMatrix<T, R, C> {
+impl<T: Scalar + fmt::Display, const R: usize, const C: usize> fmt::Display
+    for StaticMatrix<T, R, C>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt_matrix(R, C, |r, c, f| write!(f, "{}", self.data[r][c]), f, None)
     }
@@ -567,7 +617,13 @@ impl<T: Scalar + fmt::Display, const R: usize, const C: usize> fmt::Display for 
 impl<T: Scalar + fmt::Debug, const R: usize, const C: usize> fmt::Debug for StaticMatrix<T, R, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let prefix = format!("StaticMatrix({R}x{C})");
-        fmt_matrix(R, C, |r, c, f| write!(f, "{:?}", self.data[r][c]), f, Some(&prefix))
+        fmt_matrix(
+            R,
+            C,
+            |r, c, f| write!(f, "{:?}", self.data[r][c]),
+            f,
+            Some(&prefix),
+        )
     }
 }
 
@@ -581,7 +637,9 @@ pub trait Array<T: Scalar> {
     fn ncols(&self) -> usize;
     /// Shape as `(nrows, ncols)`.
     #[inline]
-    fn shape(&self) -> (usize, usize) { (self.nrows(), self.ncols()) }
+    fn shape(&self) -> (usize, usize) {
+        (self.nrows(), self.ncols())
+    }
     /// Read element at `(row, col)`.
     fn get(&self, row: usize, col: usize) -> T;
 }
@@ -601,32 +659,59 @@ pub trait Matrix<T: Scalar>: Array<T> {
 fn dyn_matmul<T: Scalar>(lhs: &dyn Array<T>, rhs: &dyn Array<T>) -> Tensor<T, Cpu> {
     let (m, k) = lhs.shape();
     let (k2, n) = rhs.shape();
-    assert_eq!(k, k2, "matmul_dyn inner dimension mismatch: lhs k={k}, rhs k={k2}");
+    assert_eq!(
+        k, k2,
+        "matmul_dyn inner dimension mismatch: lhs k={k}, rhs k={k2}"
+    );
     Tensor::from_fn(m, n, |r, c| {
         (0..k).fold(T::zero_impl(), |acc, i| acc + lhs.get(r, i) * rhs.get(i, c))
     })
 }
 
 impl<T: Scalar, B: Backend> Array<T> for Tensor<T, B> {
-    #[inline] fn nrows(&self) -> usize { Tensor::nrows(self) }
-    #[inline] fn ncols(&self) -> usize { Tensor::ncols(self) }
-    #[inline] fn get(&self, row: usize, col: usize) -> T { Tensor::get(self, row, col) }
+    #[inline]
+    fn nrows(&self) -> usize {
+        Tensor::nrows(self)
+    }
+    #[inline]
+    fn ncols(&self) -> usize {
+        Tensor::ncols(self)
+    }
+    #[inline]
+    fn get(&self, row: usize, col: usize) -> T {
+        Tensor::get(self, row, col)
+    }
 }
 
 impl<T: Scalar, B: Backend> Matrix<T> for Tensor<T, B> {
-    fn t_dyn(&self) -> Tensor<T, Cpu> { self.to_cpu().t() }
-    fn matmul_dyn(&self, rhs: &dyn Array<T>) -> Tensor<T, Cpu> { dyn_matmul(self, rhs) }
+    fn t_dyn(&self) -> Tensor<T, Cpu> {
+        self.to_cpu().t()
+    }
+    fn matmul_dyn(&self, rhs: &dyn Array<T>) -> Tensor<T, Cpu> {
+        dyn_matmul(self, rhs)
+    }
 }
 
 impl<T: Scalar, const R: usize, const C: usize> Array<T> for StaticMatrix<T, R, C> {
-    #[inline] fn nrows(&self) -> usize { R }
-    #[inline] fn ncols(&self) -> usize { C }
-    #[inline] fn get(&self, row: usize, col: usize) -> T { StaticMatrix::get(self, row, col) }
+    #[inline]
+    fn nrows(&self) -> usize {
+        R
+    }
+    #[inline]
+    fn ncols(&self) -> usize {
+        C
+    }
+    #[inline]
+    fn get(&self, row: usize, col: usize) -> T {
+        StaticMatrix::get(self, row, col)
+    }
 }
 
 impl<T: Scalar, const R: usize, const C: usize> Matrix<T> for StaticMatrix<T, R, C> {
     fn t_dyn(&self) -> Tensor<T, Cpu> {
         Tensor::from_fn(C, R, |r, c| self.get(c, r))
     }
-    fn matmul_dyn(&self, rhs: &dyn Array<T>) -> Tensor<T, Cpu> { dyn_matmul(self, rhs) }
+    fn matmul_dyn(&self, rhs: &dyn Array<T>) -> Tensor<T, Cpu> {
+        dyn_matmul(self, rhs)
+    }
 }

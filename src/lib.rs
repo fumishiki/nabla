@@ -240,7 +240,7 @@ pub mod util {
     /// In-place broadcast: mutate `$out` element-wise.
     ///
     /// Requires that `$out` and every source tensor share the same shape.
-    /// Uses [`Tensor::set`] for each element; no temporary allocation is needed.
+    /// Uses [`crate::tensor::Tensor::set`] for each element; no temporary allocation is needed.
     ///
     /// # Examples
     ///
@@ -286,10 +286,10 @@ pub mod prelude {
     pub use crate::backend::{Backend, Cpu, DefaultBackend};
     pub use crate::error::{Error, Result};
     pub use crate::linalg::{Diagonal, Symmetric, TriKind, Triangular};
-    pub use crate::tensor::{Array, Matrix, StaticMatrix};
     pub use crate::scalar::Scalar;
     pub use crate::sparse::*;
     pub use crate::tensor::Tensor;
+    pub use crate::tensor::{Array, Matrix, StaticMatrix};
     pub use crate::util::{c32, c64, linspace};
     pub use nabla_macros::{einsum, mat};
 
@@ -298,4 +298,3 @@ pub mod prelude {
     #[cfg(feature = "wgpu")]
     pub use crate::backend::Wgpu;
 }
-

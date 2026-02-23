@@ -1,10 +1,10 @@
 use core::fmt;
 
 use faer::{
+    Accum, Par, Side,
     linalg::solvers::{self, DenseSolveCore},
     prelude::*,
     sparse::linalg::matmul::sparse_dense_matmul,
-    Accum, Par, Side,
 };
 
 use crate::backend::Cpu;
@@ -377,11 +377,7 @@ impl<T: Scalar> Diagonal<T> {
             n,
             n,
             |r, c| {
-                if r == c {
-                    self.diag[r]
-                } else {
-                    T::zero_impl()
-                }
+                if r == c { self.diag[r] } else { T::zero_impl() }
             },
         )
     }

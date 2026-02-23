@@ -260,25 +260,74 @@ macro_rules! impl_gpu_backend {
     ($Backend:ty, $Runtime:path) => {
         impl Backend for $Backend {
             type Storage<T: Scalar> = GpuStorage<T>;
-            #[inline] fn zeros<T: Scalar>(r: usize, c: usize) -> GpuStorage<T> { GpuStorage::zeros(r, c) }
-            #[inline] fn from_fn<T: Scalar>(r: usize, c: usize, f: impl FnMut(usize, usize) -> T) -> GpuStorage<T> { GpuStorage::from_fn(r, c, f) }
-            #[inline] fn nrows<T: Scalar>(s: &GpuStorage<T>) -> usize { s.nrows }
-            #[inline] fn ncols<T: Scalar>(s: &GpuStorage<T>) -> usize { s.ncols }
-            #[inline] fn get<T: Scalar>(s: &GpuStorage<T>, r: usize, c: usize) -> T { s.get(r, c) }
-            #[inline] fn set<T: Scalar>(s: &mut GpuStorage<T>, r: usize, c: usize, v: T) { s.set(r, c, v) }
-            #[inline] fn matmul_into<T: Scalar>(o: &mut GpuStorage<T>, a: &GpuStorage<T>, b: &GpuStorage<T>) { gpu_matmul::<T, $Runtime>(o, a, b) }
-            #[inline] fn add<T: Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> { gpu_add::<T, $Runtime>(a, b) }
-            #[inline] fn sub<T: Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> { gpu_sub::<T, $Runtime>(a, b) }
-            #[inline] fn neg<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_neg::<T, $Runtime>(a) }
-            #[inline] fn transpose<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_transpose::<T, $Runtime>(a) }
-            #[inline] fn scale<T: Scalar>(a: &GpuStorage<T>, s: T) -> GpuStorage<T> { gpu_scale::<T, $Runtime>(a, s) }
-            #[inline] fn clone_storage<T: Scalar>(s: &GpuStorage<T>) -> GpuStorage<T> { GpuStorage { nrows: s.nrows, ncols: s.ncols, data: s.data.clone() } }
+            #[inline]
+            fn zeros<T: Scalar>(r: usize, c: usize) -> GpuStorage<T> {
+                GpuStorage::zeros(r, c)
+            }
+            #[inline]
+            fn from_fn<T: Scalar>(
+                r: usize,
+                c: usize,
+                f: impl FnMut(usize, usize) -> T,
+            ) -> GpuStorage<T> {
+                GpuStorage::from_fn(r, c, f)
+            }
+            #[inline]
+            fn nrows<T: Scalar>(s: &GpuStorage<T>) -> usize {
+                s.nrows
+            }
+            #[inline]
+            fn ncols<T: Scalar>(s: &GpuStorage<T>) -> usize {
+                s.ncols
+            }
+            #[inline]
+            fn get<T: Scalar>(s: &GpuStorage<T>, r: usize, c: usize) -> T {
+                s.get(r, c)
+            }
+            #[inline]
+            fn set<T: Scalar>(s: &mut GpuStorage<T>, r: usize, c: usize, v: T) {
+                s.set(r, c, v)
+            }
+            #[inline]
+            fn matmul_into<T: Scalar>(o: &mut GpuStorage<T>, a: &GpuStorage<T>, b: &GpuStorage<T>) {
+                gpu_matmul::<T, $Runtime>(o, a, b)
+            }
+            #[inline]
+            fn add<T: Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
+                gpu_add::<T, $Runtime>(a, b)
+            }
+            #[inline]
+            fn sub<T: Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
+                gpu_sub::<T, $Runtime>(a, b)
+            }
+            #[inline]
+            fn neg<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+                gpu_neg::<T, $Runtime>(a)
+            }
+            #[inline]
+            fn transpose<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+                gpu_transpose::<T, $Runtime>(a)
+            }
+            #[inline]
+            fn scale<T: Scalar>(a: &GpuStorage<T>, s: T) -> GpuStorage<T> {
+                gpu_scale::<T, $Runtime>(a, s)
+            }
+            #[inline]
+            fn clone_storage<T: Scalar>(s: &GpuStorage<T>) -> GpuStorage<T> {
+                GpuStorage {
+                    nrows: s.nrows,
+                    ncols: s.ncols,
+                    data: s.data.clone(),
+                }
+            }
         }
     };
 }
 
-#[cfg(feature = "cuda")] impl_gpu_backend!(Cuda, cubecl_cuda::CudaRuntime);
-#[cfg(feature = "wgpu")] impl_gpu_backend!(Wgpu, cubecl_wgpu::WgpuRuntime);
+#[cfg(feature = "cuda")]
+impl_gpu_backend!(Cuda, cubecl_cuda::CudaRuntime);
+#[cfg(feature = "wgpu")]
+impl_gpu_backend!(Wgpu, cubecl_wgpu::WgpuRuntime);
 
 #[cfg(feature = "cuda")]
 /// Default backend: CUDA (highest priority when enabled).
@@ -300,9 +349,9 @@ pub type DefaultBackend = Cpu;
 // The `use cubecl_core as cubecl` alias is required so that #[cube(launch)]
 // macro-generated paths like `cubecl::prelude::*` resolve correctly.
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
-use cubecl_core as cubecl;
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
 use cubecl::prelude::*;
+#[cfg(any(feature = "cuda", feature = "wgpu"))]
+use cubecl_core as cubecl;
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 use std::any::TypeId;
 
@@ -327,16 +376,28 @@ unsafe impl<T: Scalar> Sync for GpuStorage<T> {}
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 impl<T: Scalar> GpuStorage<T> {
     pub fn zeros(nrows: usize, ncols: usize) -> Self {
-        Self { nrows, ncols, data: vec![T::zero_impl(); nrows * ncols] }
+        Self {
+            nrows,
+            ncols,
+            data: vec![T::zero_impl(); nrows * ncols],
+        }
     }
 
     pub fn from_fn(nrows: usize, ncols: usize, mut f: impl FnMut(usize, usize) -> T) -> Self {
-        let data = (0..nrows * ncols).map(|i| f(i / ncols, i % ncols)).collect();
+        let data = (0..nrows * ncols)
+            .map(|i| f(i / ncols, i % ncols))
+            .collect();
         Self { nrows, ncols, data }
     }
 
-    #[inline] pub fn get(&self, r: usize, c: usize) -> T { self.data[r * self.ncols + c] }
-    #[inline] pub fn set(&mut self, r: usize, c: usize, v: T) { self.data[r * self.ncols + c] = v; }
+    #[inline]
+    pub fn get(&self, r: usize, c: usize) -> T {
+        self.data[r * self.ncols + c]
+    }
+    #[inline]
+    pub fn set(&mut self, r: usize, c: usize, v: T) {
+        self.data[r * self.ncols + c] = v;
+    }
 }
 
 // SAFETY: cast_slice/cast_vec — sound only when TypeId::of::<T>() == TypeId::of::<U>() (same layout).
@@ -358,35 +419,45 @@ unsafe fn cast_vec<T, U>(mut v: Vec<T>) -> Vec<U> {
 #[cube(launch)]
 fn elementwise_add_kernel<F: Float>(lhs: &Array<F>, rhs: &Array<F>, out: &mut Array<F>) {
     let i = ABSOLUTE_POS;
-    if i < out.len() { out[i] = lhs[i] + rhs[i]; }
+    if i < out.len() {
+        out[i] = lhs[i] + rhs[i];
+    }
 }
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 #[cube(launch)]
 fn elementwise_sub_kernel<F: Float>(lhs: &Array<F>, rhs: &Array<F>, out: &mut Array<F>) {
     let i = ABSOLUTE_POS;
-    if i < out.len() { out[i] = lhs[i] - rhs[i]; }
+    if i < out.len() {
+        out[i] = lhs[i] - rhs[i];
+    }
 }
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 #[cube(launch)]
 fn elementwise_neg_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
     let i = ABSOLUTE_POS;
-    if i < out.len() { out[i] = -input[i]; }
+    if i < out.len() {
+        out[i] = -input[i];
+    }
 }
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 #[cube(launch)]
 fn elementwise_scale_f32_kernel(input: &Array<f32>, out: &mut Array<f32>, scalar: f32) {
     let i = ABSOLUTE_POS;
-    if i < out.len() { out[i] = input[i] * scalar; }
+    if i < out.len() {
+        out[i] = input[i] * scalar;
+    }
 }
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 #[cube(launch)]
 fn elementwise_scale_f64_kernel(input: &Array<f64>, out: &mut Array<f64>, scalar: f64) {
     let i = ABSOLUTE_POS;
-    if i < out.len() { out[i] = input[i] * scalar; }
+    if i < out.len() {
+        out[i] = input[i] * scalar;
+    }
 }
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
@@ -403,14 +474,20 @@ fn transpose_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>, rows: usize,
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 #[cube(launch)]
 fn matmul_naive_kernel<F: Float>(
-    a: &Array<F>, b: &Array<F>, out: &mut Array<F>, k_dim: usize, n_dim: usize,
+    a: &Array<F>,
+    b: &Array<F>,
+    out: &mut Array<F>,
+    k_dim: usize,
+    n_dim: usize,
 ) {
     let i = ABSOLUTE_POS;
     if i < out.len() {
         let row = i / n_dim;
         let col = i % n_dim;
         let mut acc = F::new(0.0_f32);
-        for k in 0..k_dim { acc += a[row * k_dim + k] * b[k * n_dim + col]; }
+        for k in 0..k_dim {
+            acc += a[row * k_dim + k] * b[k * n_dim + col];
+        }
         out[i] = acc;
     }
 }
@@ -424,18 +501,24 @@ fn cube_count(n: usize) -> CubeCount {
 macro_rules! run_elementwise_binary {
     ($kernel:path, $fn_name:ident) => {
         fn $fn_name<E: Float + CubeElement, R: Runtime>(a: &[E], b: &[E]) -> Vec<E>
-        where R::Device: Default {
+        where
+            R::Device: Default,
+        {
             let client = R::client(&R::Device::default());
             let n = a.len();
             let h_a = client.create_from_slice(E::as_bytes(a));
             let h_b = client.create_from_slice(E::as_bytes(b));
             let h_out = client.empty(n * std::mem::size_of::<E>());
             if let Err(e) = $kernel::<E, R>(
-                &client, cube_count(n), CubeDim::new_1d(256),
+                &client,
+                cube_count(n),
+                CubeDim::new_1d(256),
                 unsafe { ArrayArg::from_raw_parts::<E>(&h_a, n, 1) },
                 unsafe { ArrayArg::from_raw_parts::<E>(&h_b, n, 1) },
                 unsafe { ArrayArg::from_raw_parts::<E>(&h_out, n, 1) },
-            ) { panic!("GPU kernel launch failed: {e}"); }
+            ) {
+                panic!("GPU kernel launch failed: {e}");
+            }
             E::from_bytes(&client.read_one(h_out)).to_vec()
         }
     };
@@ -445,16 +528,22 @@ macro_rules! run_elementwise_binary {
 macro_rules! run_elementwise_unary {
     ($kernel:path, $fn_name:ident) => {
         fn $fn_name<E: Float + CubeElement, R: Runtime>(a: &[E]) -> Vec<E>
-        where R::Device: Default {
+        where
+            R::Device: Default,
+        {
             let client = R::client(&R::Device::default());
             let n = a.len();
             let h_in = client.create_from_slice(E::as_bytes(a));
             let h_out = client.empty(n * std::mem::size_of::<E>());
             if let Err(e) = $kernel::<E, R>(
-                &client, cube_count(n), CubeDim::new_1d(256),
+                &client,
+                cube_count(n),
+                CubeDim::new_1d(256),
                 unsafe { ArrayArg::from_raw_parts::<E>(&h_in, n, 1) },
                 unsafe { ArrayArg::from_raw_parts::<E>(&h_out, n, 1) },
-            ) { panic!("GPU kernel launch failed: {e}"); }
+            ) {
+                panic!("GPU kernel launch failed: {e}");
+            }
             E::from_bytes(&client.read_one(h_out)).to_vec()
         }
     };
@@ -473,17 +562,23 @@ run_elementwise_unary!(elementwise_neg_kernel::launch, run_neg);
 macro_rules! run_scale {
     ($ty:ty, $kernel:path, $fn_name:ident) => {
         fn $fn_name<R: Runtime>(a: &[$ty], s: $ty) -> Vec<$ty>
-        where R::Device: Default {
+        where
+            R::Device: Default,
+        {
             let client = R::client(&R::Device::default());
             let n = a.len();
             let h_in = client.create_from_slice(<$ty>::as_bytes(a));
             let h_out = client.empty(n * std::mem::size_of::<$ty>());
             if let Err(e) = $kernel::<R>(
-                &client, cube_count(n), CubeDim::new_1d(256),
+                &client,
+                cube_count(n),
+                CubeDim::new_1d(256),
                 unsafe { ArrayArg::from_raw_parts::<$ty>(&h_in, n, 1) },
                 unsafe { ArrayArg::from_raw_parts::<$ty>(&h_out, n, 1) },
                 ScalarArg::new(s),
-            ) { panic!("GPU kernel launch failed: {e}"); }
+            ) {
+                panic!("GPU kernel launch failed: {e}");
+            }
             <$ty>::from_bytes(&client.read_one(h_out)).to_vec()
         }
     };
@@ -497,39 +592,55 @@ run_scale!(f64, elementwise_scale_f64_kernel::launch, run_scale_f64);
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 fn run_transpose<E: Float + CubeElement, R: Runtime>(a: &[E], rows: usize, cols: usize) -> Vec<E>
-where R::Device: Default {
+where
+    R::Device: Default,
+{
     let client = R::client(&R::Device::default());
     let n = rows * cols;
     let h_in = client.create_from_slice(E::as_bytes(a));
     let h_out = client.empty(n * std::mem::size_of::<E>());
     if let Err(e) = transpose_kernel::launch::<E, R>(
-        &client, cube_count(n), CubeDim::new_1d(256),
+        &client,
+        cube_count(n),
+        CubeDim::new_1d(256),
         unsafe { ArrayArg::from_raw_parts::<E>(&h_in, n, 1) },
         unsafe { ArrayArg::from_raw_parts::<E>(&h_out, n, 1) },
         ScalarArg::new(rows),
         ScalarArg::new(cols),
-    ) { panic!("GPU kernel launch failed: {e}"); }
+    ) {
+        panic!("GPU kernel launch failed: {e}");
+    }
     E::from_bytes(&client.read_one(h_out)).to_vec()
 }
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 fn run_matmul<E: Float + CubeElement, R: Runtime>(
-    a: &[E], b: &[E], m: usize, k: usize, n: usize,
+    a: &[E],
+    b: &[E],
+    m: usize,
+    k: usize,
+    n: usize,
 ) -> Vec<E>
-where R::Device: Default {
+where
+    R::Device: Default,
+{
     let client = R::client(&R::Device::default());
     let out_n = m * n;
     let h_a = client.create_from_slice(E::as_bytes(a));
     let h_b = client.create_from_slice(E::as_bytes(b));
     let h_out = client.empty(out_n * std::mem::size_of::<E>());
     if let Err(e) = matmul_naive_kernel::launch::<E, R>(
-        &client, cube_count(out_n), CubeDim::new_1d(256),
+        &client,
+        cube_count(out_n),
+        CubeDim::new_1d(256),
         unsafe { ArrayArg::from_raw_parts::<E>(&h_a, m * k, 1) },
         unsafe { ArrayArg::from_raw_parts::<E>(&h_b, k * n, 1) },
         unsafe { ArrayArg::from_raw_parts::<E>(&h_out, out_n, 1) },
         ScalarArg::new(k),
         ScalarArg::new(n),
-    ) { panic!("GPU kernel launch failed: {e}"); }
+    ) {
+        panic!("GPU kernel launch failed: {e}");
+    }
     E::from_bytes(&client.read_one(h_out)).to_vec()
 }
 
@@ -553,7 +664,8 @@ fn typed_run<T: Scalar>(
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 fn typed_run2<T: Scalar>(
-    a: &[T], b: &[T],
+    a: &[T],
+    b: &[T],
     f32_fn: impl FnOnce(&[f32], &[f32]) -> Vec<f32>,
     f64_fn: impl FnOnce(&[f64], &[f64]) -> Vec<f64>,
     fallback: impl FnOnce(&[T], &[T]) -> Vec<T>,
@@ -570,10 +682,16 @@ fn typed_run2<T: Scalar>(
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 macro_rules! gpu_elementwise_binary {
     ($run_f32:expr, $run_f64:expr, $fallback:expr, $fn_name:ident) => {
-        pub(crate) fn $fn_name<T: Scalar, R: Runtime>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T>
-        where R::Device: Default {
+        pub(crate) fn $fn_name<T: Scalar, R: Runtime>(
+            a: &GpuStorage<T>,
+            b: &GpuStorage<T>,
+        ) -> GpuStorage<T>
+        where
+            R::Device: Default,
+        {
             GpuStorage {
-                nrows: a.nrows, ncols: a.ncols,
+                nrows: a.nrows,
+                ncols: a.ncols,
                 data: typed_run2(&a.data, &b.data, $run_f32, $run_f64, $fallback),
             }
         }
@@ -584,9 +702,12 @@ macro_rules! gpu_elementwise_binary {
 macro_rules! gpu_elementwise_unary {
     ($run_f32:expr, $run_f64:expr, $fallback:expr, $fn_name:ident) => {
         pub(crate) fn $fn_name<T: Scalar, R: Runtime>(a: &GpuStorage<T>) -> GpuStorage<T>
-        where R::Device: Default {
+        where
+            R::Device: Default,
+        {
             GpuStorage {
-                nrows: a.nrows, ncols: a.ncols,
+                nrows: a.nrows,
+                ncols: a.ncols,
                 data: typed_run(&a.data, $run_f32, $run_f64, $fallback),
             }
         }
@@ -595,28 +716,33 @@ macro_rules! gpu_elementwise_unary {
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 gpu_elementwise_binary!(
-    run_add::<f32, R>, run_add::<f64, R>,
+    run_add::<f32, R>,
+    run_add::<f64, R>,
     |a, b| a.iter().zip(b).map(|(&x, &y)| x + y).collect(),
     gpu_add
 );
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 gpu_elementwise_binary!(
-    run_sub::<f32, R>, run_sub::<f64, R>,
+    run_sub::<f32, R>,
+    run_sub::<f64, R>,
     |a, b| a.iter().zip(b).map(|(&x, &y)| x - y).collect(),
     gpu_sub
 );
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 gpu_elementwise_unary!(
-    run_neg::<f32, R>, run_neg::<f64, R>,
+    run_neg::<f32, R>,
+    run_neg::<f64, R>,
     |a| a.iter().map(|&x| -x).collect(),
     gpu_neg
 );
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 pub(crate) fn gpu_scale<T: Scalar, R: Runtime>(a: &GpuStorage<T>, s: T) -> GpuStorage<T>
-where R::Device: Default {
+where
+    R::Device: Default,
+{
     let data = if TypeId::of::<T>() == TypeId::of::<f32>() {
         // SAFETY: TypeId proves T == f32.
         unsafe {
@@ -631,21 +757,33 @@ where R::Device: Default {
     } else {
         a.data.iter().map(|&x| x * s).collect()
     };
-    GpuStorage { nrows: a.nrows, ncols: a.ncols, data }
+    GpuStorage {
+        nrows: a.nrows,
+        ncols: a.ncols,
+        data,
+    }
 }
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 pub(crate) fn gpu_transpose<T: Scalar, R: Runtime>(a: &GpuStorage<T>) -> GpuStorage<T>
-where R::Device: Default {
+where
+    R::Device: Default,
+{
     let (rows, cols) = (a.nrows, a.ncols);
     GpuStorage {
-        nrows: cols, ncols: rows,
-        data: typed_run(&a.data,
+        nrows: cols,
+        ncols: rows,
+        data: typed_run(
+            &a.data,
             |d| run_transpose::<f32, R>(d, rows, cols),
             |d| run_transpose::<f64, R>(d, rows, cols),
             |_| {
                 let mut buf = vec![T::zero_impl(); rows * cols];
-                for r in 0..rows { for c in 0..cols { buf[c * rows + r] = a.data[r * cols + c]; } }
+                for r in 0..rows {
+                    for c in 0..cols {
+                        buf[c * rows + r] = a.data[r * cols + c];
+                    }
+                }
                 buf
             },
         ),
@@ -654,17 +792,26 @@ where R::Device: Default {
 
 #[cfg(any(feature = "cuda", feature = "wgpu"))]
 pub(crate) fn gpu_matmul<T: Scalar, R: Runtime>(
-    out: &mut GpuStorage<T>, a: &GpuStorage<T>, b: &GpuStorage<T>,
-) where R::Device: Default {
+    out: &mut GpuStorage<T>,
+    a: &GpuStorage<T>,
+    b: &GpuStorage<T>,
+) where
+    R::Device: Default,
+{
     let (m, k, n) = (a.nrows, a.ncols, b.ncols);
-    out.data = typed_run2(&a.data, &b.data,
+    out.data = typed_run2(
+        &a.data,
+        &b.data,
         |a, b| run_matmul::<f32, R>(a, b, m, k, n),
         |a, b| run_matmul::<f64, R>(a, b, m, k, n),
         |a, b| {
             let mut buf = vec![T::zero_impl(); m * n];
-            for i in 0..m { for j in 0..n {
-                buf[i * n + j] = (0..k).fold(T::zero_impl(), |s, l| s + a[i * k + l] * b[l * n + j]);
-            }}
+            for i in 0..m {
+                for j in 0..n {
+                    buf[i * n + j] =
+                        (0..k).fold(T::zero_impl(), |s, l| s + a[i * k + l] * b[l * n + j]);
+                }
+            }
             buf
         },
     );
