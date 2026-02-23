@@ -1,0 +1,26 @@
+[package]
+name = "nabla"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+
+[workspace]
+members = ["macros"]
+
+[features]
+default = ["cpu"]
+cpu  = []
+cuda = ["dep:cubecl-cuda"]
+wgpu = ["dep:cubecl-wgpu"]
+hip = ["dep:cubecl-hip"]
+
+[dependencies]
+faer = "0.24"
+faer-traits = "0.24"
+rayon = "1"
+nabla-macros = { path = "macros" }
+cubecl-cuda = { version = "0.9", optional = true }
+cubecl-wgpu = { version = "0.9", optional = true }
+cubecl-hip  = { version = "0.9", optional = true }
+
+[dev-dependencies]
