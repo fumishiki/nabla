@@ -255,6 +255,183 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         (top_left, top_right, bottom_left, bottom_right)
     }
 
+    /// Element-wise `e^x`.
+    #[must_use]
+    #[inline]
+    pub fn exp(&self) -> Self {
+        Self::from_storage(B::exp(&self.storage))
+    }
+
+    /// Element-wise natural logarithm `ln(x)`.
+    #[must_use]
+    #[inline]
+    pub fn ln(&self) -> Self {
+        Self::from_storage(B::ln(&self.storage))
+    }
+
+    /// Element-wise `ln(1 + x)`.
+    #[must_use]
+    #[inline]
+    pub fn log1p(&self) -> Self {
+        Self::from_storage(B::log1p(&self.storage))
+    }
+
+    /// Element-wise `sin(x)`.
+    #[must_use]
+    #[inline]
+    pub fn sin(&self) -> Self {
+        Self::from_storage(B::sin(&self.storage))
+    }
+
+    /// Element-wise `cos(x)`.
+    #[must_use]
+    #[inline]
+    pub fn cos(&self) -> Self {
+        Self::from_storage(B::cos(&self.storage))
+    }
+
+    /// Element-wise `tanh(x)`.
+    #[must_use]
+    #[inline]
+    pub fn tanh(&self) -> Self {
+        Self::from_storage(B::tanh(&self.storage))
+    }
+
+    /// Element-wise `sqrt(x)`.
+    #[must_use]
+    #[inline]
+    pub fn sqrt(&self) -> Self {
+        Self::from_storage(B::sqrt(&self.storage))
+    }
+
+    /// Element-wise absolute value.
+    ///
+    /// For complex types, returns the magnitude as the real part with zero imaginary part.
+    #[must_use]
+    #[inline]
+    pub fn abs(&self) -> Self {
+        Self::from_storage(B::abs(&self.storage))
+    }
+
+    /// Element-wise reciprocal `1/x`.
+    #[must_use]
+    #[inline]
+    pub fn recip(&self) -> Self {
+        Self::from_storage(B::recip(&self.storage))
+    }
+
+    /// Element-wise error function.
+    ///
+    /// Uses the Abramowitz & Stegun polynomial approximation (max error ~1.5e-7).
+    #[must_use]
+    #[inline]
+    pub fn erf(&self) -> Self {
+        Self::from_storage(B::erf(&self.storage))
+    }
+
+    /// Element-wise `ceil(x)`.
+    #[must_use]
+    #[inline]
+    pub fn ceil(&self) -> Self {
+        Self::from_storage(B::ceil(&self.storage))
+    }
+
+    /// Element-wise `floor(x)`.
+    #[must_use]
+    #[inline]
+    pub fn floor(&self) -> Self {
+        Self::from_storage(B::floor(&self.storage))
+    }
+
+    /// Element-wise `round(x)`.
+    #[must_use]
+    #[inline]
+    pub fn round(&self) -> Self {
+        Self::from_storage(B::round(&self.storage))
+    }
+
+    /// Element-wise `x^p` for scalar exponent `p`.
+    #[must_use]
+    #[inline]
+    pub fn powf(&self, p: T) -> Self {
+        Self::from_storage(B::powf(&self.storage, p))
+    }
+
+    /// Element-wise multiplication `self[i,j] * other[i,j]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self.shape() != other.shape()`.
+    #[must_use]
+    pub fn mul_elem(&self, other: &Self) -> Self {
+        assert_eq!(self.shape(), other.shape(), "mul_elem shape mismatch");
+        Self::from_storage(B::mul_elem(&self.storage, &other.storage))
+    }
+
+    /// Element-wise division `self[i,j] / other[i,j]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self.shape() != other.shape()`.
+    #[must_use]
+    pub fn div_elem(&self, other: &Self) -> Self {
+        assert_eq!(self.shape(), other.shape(), "div_elem shape mismatch");
+        Self::from_storage(B::div_elem(&self.storage, &other.storage))
+    }
+
+    /// Sum of all elements.
+    ///
+    /// Returns the additive identity for an empty matrix.
+    #[must_use]
+    #[inline]
+    pub fn sum_all(&self) -> T {
+        B::sum_all(&self.storage)
+    }
+
+    /// Element with the maximum value (or maximum magnitude for complex types).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is empty.
+    #[must_use]
+    #[inline]
+    pub fn max_all(&self) -> T {
+        B::max_all(&self.storage)
+    }
+
+    /// Element with the minimum value (or minimum magnitude for complex types).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is empty.
+    #[must_use]
+    #[inline]
+    pub fn min_all(&self) -> T {
+        B::min_all(&self.storage)
+    }
+
+    /// `(row, col)` of the element with the maximum value (or magnitude for complex types).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is empty.
+    #[must_use]
+    #[inline]
+    pub fn argmax(&self) -> (usize, usize) {
+        B::argmax_all(&self.storage)
+    }
+
+    /// `(row, col)` of the element with the minimum value (or magnitude for complex types).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is empty.
+    #[must_use]
+    #[inline]
+    pub fn argmin(&self) -> (usize, usize) {
+        B::argmin_all(&self.storage)
+    }
+
     /// Return the transpose: a new `Tensor` of shape `(ncols, nrows)`.
     #[must_use]
     pub fn t(&self) -> Self {

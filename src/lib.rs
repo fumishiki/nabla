@@ -22,6 +22,8 @@ pub mod error {
         },
         /// A dimension value was invalid for the given context.
         InvalidDimension(String),
+        /// GPU kernel launch or execution failed.
+        GpuKernelFailed(String),
     }
 
     impl core::fmt::Display for Error {
@@ -33,6 +35,7 @@ pub mod error {
                     expected.0, expected.1, got.0, got.1
                 ),
                 Self::InvalidDimension(msg) => write!(f, "invalid dimension: {msg}"),
+                Self::GpuKernelFailed(msg) => write!(f, "GPU kernel failed: {msg}"),
             }
         }
     }
@@ -56,11 +59,15 @@ pub mod error {
 pub mod scalar {
     use faer_traits::ComplexField;
 
+    use crate::backend::{MathOps, ReductionOps};
+
     /// Marker trait for numeric types supported by nabla.
     ///
     /// Implemented for `f32`, `f64`, `c32`, and `c64` — the four types that faer
     /// provides native SIMD kernels for.
-    pub trait Scalar: ComplexField + Copy + Send + Sync + 'static {}
+    // MathOps and ReductionOps are private supertraits (sealed impl details) — suppress the lint.
+    #[allow(private_bounds)]
+    pub trait Scalar: ComplexField + MathOps + ReductionOps + Copy + Send + Sync + 'static {}
 
     macro_rules! impl_scalar {
         ($($ty:ty),* $(,)?) => {
@@ -73,6 +80,9 @@ pub mod scalar {
 
 /// Compute backends (CPU + future GPU stubs).
 pub mod backend;
+
+#[cfg(any(feature = "cuda", feature = "wgpu"))]
+pub(crate) mod gpu;
 
 /// 2-D dense tensor type with operator overloads.
 pub mod tensor;

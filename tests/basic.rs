@@ -278,7 +278,7 @@ fn diagonal_to_tensor_and_mul() {
 #[test]
 fn symmetric_eigen() {
     // 2x2 symmetric positive definite matrix
-    let a: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| [[4.0_f64, 2.0], [2.0, 3.0]][i][j]);
+    let a: Tensor<f64, Cpu> = Tensor::from_fn(2, 2, |i, j| [[4.0_f64, 2.0], [2.0, 3.0]][i][j]);
     let sym = Symmetric::new(a, faer::Side::Lower).unwrap();
     let evals = sym.eigenvalues().unwrap();
     assert_eq!(evals.len(), 2);
@@ -442,4 +442,66 @@ fn slice_empty_range() {
     assert_eq!(s.shape(), (0, 3));
     let s2 = a.slice(0..3, 2..2); // 0 cols
     assert_eq!(s2.shape(), (3, 0));
+}
+
+// ── Wave 6: reduction tests ───────────────────────────────────────────────────
+
+#[test]
+fn sum_all_basic() {
+    let a: Tensor<f64> = Tensor::from_fn(2, 3, |i, j| (i * 3 + j + 1) as f64);
+    // [[1,2,3],[4,5,6]] → sum = 21
+    assert!(approx_eq(a.sum_all(), 21.0));
+}
+
+#[test]
+fn sum_all_empty() {
+    let z: Tensor<f64> = Tensor::zeros(0, 0);
+    assert!(approx_eq(z.sum_all(), 0.0));
+}
+
+#[test]
+fn max_all_basic() {
+    let a: Tensor<f64> = mat![[3.0_f64, 1.0], [5.0, 2.0]];
+    assert!(approx_eq(a.max_all(), 5.0));
+}
+
+#[test]
+fn min_all_basic() {
+    let a: Tensor<f64> = mat![[3.0_f64, 1.0], [5.0, 2.0]];
+    assert!(approx_eq(a.min_all(), 1.0));
+}
+
+#[test]
+fn argmax_basic() {
+    // max is 5.0 at (1,0)
+    let a: Tensor<f64> = mat![[3.0_f64, 1.0], [5.0, 2.0]];
+    assert_eq!(a.argmax(), (1, 0));
+}
+
+#[test]
+fn argmin_basic() {
+    // min is 1.0 at (0,1)
+    let a: Tensor<f64> = mat![[3.0_f64, 1.0], [5.0, 2.0]];
+    assert_eq!(a.argmin(), (0, 1));
+}
+
+#[test]
+fn argmax_first_element() {
+    // max is at (0,0)
+    let a: Tensor<f32> = Tensor::from_fn(3, 3, |i, j| -(i as f32) - (j as f32));
+    assert_eq!(a.argmax(), (0, 0));
+}
+
+#[test]
+fn argmin_last_element() {
+    // a[i,j] = -(i + j), so the minimum (most negative) is at (2,2)
+    let a: Tensor<f32> = Tensor::from_fn(3, 3, |i, j| -((i as f32) + (j as f32)));
+    assert_eq!(a.argmin(), (2, 2));
+}
+
+#[test]
+fn sum_all_f32() {
+    let a: Tensor<f32> = Tensor::from_fn(1, 4, |_, j| (j + 1) as f32);
+    // [1, 2, 3, 4] → sum = 10
+    assert!((a.sum_all() - 10.0_f32).abs() < 1e-5);
 }

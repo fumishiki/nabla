@@ -12,6 +12,216 @@ use faer::{Accum, Mat, Par, Scale, linalg::matmul::matmul};
 
 use crate::scalar::Scalar;
 
+// Abramowitz & Stegun polynomial approximation for erf (max error ~1.5e-7).
+#[inline]
+fn erf_approx(x: f64) -> f64 {
+    let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
+    let poly =
+        t * (0.254_829_592 + t * (-0.284_496_736 + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
+    let result = 1.0 - poly * (-x * x).exp();
+    if x >= 0.0 { result } else { -result }
+}
+
+// Reduction helpers: sum identity and ordered comparison for all four Scalar types.
+// Used exclusively by sum_all/max_all/min_all/argmax_all/argmin_all — not part of the public API.
+pub(crate) trait ReductionOps: Sized + Copy {
+    /// Additive identity (zero) for folding sum.
+    fn reduction_zero() -> Self;
+    /// Accumulate `self + other` for sum reduction.
+    fn reduction_add(self, other: Self) -> Self;
+    /// Return the element with the larger magnitude (or value for real types).
+    fn reduction_max(self, other: Self) -> Self;
+    /// Return the element with the smaller magnitude (or value for real types).
+    fn reduction_min(self, other: Self) -> Self;
+    /// Returns `true` if `self` is strictly "greater than" `other`.
+    ///
+    /// For real types (`f32`/`f64`): standard `>` comparison.
+    /// For complex types (`c32`/`c64`): compares magnitudes `|self|² > |other|²`.
+    fn reduction_gt(self, other: Self) -> bool;
+}
+
+impl ReductionOps for f32 {
+    #[inline] fn reduction_zero() -> Self { 0.0 }
+    #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
+    #[inline] fn reduction_max(self, other: Self) -> Self { self.max(other) }
+    #[inline] fn reduction_min(self, other: Self) -> Self { self.min(other) }
+    #[inline] fn reduction_gt(self, other: Self) -> bool { self > other }
+}
+
+impl ReductionOps for f64 {
+    #[inline] fn reduction_zero() -> Self { 0.0 }
+    #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
+    #[inline] fn reduction_max(self, other: Self) -> Self { self.max(other) }
+    #[inline] fn reduction_min(self, other: Self) -> Self { self.min(other) }
+    #[inline] fn reduction_gt(self, other: Self) -> bool { self > other }
+}
+
+impl ReductionOps for faer::c32 {
+    #[inline] fn reduction_zero() -> Self { Self::new(0.0, 0.0) }
+    #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
+    // Compare by magnitude squared: re^2 + im^2
+    #[inline] fn reduction_max(self, other: Self) -> Self {
+        let self_mag2 = self.re * self.re + self.im * self.im;
+        let other_mag2 = other.re * other.re + other.im * other.im;
+        if self_mag2 >= other_mag2 { self } else { other }
+    }
+    #[inline] fn reduction_min(self, other: Self) -> Self {
+        let self_mag2 = self.re * self.re + self.im * self.im;
+        let other_mag2 = other.re * other.re + other.im * other.im;
+        if self_mag2 <= other_mag2 { self } else { other }
+    }
+    #[inline] fn reduction_gt(self, other: Self) -> bool {
+        let self_mag2 = self.re * self.re + self.im * self.im;
+        let other_mag2 = other.re * other.re + other.im * other.im;
+        self_mag2 > other_mag2
+    }
+}
+
+impl ReductionOps for faer::c64 {
+    #[inline] fn reduction_zero() -> Self { Self::new(0.0, 0.0) }
+    #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
+    #[inline] fn reduction_max(self, other: Self) -> Self {
+        let self_mag2 = self.re * self.re + self.im * self.im;
+        let other_mag2 = other.re * other.re + other.im * other.im;
+        if self_mag2 >= other_mag2 { self } else { other }
+    }
+    #[inline] fn reduction_min(self, other: Self) -> Self {
+        let self_mag2 = self.re * self.re + self.im * self.im;
+        let other_mag2 = other.re * other.re + other.im * other.im;
+        if self_mag2 <= other_mag2 { self } else { other }
+    }
+    #[inline] fn reduction_gt(self, other: Self) -> bool {
+        let self_mag2 = self.re * self.re + self.im * self.im;
+        let other_mag2 = other.re * other.re + other.im * other.im;
+        self_mag2 > other_mag2
+    }
+}
+
+// Elementwise math dispatch for all four Scalar types.
+// pub(crate) so that scalar::Scalar can use it as a supertrait bound.
+pub(crate) trait MathOps: Sized + Copy {
+    fn math_exp(self) -> Self;
+    fn math_ln(self) -> Self;
+    fn math_log1p(self) -> Self;
+    fn math_sin(self) -> Self;
+    fn math_cos(self) -> Self;
+    fn math_tanh(self) -> Self;
+    fn math_sqrt(self) -> Self;
+    fn math_abs(self) -> Self;
+    fn math_recip(self) -> Self;
+    fn math_erf(self) -> Self;
+    fn math_ceil(self) -> Self;
+    fn math_floor(self) -> Self;
+    fn math_round(self) -> Self;
+    fn math_powf(self, p: Self) -> Self;
+    fn math_mul(self, other: Self) -> Self;
+    fn math_div(self, other: Self) -> Self;
+}
+
+impl MathOps for f32 {
+    #[inline] fn math_exp(self) -> Self { self.exp() }
+    #[inline] fn math_ln(self) -> Self { self.ln() }
+    #[inline] fn math_log1p(self) -> Self { self.ln_1p() }
+    #[inline] fn math_sin(self) -> Self { self.sin() }
+    #[inline] fn math_cos(self) -> Self { self.cos() }
+    #[inline] fn math_tanh(self) -> Self { self.tanh() }
+    #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
+    #[inline] fn math_abs(self) -> Self { self.abs() }
+    #[inline] fn math_recip(self) -> Self { self.recip() }
+    #[inline]
+    #[allow(clippy::cast_possible_truncation)]
+    fn math_erf(self) -> Self { erf_approx(f64::from(self)) as f32 }
+    #[inline] fn math_ceil(self) -> Self { self.ceil() }
+    #[inline] fn math_floor(self) -> Self { self.floor() }
+    #[inline] fn math_round(self) -> Self { self.round() }
+    #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p) }
+    #[inline] fn math_mul(self, other: Self) -> Self { self * other }
+    #[inline] fn math_div(self, other: Self) -> Self { self / other }
+}
+
+impl MathOps for f64 {
+    #[inline] fn math_exp(self) -> Self { self.exp() }
+    #[inline] fn math_ln(self) -> Self { self.ln() }
+    #[inline] fn math_log1p(self) -> Self { self.ln_1p() }
+    #[inline] fn math_sin(self) -> Self { self.sin() }
+    #[inline] fn math_cos(self) -> Self { self.cos() }
+    #[inline] fn math_tanh(self) -> Self { self.tanh() }
+    #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
+    #[inline] fn math_abs(self) -> Self { self.abs() }
+    #[inline] fn math_recip(self) -> Self { self.recip() }
+    #[inline] fn math_erf(self) -> Self { erf_approx(self) }
+    #[inline] fn math_ceil(self) -> Self { self.ceil() }
+    #[inline] fn math_floor(self) -> Self { self.floor() }
+    #[inline] fn math_round(self) -> Self { self.round() }
+    #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p) }
+    #[inline] fn math_mul(self, other: Self) -> Self { self * other }
+    #[inline] fn math_div(self, other: Self) -> Self { self / other }
+}
+
+impl MathOps for faer::c32 {
+    #[inline] fn math_exp(self) -> Self { self.exp() }
+    #[inline] fn math_ln(self) -> Self { self.ln() }
+    // log1p(z) = ln(1 + z)
+    #[inline] fn math_log1p(self) -> Self { (Self::new(1.0 + self.re, self.im)).ln() }
+    #[inline] fn math_sin(self) -> Self { self.sin() }
+    #[inline] fn math_cos(self) -> Self { self.cos() }
+    #[inline] fn math_tanh(self) -> Self { self.tanh() }
+    #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
+    // abs: magnitude as real part, 0 as imaginary
+    #[inline] fn math_abs(self) -> Self { Self::new(self.norm(), 0.0) }
+    // recip: 1/z = conj(z) / |z|^2
+    #[inline] fn math_recip(self) -> Self { self.inv() }
+    // erf: apply component-wise (approximate via real erf on re, im components)
+    #[inline]
+    #[allow(clippy::cast_possible_truncation)]
+    fn math_erf(self) -> Self {
+        Self::new(erf_approx(f64::from(self.re)) as f32, erf_approx(f64::from(self.im)) as f32)
+    }
+    // ceil/floor/round: component-wise on re/im
+    #[inline] fn math_ceil(self) -> Self { Self::new(self.re.ceil(), self.im.ceil()) }
+    #[inline] fn math_floor(self) -> Self { Self::new(self.re.floor(), self.im.floor()) }
+    #[inline] fn math_round(self) -> Self { Self::new(self.re.round(), self.im.round()) }
+    #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p.re) }
+    #[inline] fn math_mul(self, other: Self) -> Self { self * other }
+    #[inline] fn math_div(self, other: Self) -> Self { self / other }
+}
+
+impl MathOps for faer::c64 {
+    #[inline] fn math_exp(self) -> Self { self.exp() }
+    #[inline] fn math_ln(self) -> Self { self.ln() }
+    #[inline] fn math_log1p(self) -> Self { (Self::new(1.0 + self.re, self.im)).ln() }
+    #[inline] fn math_sin(self) -> Self { self.sin() }
+    #[inline] fn math_cos(self) -> Self { self.cos() }
+    #[inline] fn math_tanh(self) -> Self { self.tanh() }
+    #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
+    #[inline] fn math_abs(self) -> Self { Self::new(self.norm(), 0.0) }
+    #[inline] fn math_recip(self) -> Self { self.inv() }
+    #[inline] fn math_erf(self) -> Self {
+        Self::new(erf_approx(self.re), erf_approx(self.im))
+    }
+    #[inline] fn math_ceil(self) -> Self { Self::new(self.re.ceil(), self.im.ceil()) }
+    #[inline] fn math_floor(self) -> Self { Self::new(self.re.floor(), self.im.floor()) }
+    #[inline] fn math_round(self) -> Self { Self::new(self.re.round(), self.im.round()) }
+    #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p.re) }
+    #[inline] fn math_mul(self, other: Self) -> Self { self * other }
+    #[inline] fn math_div(self, other: Self) -> Self { self / other }
+}
+
+// Macro: apply a MathOps method element-wise via Mat::from_fn.
+macro_rules! mat_elemwise_unary {
+    ($a:expr, $method:ident) => {{
+        let (r, c) = ($a.nrows(), $a.ncols());
+        Mat::from_fn(r, c, |i, j| (*$a.get(i, j)).$method())
+    }};
+}
+
+macro_rules! mat_elemwise_binary {
+    ($a:expr, $b:expr, $method:ident) => {{
+        let (r, c) = ($a.nrows(), $a.ncols());
+        Mat::from_fn(r, c, |i, j| (*$a.get(i, j)).$method(*$b.get(i, j)))
+    }};
+}
+
 mod private {
     pub trait Sealed {}
 }
@@ -67,6 +277,110 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
 
     /// Clone storage.
     fn clone_storage<T: Scalar>(storage: &Self::Storage<T>) -> Self::Storage<T>;
+
+    // --- Elementwise math operations ---
+
+    /// Element-wise `e^x`.
+    fn exp<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise natural logarithm `ln(x)`.
+    fn ln<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `ln(1 + x)`.
+    fn log1p<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `sin(x)`.
+    fn sin<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `cos(x)`.
+    fn cos<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `tanh(x)`.
+    fn tanh<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `sqrt(x)`.
+    fn sqrt<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise absolute value.
+    ///
+    /// For complex types, returns the magnitude as the real part with zero imaginary part.
+    fn abs<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise reciprocal `1/x`.
+    fn recip<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise error function.
+    ///
+    /// Uses the Abramowitz & Stegun polynomial approximation (max error ~1.5e-7).
+    /// For complex types, applies component-wise to re and im parts.
+    fn erf<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `ceil(x)`.
+    ///
+    /// For complex types, applies component-wise to re and im parts.
+    fn ceil<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `floor(x)`.
+    ///
+    /// For complex types, applies component-wise to re and im parts.
+    fn floor<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `round(x)`.
+    ///
+    /// For complex types, applies component-wise to re and im parts.
+    fn round<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `x^p` for scalar exponent `p`.
+    ///
+    /// For complex types, uses the real part of `p` as the exponent.
+    fn powf<T: Scalar>(a: &Self::Storage<T>, p: T) -> Self::Storage<T>;
+
+    /// Element-wise multiplication `a[i,j] * b[i,j]`.
+    fn mul_elem<T: Scalar>(
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
+    ) -> Self::Storage<T>;
+
+    /// Element-wise division `a[i,j] / b[i,j]`.
+    fn div_elem<T: Scalar>(
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
+    ) -> Self::Storage<T>;
+
+    // --- Reduction operations (whole-matrix → scalar) ---
+
+    /// Sum all elements of the matrix.
+    ///
+    /// Returns the additive identity `T::zero` for an empty matrix.
+    fn sum_all<T: Scalar>(a: &Self::Storage<T>) -> T;
+
+    /// Element with the maximum value (or maximum magnitude for complex types).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is empty.
+    fn max_all<T: Scalar>(a: &Self::Storage<T>) -> T;
+
+    /// Element with the minimum value (or minimum magnitude for complex types).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is empty.
+    fn min_all<T: Scalar>(a: &Self::Storage<T>) -> T;
+
+    /// `(row, col)` of the element with the maximum value (or magnitude for complex types).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is empty.
+    fn argmax_all<T: Scalar>(a: &Self::Storage<T>) -> (usize, usize);
+
+    /// `(row, col)` of the element with the minimum value (or magnitude for complex types).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the matrix is empty.
+    fn argmin_all<T: Scalar>(a: &Self::Storage<T>) -> (usize, usize);
 }
 
 /// CPU backend using faer's native SIMD kernels.
@@ -141,6 +455,146 @@ impl Backend for Cpu {
     #[inline]
     fn clone_storage<T: Scalar>(storage: &Mat<T>) -> Mat<T> {
         storage.clone()
+    }
+
+    #[inline]
+    fn exp<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_exp)
+    }
+
+    #[inline]
+    fn ln<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_ln)
+    }
+
+    #[inline]
+    fn log1p<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_log1p)
+    }
+
+    #[inline]
+    fn sin<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_sin)
+    }
+
+    #[inline]
+    fn cos<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_cos)
+    }
+
+    #[inline]
+    fn tanh<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_tanh)
+    }
+
+    #[inline]
+    fn sqrt<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_sqrt)
+    }
+
+    #[inline]
+    fn abs<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_abs)
+    }
+
+    #[inline]
+    fn recip<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_recip)
+    }
+
+    #[inline]
+    fn erf<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_erf)
+    }
+
+    #[inline]
+    fn ceil<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_ceil)
+    }
+
+    #[inline]
+    fn floor<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_floor)
+    }
+
+    #[inline]
+    fn round<T: Scalar>(a: &Mat<T>) -> Mat<T> {
+        mat_elemwise_unary!(a, math_round)
+    }
+
+    #[inline]
+    fn powf<T: Scalar>(a: &Mat<T>, p: T) -> Mat<T> {
+        let (r, c) = (a.nrows(), a.ncols());
+        Mat::from_fn(r, c, |i, j| (*a.get(i, j)).math_powf(p))
+    }
+
+    #[inline]
+    fn mul_elem<T: Scalar>(a: &Mat<T>, b: &Mat<T>) -> Mat<T> {
+        mat_elemwise_binary!(a, b, math_mul)
+    }
+
+    #[inline]
+    fn div_elem<T: Scalar>(a: &Mat<T>, b: &Mat<T>) -> Mat<T> {
+        mat_elemwise_binary!(a, b, math_div)
+    }
+
+    #[inline]
+    fn sum_all<T: Scalar>(a: &Mat<T>) -> T {
+        let (r, c) = (a.nrows(), a.ncols());
+        (0..r).flat_map(|i| (0..c).map(move |j| (i, j)))
+            .fold(T::reduction_zero(), |acc, (i, j)| acc.reduction_add(*a.get(i, j)))
+    }
+
+    #[inline]
+    fn max_all<T: Scalar>(a: &Mat<T>) -> T {
+        assert!(a.nrows() > 0 && a.ncols() > 0, "max_all: matrix must be non-empty");
+        let (r, c) = (a.nrows(), a.ncols());
+        let init = *a.get(0, 0);
+        (0..r).flat_map(|i| (0..c).map(move |j| (i, j)))
+            .skip(1)
+            .fold(init, |acc, (i, j)| acc.reduction_max(*a.get(i, j)))
+    }
+
+    #[inline]
+    fn min_all<T: Scalar>(a: &Mat<T>) -> T {
+        assert!(a.nrows() > 0 && a.ncols() > 0, "min_all: matrix must be non-empty");
+        let (r, c) = (a.nrows(), a.ncols());
+        let init = *a.get(0, 0);
+        (0..r).flat_map(|i| (0..c).map(move |j| (i, j)))
+            .skip(1)
+            .fold(init, |acc, (i, j)| acc.reduction_min(*a.get(i, j)))
+    }
+
+    #[inline]
+    fn argmax_all<T: Scalar>(a: &Mat<T>) -> (usize, usize) {
+        assert!(a.nrows() > 0 && a.ncols() > 0, "argmax_all: matrix must be non-empty");
+        let (r, c) = (a.nrows(), a.ncols());
+        let mut best = (0usize, 0usize);
+        for i in 0..r {
+            for j in 0..c {
+                if i == 0 && j == 0 { continue; }
+                if (*a.get(i, j)).reduction_gt(*a.get(best.0, best.1)) {
+                    best = (i, j);
+                }
+            }
+        }
+        best
+    }
+
+    #[inline]
+    fn argmin_all<T: Scalar>(a: &Mat<T>) -> (usize, usize) {
+        assert!(a.nrows() > 0 && a.ncols() > 0, "argmin_all: matrix must be non-empty");
+        let (r, c) = (a.nrows(), a.ncols());
+        let mut best = (0usize, 0usize);
+        for i in 0..r {
+            for j in 0..c {
+                if i == 0 && j == 0 { continue; }
+                if (*a.get(best.0, best.1)).reduction_gt(*a.get(i, j)) {
+                    best = (i, j);
+                }
+            }
+        }
+        best
     }
 }
 
@@ -248,86 +702,123 @@ macro_rules! delegate_backend {
             fn clone_storage<T: Scalar>(storage: &MatStorage<T>) -> MatStorage<T> {
                 Cpu::clone_storage(storage)
             }
+
+            #[inline]
+            fn exp<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::exp(a)
+            }
+
+            #[inline]
+            fn ln<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::ln(a)
+            }
+
+            #[inline]
+            fn log1p<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::log1p(a)
+            }
+
+            #[inline]
+            fn sin<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::sin(a)
+            }
+
+            #[inline]
+            fn cos<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::cos(a)
+            }
+
+            #[inline]
+            fn tanh<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::tanh(a)
+            }
+
+            #[inline]
+            fn sqrt<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::sqrt(a)
+            }
+
+            #[inline]
+            fn abs<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::abs(a)
+            }
+
+            #[inline]
+            fn recip<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::recip(a)
+            }
+
+            #[inline]
+            fn erf<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::erf(a)
+            }
+
+            #[inline]
+            fn ceil<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::ceil(a)
+            }
+
+            #[inline]
+            fn floor<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::floor(a)
+            }
+
+            #[inline]
+            fn round<T: Scalar>(a: &MatStorage<T>) -> MatStorage<T> {
+                Cpu::round(a)
+            }
+
+            #[inline]
+            fn powf<T: Scalar>(a: &MatStorage<T>, p: T) -> MatStorage<T> {
+                Cpu::powf(a, p)
+            }
+
+            #[inline]
+            fn mul_elem<T: Scalar>(
+                a: &MatStorage<T>,
+                b: &MatStorage<T>,
+            ) -> MatStorage<T> {
+                Cpu::mul_elem(a, b)
+            }
+
+            #[inline]
+            fn div_elem<T: Scalar>(
+                a: &MatStorage<T>,
+                b: &MatStorage<T>,
+            ) -> MatStorage<T> {
+                Cpu::div_elem(a, b)
+            }
+
+            #[inline]
+            fn sum_all<T: Scalar>(a: &MatStorage<T>) -> T {
+                Cpu::sum_all(a)
+            }
+
+            #[inline]
+            fn max_all<T: Scalar>(a: &MatStorage<T>) -> T {
+                Cpu::max_all(a)
+            }
+
+            #[inline]
+            fn min_all<T: Scalar>(a: &MatStorage<T>) -> T {
+                Cpu::min_all(a)
+            }
+
+            #[inline]
+            fn argmax_all<T: Scalar>(a: &MatStorage<T>) -> (usize, usize) {
+                Cpu::argmax_all(a)
+            }
+
+            #[inline]
+            fn argmin_all<T: Scalar>(a: &MatStorage<T>) -> (usize, usize) {
+                Cpu::argmin_all(a)
+            }
         }
     };
 }
 
 #[cfg(feature = "hip")]
 delegate_backend!(Hip);
-
-#[allow(unused_macros)]
-macro_rules! impl_gpu_backend {
-    ($Backend:ty, $Runtime:path) => {
-        impl Backend for $Backend {
-            type Storage<T: Scalar> = GpuStorage<T>;
-            #[inline]
-            fn zeros<T: Scalar>(r: usize, c: usize) -> GpuStorage<T> {
-                GpuStorage::zeros(r, c)
-            }
-            #[inline]
-            fn from_fn<T: Scalar>(
-                r: usize,
-                c: usize,
-                f: impl FnMut(usize, usize) -> T,
-            ) -> GpuStorage<T> {
-                GpuStorage::from_fn(r, c, f)
-            }
-            #[inline]
-            fn nrows<T: Scalar>(s: &GpuStorage<T>) -> usize {
-                s.nrows
-            }
-            #[inline]
-            fn ncols<T: Scalar>(s: &GpuStorage<T>) -> usize {
-                s.ncols
-            }
-            #[inline]
-            fn get<T: Scalar>(s: &GpuStorage<T>, r: usize, c: usize) -> T {
-                s.get(r, c)
-            }
-            #[inline]
-            fn set<T: Scalar>(s: &mut GpuStorage<T>, r: usize, c: usize, v: T) {
-                s.set(r, c, v)
-            }
-            #[inline]
-            fn matmul_into<T: Scalar>(o: &mut GpuStorage<T>, a: &GpuStorage<T>, b: &GpuStorage<T>) {
-                gpu_matmul::<T, $Runtime>(o, a, b)
-            }
-            #[inline]
-            fn add<T: Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
-                gpu_add::<T, $Runtime>(a, b)
-            }
-            #[inline]
-            fn sub<T: Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
-                gpu_sub::<T, $Runtime>(a, b)
-            }
-            #[inline]
-            fn neg<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
-                gpu_neg::<T, $Runtime>(a)
-            }
-            #[inline]
-            fn transpose<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
-                gpu_transpose::<T, $Runtime>(a)
-            }
-            #[inline]
-            fn scale<T: Scalar>(a: &GpuStorage<T>, s: T) -> GpuStorage<T> {
-                gpu_scale::<T, $Runtime>(a, s)
-            }
-            #[inline]
-            fn clone_storage<T: Scalar>(s: &GpuStorage<T>) -> GpuStorage<T> {
-                GpuStorage {
-                    nrows: s.nrows,
-                    ncols: s.ncols,
-                    data: s.data.clone(),
-                }
-            }
-        }
-    };
-}
-
-#[cfg(feature = "cuda")]
-impl_gpu_backend!(Cuda, cubecl_cuda::CudaRuntime);
-#[cfg(feature = "wgpu")]
-impl_gpu_backend!(Wgpu, cubecl_wgpu::WgpuRuntime);
 
 #[cfg(feature = "cuda")]
 /// Default backend: CUDA (highest priority when enabled).
@@ -344,476 +835,3 @@ pub type DefaultBackend = Hip;
 #[cfg(not(any(feature = "cuda", feature = "wgpu", feature = "hip")))]
 /// Default backend: CPU (fallback when no GPU feature is enabled).
 pub type DefaultBackend = Cpu;
-
-// GPU implementation (formerly gpu.rs): compiled only when cuda or wgpu feature is enabled.
-// The `use cubecl_core as cubecl` alias is required so that #[cube(launch)]
-// macro-generated paths like `cubecl::prelude::*` resolve correctly.
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-use cubecl::prelude::*;
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-use cubecl_core as cubecl;
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-use std::any::TypeId;
-
-/// Row-major, CPU-mirrored storage for a GPU-backed matrix.
-///
-/// Data lives in a `Vec<T>` on the host.  When a GPU operation is requested
-/// the slice is uploaded to device memory, the kernel is launched, and the
-/// result is read back synchronously.
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-pub struct GpuStorage<T: Scalar> {
-    pub(crate) nrows: usize,
-    pub(crate) ncols: usize,
-    pub(crate) data: Vec<T>,
-}
-
-// SAFETY: T: Send + Sync (via Scalar bound) and Vec<T> is Send + Sync.
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-unsafe impl<T: Scalar> Send for GpuStorage<T> {}
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-unsafe impl<T: Scalar> Sync for GpuStorage<T> {}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-impl<T: Scalar> GpuStorage<T> {
-    pub fn zeros(nrows: usize, ncols: usize) -> Self {
-        Self {
-            nrows,
-            ncols,
-            data: vec![T::zero_impl(); nrows * ncols],
-        }
-    }
-
-    pub fn from_fn(nrows: usize, ncols: usize, mut f: impl FnMut(usize, usize) -> T) -> Self {
-        let data = (0..nrows * ncols)
-            .map(|i| f(i / ncols, i % ncols))
-            .collect();
-        Self { nrows, ncols, data }
-    }
-
-    #[inline]
-    pub fn get(&self, r: usize, c: usize) -> T {
-        self.data[r * self.ncols + c]
-    }
-    #[inline]
-    pub fn set(&mut self, r: usize, c: usize, v: T) {
-        self.data[r * self.ncols + c] = v;
-    }
-}
-
-// SAFETY: cast_slice/cast_vec — sound only when TypeId::of::<T>() == TypeId::of::<U>() (same layout).
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-unsafe fn cast_slice<T, U>(s: &[T]) -> &[U] {
-    debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<U>());
-    unsafe { std::slice::from_raw_parts(s.as_ptr().cast::<U>(), s.len()) }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-unsafe fn cast_vec<T, U>(mut v: Vec<T>) -> Vec<U> {
-    debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<U>());
-    let (ptr, len, cap) = (v.as_mut_ptr().cast::<U>(), v.len(), v.capacity());
-    std::mem::forget(v);
-    unsafe { Vec::from_raw_parts(ptr, len, cap) }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-#[cube(launch)]
-fn elementwise_add_kernel<F: Float>(lhs: &Array<F>, rhs: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = lhs[i] + rhs[i];
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-#[cube(launch)]
-fn elementwise_sub_kernel<F: Float>(lhs: &Array<F>, rhs: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = lhs[i] - rhs[i];
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-#[cube(launch)]
-fn elementwise_neg_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = -input[i];
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-#[cube(launch)]
-fn elementwise_scale_f32_kernel(input: &Array<f32>, out: &mut Array<f32>, scalar: f32) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = input[i] * scalar;
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-#[cube(launch)]
-fn elementwise_scale_f64_kernel(input: &Array<f64>, out: &mut Array<f64>, scalar: f64) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        out[i] = input[i] * scalar;
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-#[cube(launch)]
-fn transpose_kernel<F: Float>(input: &Array<F>, out: &mut Array<F>, rows: usize, cols: usize) {
-    let i = ABSOLUTE_POS;
-    if i < rows * cols {
-        let row = i / cols;
-        let col = i % cols;
-        out[col * rows + row] = input[i];
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-#[cube(launch)]
-fn matmul_naive_kernel<F: Float>(
-    a: &Array<F>,
-    b: &Array<F>,
-    out: &mut Array<F>,
-    k_dim: usize,
-    n_dim: usize,
-) {
-    let i = ABSOLUTE_POS;
-    if i < out.len() {
-        let row = i / n_dim;
-        let col = i % n_dim;
-        let mut acc = F::new(0.0_f32);
-        for k in 0..k_dim {
-            acc += a[row * k_dim + k] * b[k * n_dim + col];
-        }
-        out[i] = acc;
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-fn cube_count(n: usize) -> CubeCount {
-    CubeCount::Static(((n + 255) / 256) as u32, 1, 1)
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-macro_rules! run_elementwise_binary {
-    ($kernel:path, $fn_name:ident) => {
-        fn $fn_name<E: Float + CubeElement, R: Runtime>(a: &[E], b: &[E]) -> Vec<E>
-        where
-            R::Device: Default,
-        {
-            let client = R::client(&R::Device::default());
-            let n = a.len();
-            let h_a = client.create_from_slice(E::as_bytes(a));
-            let h_b = client.create_from_slice(E::as_bytes(b));
-            let h_out = client.empty(n * std::mem::size_of::<E>());
-            if let Err(e) = $kernel::<E, R>(
-                &client,
-                cube_count(n),
-                CubeDim::new_1d(256),
-                unsafe { ArrayArg::from_raw_parts::<E>(&h_a, n, 1) },
-                unsafe { ArrayArg::from_raw_parts::<E>(&h_b, n, 1) },
-                unsafe { ArrayArg::from_raw_parts::<E>(&h_out, n, 1) },
-            ) {
-                panic!("GPU kernel launch failed: {e}");
-            }
-            E::from_bytes(&client.read_one(h_out)).to_vec()
-        }
-    };
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-macro_rules! run_elementwise_unary {
-    ($kernel:path, $fn_name:ident) => {
-        fn $fn_name<E: Float + CubeElement, R: Runtime>(a: &[E]) -> Vec<E>
-        where
-            R::Device: Default,
-        {
-            let client = R::client(&R::Device::default());
-            let n = a.len();
-            let h_in = client.create_from_slice(E::as_bytes(a));
-            let h_out = client.empty(n * std::mem::size_of::<E>());
-            if let Err(e) = $kernel::<E, R>(
-                &client,
-                cube_count(n),
-                CubeDim::new_1d(256),
-                unsafe { ArrayArg::from_raw_parts::<E>(&h_in, n, 1) },
-                unsafe { ArrayArg::from_raw_parts::<E>(&h_out, n, 1) },
-            ) {
-                panic!("GPU kernel launch failed: {e}");
-            }
-            E::from_bytes(&client.read_one(h_out)).to_vec()
-        }
-    };
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-run_elementwise_binary!(elementwise_add_kernel::launch, run_add);
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-run_elementwise_binary!(elementwise_sub_kernel::launch, run_sub);
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-run_elementwise_unary!(elementwise_neg_kernel::launch, run_neg);
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-macro_rules! run_scale {
-    ($ty:ty, $kernel:path, $fn_name:ident) => {
-        fn $fn_name<R: Runtime>(a: &[$ty], s: $ty) -> Vec<$ty>
-        where
-            R::Device: Default,
-        {
-            let client = R::client(&R::Device::default());
-            let n = a.len();
-            let h_in = client.create_from_slice(<$ty>::as_bytes(a));
-            let h_out = client.empty(n * std::mem::size_of::<$ty>());
-            if let Err(e) = $kernel::<R>(
-                &client,
-                cube_count(n),
-                CubeDim::new_1d(256),
-                unsafe { ArrayArg::from_raw_parts::<$ty>(&h_in, n, 1) },
-                unsafe { ArrayArg::from_raw_parts::<$ty>(&h_out, n, 1) },
-                ScalarArg::new(s),
-            ) {
-                panic!("GPU kernel launch failed: {e}");
-            }
-            <$ty>::from_bytes(&client.read_one(h_out)).to_vec()
-        }
-    };
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-run_scale!(f32, elementwise_scale_f32_kernel::launch, run_scale_f32);
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-run_scale!(f64, elementwise_scale_f64_kernel::launch, run_scale_f64);
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-fn run_transpose<E: Float + CubeElement, R: Runtime>(a: &[E], rows: usize, cols: usize) -> Vec<E>
-where
-    R::Device: Default,
-{
-    let client = R::client(&R::Device::default());
-    let n = rows * cols;
-    let h_in = client.create_from_slice(E::as_bytes(a));
-    let h_out = client.empty(n * std::mem::size_of::<E>());
-    if let Err(e) = transpose_kernel::launch::<E, R>(
-        &client,
-        cube_count(n),
-        CubeDim::new_1d(256),
-        unsafe { ArrayArg::from_raw_parts::<E>(&h_in, n, 1) },
-        unsafe { ArrayArg::from_raw_parts::<E>(&h_out, n, 1) },
-        ScalarArg::new(rows),
-        ScalarArg::new(cols),
-    ) {
-        panic!("GPU kernel launch failed: {e}");
-    }
-    E::from_bytes(&client.read_one(h_out)).to_vec()
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-fn run_matmul<E: Float + CubeElement, R: Runtime>(
-    a: &[E],
-    b: &[E],
-    m: usize,
-    k: usize,
-    n: usize,
-) -> Vec<E>
-where
-    R::Device: Default,
-{
-    let client = R::client(&R::Device::default());
-    let out_n = m * n;
-    let h_a = client.create_from_slice(E::as_bytes(a));
-    let h_b = client.create_from_slice(E::as_bytes(b));
-    let h_out = client.empty(out_n * std::mem::size_of::<E>());
-    if let Err(e) = matmul_naive_kernel::launch::<E, R>(
-        &client,
-        cube_count(out_n),
-        CubeDim::new_1d(256),
-        unsafe { ArrayArg::from_raw_parts::<E>(&h_a, m * k, 1) },
-        unsafe { ArrayArg::from_raw_parts::<E>(&h_b, k * n, 1) },
-        unsafe { ArrayArg::from_raw_parts::<E>(&h_out, out_n, 1) },
-        ScalarArg::new(k),
-        ScalarArg::new(n),
-    ) {
-        panic!("GPU kernel launch failed: {e}");
-    }
-    E::from_bytes(&client.read_one(h_out)).to_vec()
-}
-
-// Dispatch helper: run f32 or f64 GPU path, fall back to CPU for other types.
-// SAFETY: callers guarantee TypeId::of::<T>() == TypeId::of::<f32/f64>() before cast.
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-fn typed_run<T: Scalar>(
-    data: &[T],
-    f32_fn: impl FnOnce(&[f32]) -> Vec<f32>,
-    f64_fn: impl FnOnce(&[f64]) -> Vec<f64>,
-    fallback: impl FnOnce(&[T]) -> Vec<T>,
-) -> Vec<T> {
-    if TypeId::of::<T>() == TypeId::of::<f32>() {
-        unsafe { cast_vec(f32_fn(cast_slice(data))) }
-    } else if TypeId::of::<T>() == TypeId::of::<f64>() {
-        unsafe { cast_vec(f64_fn(cast_slice(data))) }
-    } else {
-        fallback(data)
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-fn typed_run2<T: Scalar>(
-    a: &[T],
-    b: &[T],
-    f32_fn: impl FnOnce(&[f32], &[f32]) -> Vec<f32>,
-    f64_fn: impl FnOnce(&[f64], &[f64]) -> Vec<f64>,
-    fallback: impl FnOnce(&[T], &[T]) -> Vec<T>,
-) -> Vec<T> {
-    if TypeId::of::<T>() == TypeId::of::<f32>() {
-        unsafe { cast_vec(f32_fn(cast_slice(a), cast_slice(b))) }
-    } else if TypeId::of::<T>() == TypeId::of::<f64>() {
-        unsafe { cast_vec(f64_fn(cast_slice(a), cast_slice(b))) }
-    } else {
-        fallback(a, b)
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-macro_rules! gpu_elementwise_binary {
-    ($run_f32:expr, $run_f64:expr, $fallback:expr, $fn_name:ident) => {
-        pub(crate) fn $fn_name<T: Scalar, R: Runtime>(
-            a: &GpuStorage<T>,
-            b: &GpuStorage<T>,
-        ) -> GpuStorage<T>
-        where
-            R::Device: Default,
-        {
-            GpuStorage {
-                nrows: a.nrows,
-                ncols: a.ncols,
-                data: typed_run2(&a.data, &b.data, $run_f32, $run_f64, $fallback),
-            }
-        }
-    };
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-macro_rules! gpu_elementwise_unary {
-    ($run_f32:expr, $run_f64:expr, $fallback:expr, $fn_name:ident) => {
-        pub(crate) fn $fn_name<T: Scalar, R: Runtime>(a: &GpuStorage<T>) -> GpuStorage<T>
-        where
-            R::Device: Default,
-        {
-            GpuStorage {
-                nrows: a.nrows,
-                ncols: a.ncols,
-                data: typed_run(&a.data, $run_f32, $run_f64, $fallback),
-            }
-        }
-    };
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-gpu_elementwise_binary!(
-    run_add::<f32, R>,
-    run_add::<f64, R>,
-    |a, b| a.iter().zip(b).map(|(&x, &y)| x + y).collect(),
-    gpu_add
-);
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-gpu_elementwise_binary!(
-    run_sub::<f32, R>,
-    run_sub::<f64, R>,
-    |a, b| a.iter().zip(b).map(|(&x, &y)| x - y).collect(),
-    gpu_sub
-);
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-gpu_elementwise_unary!(
-    run_neg::<f32, R>,
-    run_neg::<f64, R>,
-    |a| a.iter().map(|&x| -x).collect(),
-    gpu_neg
-);
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-pub(crate) fn gpu_scale<T: Scalar, R: Runtime>(a: &GpuStorage<T>, s: T) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let data = if TypeId::of::<T>() == TypeId::of::<f32>() {
-        // SAFETY: TypeId proves T == f32.
-        unsafe {
-            let s_f32 = *(&s as *const T as *const f32);
-            cast_vec(run_scale_f32::<R>(cast_slice(&a.data), s_f32))
-        }
-    } else if TypeId::of::<T>() == TypeId::of::<f64>() {
-        unsafe {
-            let s_f64 = *(&s as *const T as *const f64);
-            cast_vec(run_scale_f64::<R>(cast_slice(&a.data), s_f64))
-        }
-    } else {
-        a.data.iter().map(|&x| x * s).collect()
-    };
-    GpuStorage {
-        nrows: a.nrows,
-        ncols: a.ncols,
-        data,
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-pub(crate) fn gpu_transpose<T: Scalar, R: Runtime>(a: &GpuStorage<T>) -> GpuStorage<T>
-where
-    R::Device: Default,
-{
-    let (rows, cols) = (a.nrows, a.ncols);
-    GpuStorage {
-        nrows: cols,
-        ncols: rows,
-        data: typed_run(
-            &a.data,
-            |d| run_transpose::<f32, R>(d, rows, cols),
-            |d| run_transpose::<f64, R>(d, rows, cols),
-            |_| {
-                let mut buf = vec![T::zero_impl(); rows * cols];
-                for r in 0..rows {
-                    for c in 0..cols {
-                        buf[c * rows + r] = a.data[r * cols + c];
-                    }
-                }
-                buf
-            },
-        ),
-    }
-}
-
-#[cfg(any(feature = "cuda", feature = "wgpu"))]
-pub(crate) fn gpu_matmul<T: Scalar, R: Runtime>(
-    out: &mut GpuStorage<T>,
-    a: &GpuStorage<T>,
-    b: &GpuStorage<T>,
-) where
-    R::Device: Default,
-{
-    let (m, k, n) = (a.nrows, a.ncols, b.ncols);
-    out.data = typed_run2(
-        &a.data,
-        &b.data,
-        |a, b| run_matmul::<f32, R>(a, b, m, k, n),
-        |a, b| run_matmul::<f64, R>(a, b, m, k, n),
-        |a, b| {
-            let mut buf = vec![T::zero_impl(); m * n];
-            for i in 0..m {
-                for j in 0..n {
-                    buf[i * n + j] =
-                        (0..k).fold(T::zero_impl(), |s, l| s + a[i * k + l] * b[l * n + j]);
-                }
-            }
-            buf
-        },
-    );
-    (out.nrows, out.ncols) = (m, n);
-}

@@ -4,7 +4,7 @@
 
 nabla provides a macro notation layer (`mat!`, `einsum!`, `bcast!`) over faer's high-performance SIMD kernels, delivering concise mathematical syntax with zero-copy semantics and pluggable GPU backends.
 
-~2,500 lines of src across 5 files. Zero runtime overhead over faer.
+~2,800 lines of src across 6 files. Zero runtime overhead over faer.
 
 ---
 
@@ -227,11 +227,21 @@ fn main() {
 }
 ```
 
+With GPU (`--features wgpu` or `--features cuda`), the same code runs on GPU automatically — `DefaultBackend` selects the best available backend. For explicit GPU control:
+
+```rust
+// Explicit GPU backend
+let a: Tensor<f32, Wgpu> = Tensor::from_fn(256, 256, |r, c| (r * 256 + c) as f32);
+let b: Tensor<f32, Wgpu> = Tensor::from_fn(256, 256, |r, c| ((r + c) as f32) * 0.5);
+let c = &(&a * &b) + &a;  // matmul + add — all on GPU, zero host transfer
+let val = c.get(0, 0);    // first host readback happens here
+```
+
 ---
 
 ## Usage scenarios
 
-### Inference pipeline
+### Inference pipeline (CPU)
 
 ```rust
 use nabla::prelude::*;
@@ -255,6 +265,31 @@ fn softmax(logits: &Tensor<f64>) -> Tensor<f64> {
     bcast!(|x| x / sum, &shifted)
 }
 ```
+
+### Inference pipeline (GPU)
+
+```rust
+use nabla::prelude::*;
+
+// All ops below execute on GPU — data stays on device until .get() or .to_cpu()
+fn gpu_forward_pass(
+    w1: &Tensor<f32, Wgpu>,
+    b1: &Tensor<f32, Wgpu>,
+    w2: &Tensor<f32, Wgpu>,
+    b2: &Tensor<f32, Wgpu>,
+    input: &Tensor<f32, Wgpu>,
+) -> Tensor<f32, Wgpu> {
+    // Layer 1: z1 = W1 @ x + b1, h1 = ReLU(z1)
+    let z1 = &(w1 * input) + b1;
+    let h1 = bcast!(|v| v.max(0.0), &z1);
+
+    // Layer 2: z2 = W2 @ h1 + b2
+    &(w2 * &h1) + b2
+    // No host↔device transfer occurred — all 5 ops ran on GPU
+}
+```
+
+Chained GPU operations (`+`, `-`, `*`, `bcast!`) pass `Handle` references between kernels. Host readback only happens on `.get(r, c)`, `.set(r, c, v)`, or `.to_cpu()`.
 
 ### Solving linear systems
 
@@ -505,7 +540,43 @@ let cpu_copy = a.to_cpu();
 let generic  = b.to_backend::<Cpu>();
 ```
 
-Linear algebra and sparse solvers require `Tensor<T, Cpu>` (faer dependency). Convert via `.to_cpu()`, compute, then `.to_cuda()` / `.to_wgpu()` if needed.
+**GPU → CPU → GPU pattern:** Linear algebra and sparse solvers require `Tensor<T, Cpu>` (faer dependency). Chain GPU compute with CPU solvers:
+
+```rust
+use nabla::prelude::*;
+
+// GPU: forward pass (all ops stay on device, zero host transfer)
+let w: Tensor<f32, Wgpu> = Tensor::from_fn(64, 128, |r, c| ((r * 128 + c) as f32) * 0.01);
+let x: Tensor<f32, Wgpu> = Tensor::from_fn(128, 1, |r, _| r as f32 * 0.1);
+let b: Tensor<f32, Wgpu> = Tensor::zeros(64, 1);
+
+let z = &(&w * &x) + &b;         // matmul + add — GPU, no host roundtrip
+let h = bcast!(|v| v.max(0.0), &z);  // ReLU — GPU
+
+// CPU: solve (faer SIMD kernels)
+let a_cpu: Tensor<f32, Cpu> = /* ... */;
+let rhs = h.to_cpu();
+let solution = a_cpu.solve(&rhs).expect("solve failed");
+
+// Back to GPU for next layer
+let result = solution.to_wgpu();
+```
+
+### GPU storage
+
+GPU backends use Handle-based storage (`cubecl_runtime::server::Handle`). Data stays on GPU across chained operations — no host↔device transfer until element access (`.get()`, `.set()`). Host readback is lazy-cached via `Mutex<Option<Vec<T>>>`.
+
+```
+from_fn(m, n, f)     ──upload──→  Handle (GPU)
+    │                                 │
+    │  .get(r, c)                     │  + / - / * / scale / t()
+    │  .to_cpu()                      │  (Handle → Handle, stays on GPU)
+    ▼                                 ▼
+host_cache: Vec<T>  ←──readback──  Handle (GPU)
+(lazy, first access)
+```
+
+> **Note:** wgpu/Metal does not support FLOAT64 shaders. f64 tensors on `Wgpu` backend fall back to CPU for kernel execution.
 
 ### GPU kernels (cubecl)
 
@@ -514,9 +585,11 @@ Linear algebra and sparse solvers require `Tensor<T, Cpu>` (faer dependency). Co
 | `elementwise_add` | GPU | CPU fallback |
 | `elementwise_sub` | GPU | CPU fallback |
 | `elementwise_neg` | GPU | CPU fallback |
-| `elementwise_scale` | GPU | CPU fallback |
+| `elementwise_scale` | GPU (generic Float) | CPU fallback |
 | `transpose` | GPU | CPU fallback |
 | `matmul_naive` | GPU | CPU fallback |
+
+Dispatch uses `TypeId` at runtime (f32/f64 → GPU kernel, c32/c64 → CPU fallback). Kernel launch failures return `Error::GpuKernelFailed`.
 
 ---
 
@@ -525,11 +598,12 @@ Linear algebra and sparse solvers require `Tensor<T, Cpu>` (faer dependency). Co
 ```
 nabla/
 ├── src/
-│   ├── lib.rs        crate root + scalar + error + util modules
-│   ├── tensor.rs     Tensor<T,B> + StaticMatrix + Array/Matrix traits
-│   ├── backend.rs    Backend trait + Cpu + GPU storage + cubecl kernels
-│   ├── linalg.rs     Dense factorization + Diagonal/Symmetric/Triangular
-│   └── sparse.rs     SparseMatrix<T> CSC
+│   ├── lib.rs        crate root + scalar + error + util modules  (306)
+│   ├── tensor.rs     Tensor<T,B> + StaticMatrix + Array/Matrix   (717)
+│   ├── backend.rs    Backend trait + Cpu impl + DefaultBackend    (272)
+│   ├── gpu.rs        GpuStorage + CubeCL kernels + GPU dispatch  (646)
+│   ├── linalg.rs     Dense factorization + structural types      (531)
+│   └── sparse.rs     SparseMatrix<T> CSC                         (343)
 ├── macros/
 │   └── src/
 │       ├── lib.rs    mat! + einsum! entry points
@@ -537,6 +611,7 @@ nabla/
 ├── tests/
 │   ├── basic.rs      integration tests (38)
 │   ├── broadcast.rs  broadcast macro tests (7)
+│   ├── gpu.rs        GPU backend tests (13, feature-gated)
 │   └── static_mat.rs StaticMatrix tests (18)
 └── docs/
     └── spec.md       full specification
@@ -552,6 +627,7 @@ nabla uses a typed `Error` enum with a `Result<T>` alias:
 |---|---|
 | `Error::ShapeMismatch { expected, got }` | Incompatible dimensions in solve, factorize, etc. |
 | `Error::InvalidDimension(String)` | Bad input to constructors or structural types |
+| `Error::GpuKernelFailed(String)` | GPU kernel launch failure (cuda/wgpu) |
 
 Fallible operations (`.solve()`, `.factorize_*()`, structural type constructors) return `Result<T>`. Operator overloads (`+`, `-`, `*`) panic on shape mismatch with a descriptive message.
 
@@ -572,9 +648,11 @@ match a.solve(&b) {
 ## Building and testing
 
 ```bash
-cargo build                                          # build
-cargo test --workspace                               # all tests (63 + 9 doc-tests)
+cargo build                                          # build (CPU)
+cargo test --workspace                               # CPU tests (63 + 9 doc-tests)
+cargo test --features wgpu                           # GPU tests (+13, requires Metal/Vulkan)
 cargo clippy --workspace --all-targets -- -D warnings # lint
+cargo clippy --features wgpu -- -D warnings          # lint GPU backend
 cargo fmt --all -- --check                           # format check
 ```
 

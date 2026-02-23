@@ -10,8 +10,8 @@ members = ["macros"]
 [features]
 default = ["cpu"]
 cpu  = []
-cuda = ["dep:cubecl-cuda", "dep:cubecl-core"]
-wgpu = ["dep:cubecl-wgpu", "dep:cubecl-core"]
+cuda = ["dep:cubecl-cuda", "dep:cubecl-core", "dep:cubecl-runtime"]
+wgpu = ["dep:cubecl-wgpu", "dep:cubecl-core", "dep:cubecl-runtime"]
 hip = ["dep:cubecl-hip"]
 
 [dependencies]
@@ -23,5 +23,6 @@ cubecl-core = { version = "0.9", optional = true }
 cubecl-cuda = { version = "0.9", optional = true }
 cubecl-wgpu = { version = "0.9", optional = true }
 cubecl-hip  = { version = "0.9", optional = true }
+cubecl-runtime = { version = "0.9", optional = true }
 
 [dev-dependencies]
