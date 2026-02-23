@@ -1,0 +1,5 @@
+error: einsum!: tensor `a` has 3 indices, but only 2-D tensors are currently supported; N-D tensor support is planned for a future release
+ --> tests/einsum_errors/nd_tensor_unsupported.rs:7:45
+  |
+7 |     let _r: Tensor<f64> = einsum!(r[i, j] = a[i, j, k] * m[k]);
+  |                                             ^

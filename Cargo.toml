@@ -26,3 +26,4 @@ cubecl-hip  = { version = "0.9", optional = true }
 cubecl-runtime = { version = "0.9", optional = true }
 
 [dev-dependencies]
+trybuild = "1"

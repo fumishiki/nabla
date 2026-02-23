@@ -1,0 +1,5 @@
+error: einsum!: index `i` appears twice on the LHS
+ --> tests/einsum_errors/duplicate_lhs_index.rs:6:40
+  |
+6 |     let _c: Tensor<f64> = einsum!(c[i, i] = a[i, i]);
+  |                                        ^

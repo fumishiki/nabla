@@ -1,0 +1,5 @@
+error: einsum!: index `k` appears only once on the RHS; contraction indices must appear in at least 2 terms (did you mean to include it on the LHS?)
+ --> tests/einsum_errors/lone_contraction_index.rs:6:47
+  |
+6 |     let _y: Tensor<f64> = einsum!(y[i] = a[i, k]);
+  |                                               ^

@@ -172,6 +172,20 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         (self.nrows(), self.ncols())
     }
 
+    /// Dimension along a given axis: 0 → nrows, 1 → ncols.
+    ///
+    /// # Panics
+    /// Panics if `axis > 1` (Tensor is 2-D).
+    #[must_use]
+    #[inline]
+    pub fn dim(&self, axis: usize) -> usize {
+        match axis {
+            0 => self.nrows(),
+            1 => self.ncols(),
+            _ => panic!("Tensor is 2-D: axis must be 0 or 1, got {axis}"),
+        }
+    }
+
     /// Read element at `(row, col)`.
     #[must_use]
     #[inline]

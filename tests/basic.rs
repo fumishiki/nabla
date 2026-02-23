@@ -528,3 +528,135 @@ fn identity_cpu_f64() {
         }
     }
 }
+
+// ── Wave 9: einsum! GEMM/GEMV/Outer/Trace/Transpose tests ────────────────────
+
+#[test]
+fn einsum_gemm_transposed_a() {
+    // c[i,j] = a[k,i] * b[k,j]  →  C = Aᵀ B
+    let a: Tensor<f64> = mat![[1.0_f64, 3.0], [2.0, 4.0]];
+    let b: Tensor<f64> = mat![[5.0_f64, 6.0], [7.0, 8.0]];
+    let c: Tensor<f64> = einsum!(c[i, j] = a[k, i] * b[k, j]);
+    assert_eq!(c.shape(), (2, 2));
+    assert!(approx_eq(c.get(0, 0), 19.0));
+    assert!(approx_eq(c.get(0, 1), 22.0));
+    assert!(approx_eq(c.get(1, 0), 43.0));
+    assert!(approx_eq(c.get(1, 1), 50.0));
+}
+
+#[test]
+fn einsum_gemm_transposed_b() {
+    // c[i,j] = a[i,k] * b[j,k]  →  C = A Bᵀ
+    let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
+    let b: Tensor<f64> = mat![[5.0_f64, 7.0], [6.0, 8.0]];
+    let c: Tensor<f64> = einsum!(c[i, j] = a[i, k] * b[j, k]);
+    assert_eq!(c.shape(), (2, 2));
+    assert!(approx_eq(c.get(0, 0), 19.0));
+    assert!(approx_eq(c.get(0, 1), 22.0));
+    assert!(approx_eq(c.get(1, 0), 43.0));
+    assert!(approx_eq(c.get(1, 1), 50.0));
+}
+
+#[test]
+fn einsum_gemm_both_transposed() {
+    // c[i,j] = a[k,i] * b[j,k]  →  C = Aᵀ Bᵀ
+    let a: Tensor<f64> = mat![[1.0_f64, 3.0], [2.0, 4.0]];
+    let b: Tensor<f64> = mat![[5.0_f64, 7.0], [6.0, 8.0]];
+    let c: Tensor<f64> = einsum!(c[i, j] = a[k, i] * b[j, k]);
+    assert_eq!(c.shape(), (2, 2));
+    assert!(approx_eq(c.get(0, 0), 19.0));
+    assert!(approx_eq(c.get(0, 1), 22.0));
+    assert!(approx_eq(c.get(1, 0), 43.0));
+    assert!(approx_eq(c.get(1, 1), 50.0));
+}
+
+#[test]
+fn einsum_gemv() {
+    // y[i] = a[i,k] * x[k]  →  y = A x
+    let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
+    let x: Tensor<f64> = Tensor::from_fn(2, 1, |i, _| (i + 1) as f64);
+    let y: Tensor<f64> = einsum!(y[i] = a[i, k] * x[k]);
+    assert_eq!(y.shape(), (2, 1));
+    assert!(approx_eq(y.get(0, 0), 5.0));
+    assert!(approx_eq(y.get(1, 0), 11.0));
+}
+
+#[test]
+fn einsum_gemv_reversed() {
+    // y[i] = x[k] * a[k,i]  →  y = Aᵀ x (vec × mat order)
+    let a: Tensor<f64> = mat![[1.0_f64, 3.0], [2.0, 4.0]];
+    let x: Tensor<f64> = Tensor::from_fn(2, 1, |i, _| (i + 1) as f64);
+    let y: Tensor<f64> = einsum!(y[i] = x[k] * a[k, i]);
+    assert_eq!(y.shape(), (2, 1));
+    assert!(approx_eq(y.get(0, 0), 5.0));
+    assert!(approx_eq(y.get(1, 0), 11.0));
+}
+
+#[test]
+fn einsum_outer_product() {
+    // c[i,j] = a[i] * b[j]  →  outer product
+    let a: Tensor<f64> = Tensor::from_fn(3, 1, |i, _| (i + 1) as f64);
+    let b: Tensor<f64> = Tensor::from_fn(2, 1, |j, _| (j + 1) as f64);
+    let c: Tensor<f64> = einsum!(c[i, j] = a[i] * b[j]);
+    assert_eq!(c.shape(), (3, 2));
+    for i in 0..3 {
+        for j in 0..2 {
+            assert!(approx_eq(c.get(i, j), ((i + 1) * (j + 1)) as f64));
+        }
+    }
+}
+
+#[test]
+fn einsum_trace_optimized() {
+    // Trace of a 3x3 matrix
+    let a: Tensor<f64> = Tensor::from_fn(3, 3, |i, j| (i * 3 + j + 1) as f64);
+    let s: f64 = einsum!(s = a[i, i]);
+    assert!(approx_eq(s, 15.0));
+}
+
+#[test]
+fn einsum_trace_non_square() {
+    // Trace of a 2x3 matrix → min(2,3) = 2 diagonal elements
+    let a: Tensor<f64> = mat![[1.0_f64, 2.0, 3.0], [4.0, 5.0, 6.0]];
+    let s: f64 = einsum!(s = a[i, i]);
+    assert!(approx_eq(s, 6.0));
+}
+
+#[test]
+fn einsum_gemm_large() {
+    let n = 50;
+    let a: Tensor<f64> = Tensor::from_fn(n, n, |i, j| (i * n + j) as f64);
+    let eye: Tensor<f64> = Tensor::identity(n);
+    let c: Tensor<f64> = einsum!(c[i, j] = a[i, k] * eye[k, j]);
+    for i in 0..n {
+        for j in 0..n {
+            assert!(approx_eq(c.get(i, j), a.get(i, j)));
+        }
+    }
+}
+
+#[test]
+fn einsum_hadamard_reversed_indices() {
+    // c[i,j] = a[i,j] * b[j,i]  →  Hadamard with transposed b
+    let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
+    let b: Tensor<f64> = mat![[1.0_f64, 3.0], [2.0, 4.0]];
+    let c: Tensor<f64> = einsum!(c[i, j] = a[i, j] * b[j, i]);
+    assert!(approx_eq(c.get(0, 0), 1.0));
+    assert!(approx_eq(c.get(0, 1), 4.0));
+    assert!(approx_eq(c.get(1, 0), 9.0));
+    assert!(approx_eq(c.get(1, 1), 16.0));
+}
+
+#[test]
+fn tensor_dim_method() {
+    let a: Tensor<f64> = Tensor::from_fn(3, 5, |_, _| 0.0);
+    assert_eq!(a.dim(0), 3);
+    assert_eq!(a.dim(1), 5);
+}
+
+#[test]
+#[should_panic(expected = "axis must be 0 or 1")]
+fn tensor_dim_out_of_range() {
+    let a: Tensor<f64> = Tensor::zeros(2, 2);
+    let _ = a.dim(2);
+}
