@@ -40,62 +40,50 @@ pub(crate) trait ReductionOps: Sized + Copy {
     fn reduction_gt(self, other: Self) -> bool;
 }
 
-impl ReductionOps for f32 {
-    #[inline] fn reduction_zero() -> Self { 0.0 }
-    #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
-    #[inline] fn reduction_max(self, other: Self) -> Self { self.max(other) }
-    #[inline] fn reduction_min(self, other: Self) -> Self { self.min(other) }
-    #[inline] fn reduction_gt(self, other: Self) -> bool { self > other }
+/// Implement `ReductionOps` for a real type (`f32` / `f64`).
+macro_rules! impl_real_reduction {
+    ($ty:ty) => {
+        impl ReductionOps for $ty {
+            #[inline] fn reduction_zero() -> Self { 0.0 }
+            #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
+            #[inline] fn reduction_max(self, other: Self) -> Self { self.max(other) }
+            #[inline] fn reduction_min(self, other: Self) -> Self { self.min(other) }
+            #[inline] fn reduction_gt(self, other: Self) -> bool { self > other }
+        }
+    };
 }
 
-impl ReductionOps for f64 {
-    #[inline] fn reduction_zero() -> Self { 0.0 }
-    #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
-    #[inline] fn reduction_max(self, other: Self) -> Self { self.max(other) }
-    #[inline] fn reduction_min(self, other: Self) -> Self { self.min(other) }
-    #[inline] fn reduction_gt(self, other: Self) -> bool { self > other }
+impl_real_reduction!(f32);
+impl_real_reduction!(f64);
+
+/// Magnitude-squared for complex comparison: `re² + im²`.
+macro_rules! mag2 {
+    ($z:expr) => {
+        $z.re * $z.re + $z.im * $z.im
+    };
 }
 
-impl ReductionOps for faer::c32 {
-    #[inline] fn reduction_zero() -> Self { Self::new(0.0, 0.0) }
-    #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
-    // Compare by magnitude squared: re^2 + im^2
-    #[inline] fn reduction_max(self, other: Self) -> Self {
-        let self_mag2 = self.re * self.re + self.im * self.im;
-        let other_mag2 = other.re * other.re + other.im * other.im;
-        if self_mag2 >= other_mag2 { self } else { other }
-    }
-    #[inline] fn reduction_min(self, other: Self) -> Self {
-        let self_mag2 = self.re * self.re + self.im * self.im;
-        let other_mag2 = other.re * other.re + other.im * other.im;
-        if self_mag2 <= other_mag2 { self } else { other }
-    }
-    #[inline] fn reduction_gt(self, other: Self) -> bool {
-        let self_mag2 = self.re * self.re + self.im * self.im;
-        let other_mag2 = other.re * other.re + other.im * other.im;
-        self_mag2 > other_mag2
-    }
+/// Implement `ReductionOps` for a complex type (`c32` / `c64`).
+macro_rules! impl_complex_reduction {
+    ($ty:ty) => {
+        impl ReductionOps for $ty {
+            #[inline] fn reduction_zero() -> Self { Self::new(0.0, 0.0) }
+            #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
+            #[inline] fn reduction_max(self, other: Self) -> Self {
+                if mag2!(self) >= mag2!(other) { self } else { other }
+            }
+            #[inline] fn reduction_min(self, other: Self) -> Self {
+                if mag2!(self) <= mag2!(other) { self } else { other }
+            }
+            #[inline] fn reduction_gt(self, other: Self) -> bool {
+                mag2!(self) > mag2!(other)
+            }
+        }
+    };
 }
 
-impl ReductionOps for faer::c64 {
-    #[inline] fn reduction_zero() -> Self { Self::new(0.0, 0.0) }
-    #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
-    #[inline] fn reduction_max(self, other: Self) -> Self {
-        let self_mag2 = self.re * self.re + self.im * self.im;
-        let other_mag2 = other.re * other.re + other.im * other.im;
-        if self_mag2 >= other_mag2 { self } else { other }
-    }
-    #[inline] fn reduction_min(self, other: Self) -> Self {
-        let self_mag2 = self.re * self.re + self.im * self.im;
-        let other_mag2 = other.re * other.re + other.im * other.im;
-        if self_mag2 <= other_mag2 { self } else { other }
-    }
-    #[inline] fn reduction_gt(self, other: Self) -> bool {
-        let self_mag2 = self.re * self.re + self.im * self.im;
-        let other_mag2 = other.re * other.re + other.im * other.im;
-        self_mag2 > other_mag2
-    }
-}
+impl_complex_reduction!(faer::c32);
+impl_complex_reduction!(faer::c64);
 
 // Elementwise math dispatch for all four Scalar types.
 // pub(crate) so that scalar::Scalar can use it as a supertrait bound.
@@ -118,94 +106,68 @@ pub(crate) trait MathOps: Sized + Copy {
     fn math_div(self, other: Self) -> Self;
 }
 
-impl MathOps for f32 {
-    #[inline] fn math_exp(self) -> Self { self.exp() }
-    #[inline] fn math_ln(self) -> Self { self.ln() }
-    #[inline] fn math_log1p(self) -> Self { self.ln_1p() }
-    #[inline] fn math_sin(self) -> Self { self.sin() }
-    #[inline] fn math_cos(self) -> Self { self.cos() }
-    #[inline] fn math_tanh(self) -> Self { self.tanh() }
-    #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
-    #[inline] fn math_abs(self) -> Self { self.abs() }
-    #[inline] fn math_recip(self) -> Self { self.recip() }
-    #[inline]
-    #[allow(clippy::cast_possible_truncation)]
-    fn math_erf(self) -> Self { erf_approx(f64::from(self)) as f32 }
-    #[inline] fn math_ceil(self) -> Self { self.ceil() }
-    #[inline] fn math_floor(self) -> Self { self.floor() }
-    #[inline] fn math_round(self) -> Self { self.round() }
-    #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p) }
-    #[inline] fn math_mul(self, other: Self) -> Self { self * other }
-    #[inline] fn math_div(self, other: Self) -> Self { self / other }
+/// Implement `MathOps` for a real float type.
+macro_rules! impl_real_mathops {
+    ($ty:ty, $erf_conv:expr) => {
+        impl MathOps for $ty {
+            #[inline] fn math_exp(self) -> Self { self.exp() }
+            #[inline] fn math_ln(self) -> Self { self.ln() }
+            #[inline] fn math_log1p(self) -> Self { self.ln_1p() }
+            #[inline] fn math_sin(self) -> Self { self.sin() }
+            #[inline] fn math_cos(self) -> Self { self.cos() }
+            #[inline] fn math_tanh(self) -> Self { self.tanh() }
+            #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
+            #[inline] fn math_abs(self) -> Self { self.abs() }
+            #[inline] fn math_recip(self) -> Self { self.recip() }
+            #[inline]
+            #[allow(clippy::cast_possible_truncation)]
+            fn math_erf(self) -> Self { $erf_conv(self) }
+            #[inline] fn math_ceil(self) -> Self { self.ceil() }
+            #[inline] fn math_floor(self) -> Self { self.floor() }
+            #[inline] fn math_round(self) -> Self { self.round() }
+            #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p) }
+            #[inline] fn math_mul(self, other: Self) -> Self { self * other }
+            #[inline] fn math_div(self, other: Self) -> Self { self / other }
+        }
+    };
 }
 
-impl MathOps for f64 {
-    #[inline] fn math_exp(self) -> Self { self.exp() }
-    #[inline] fn math_ln(self) -> Self { self.ln() }
-    #[inline] fn math_log1p(self) -> Self { self.ln_1p() }
-    #[inline] fn math_sin(self) -> Self { self.sin() }
-    #[inline] fn math_cos(self) -> Self { self.cos() }
-    #[inline] fn math_tanh(self) -> Self { self.tanh() }
-    #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
-    #[inline] fn math_abs(self) -> Self { self.abs() }
-    #[inline] fn math_recip(self) -> Self { self.recip() }
-    #[inline] fn math_erf(self) -> Self { erf_approx(self) }
-    #[inline] fn math_ceil(self) -> Self { self.ceil() }
-    #[inline] fn math_floor(self) -> Self { self.floor() }
-    #[inline] fn math_round(self) -> Self { self.round() }
-    #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p) }
-    #[inline] fn math_mul(self, other: Self) -> Self { self * other }
-    #[inline] fn math_div(self, other: Self) -> Self { self / other }
+impl_real_mathops!(f32, |x: f32| erf_approx(f64::from(x)) as f32);
+impl_real_mathops!(f64, erf_approx);
+
+/// Implement `MathOps` for a complex type.
+macro_rules! impl_complex_mathops {
+    ($ty:ty, $real:ty) => {
+        impl MathOps for $ty {
+            #[inline] fn math_exp(self) -> Self { self.exp() }
+            #[inline] fn math_ln(self) -> Self { self.ln() }
+            #[inline] fn math_log1p(self) -> Self { (Self::new(1.0 + self.re, self.im)).ln() }
+            #[inline] fn math_sin(self) -> Self { self.sin() }
+            #[inline] fn math_cos(self) -> Self { self.cos() }
+            #[inline] fn math_tanh(self) -> Self { self.tanh() }
+            #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
+            #[inline] fn math_abs(self) -> Self { Self::new(self.norm(), 0.0) }
+            #[inline] fn math_recip(self) -> Self { self.inv() }
+            #[inline]
+            #[allow(clippy::cast_possible_truncation)]
+            fn math_erf(self) -> Self {
+                Self::new(
+                    erf_approx(self.re as f64) as $real,
+                    erf_approx(self.im as f64) as $real,
+                )
+            }
+            #[inline] fn math_ceil(self) -> Self { Self::new(self.re.ceil(), self.im.ceil()) }
+            #[inline] fn math_floor(self) -> Self { Self::new(self.re.floor(), self.im.floor()) }
+            #[inline] fn math_round(self) -> Self { Self::new(self.re.round(), self.im.round()) }
+            #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p.re) }
+            #[inline] fn math_mul(self, other: Self) -> Self { self * other }
+            #[inline] fn math_div(self, other: Self) -> Self { self / other }
+        }
+    };
 }
 
-impl MathOps for faer::c32 {
-    #[inline] fn math_exp(self) -> Self { self.exp() }
-    #[inline] fn math_ln(self) -> Self { self.ln() }
-    // log1p(z) = ln(1 + z)
-    #[inline] fn math_log1p(self) -> Self { (Self::new(1.0 + self.re, self.im)).ln() }
-    #[inline] fn math_sin(self) -> Self { self.sin() }
-    #[inline] fn math_cos(self) -> Self { self.cos() }
-    #[inline] fn math_tanh(self) -> Self { self.tanh() }
-    #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
-    // abs: magnitude as real part, 0 as imaginary
-    #[inline] fn math_abs(self) -> Self { Self::new(self.norm(), 0.0) }
-    // recip: 1/z = conj(z) / |z|^2
-    #[inline] fn math_recip(self) -> Self { self.inv() }
-    // erf: apply component-wise (approximate via real erf on re, im components)
-    #[inline]
-    #[allow(clippy::cast_possible_truncation)]
-    fn math_erf(self) -> Self {
-        Self::new(erf_approx(f64::from(self.re)) as f32, erf_approx(f64::from(self.im)) as f32)
-    }
-    // ceil/floor/round: component-wise on re/im
-    #[inline] fn math_ceil(self) -> Self { Self::new(self.re.ceil(), self.im.ceil()) }
-    #[inline] fn math_floor(self) -> Self { Self::new(self.re.floor(), self.im.floor()) }
-    #[inline] fn math_round(self) -> Self { Self::new(self.re.round(), self.im.round()) }
-    #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p.re) }
-    #[inline] fn math_mul(self, other: Self) -> Self { self * other }
-    #[inline] fn math_div(self, other: Self) -> Self { self / other }
-}
-
-impl MathOps for faer::c64 {
-    #[inline] fn math_exp(self) -> Self { self.exp() }
-    #[inline] fn math_ln(self) -> Self { self.ln() }
-    #[inline] fn math_log1p(self) -> Self { (Self::new(1.0 + self.re, self.im)).ln() }
-    #[inline] fn math_sin(self) -> Self { self.sin() }
-    #[inline] fn math_cos(self) -> Self { self.cos() }
-    #[inline] fn math_tanh(self) -> Self { self.tanh() }
-    #[inline] fn math_sqrt(self) -> Self { self.sqrt() }
-    #[inline] fn math_abs(self) -> Self { Self::new(self.norm(), 0.0) }
-    #[inline] fn math_recip(self) -> Self { self.inv() }
-    #[inline] fn math_erf(self) -> Self {
-        Self::new(erf_approx(self.re), erf_approx(self.im))
-    }
-    #[inline] fn math_ceil(self) -> Self { Self::new(self.re.ceil(), self.im.ceil()) }
-    #[inline] fn math_floor(self) -> Self { Self::new(self.re.floor(), self.im.floor()) }
-    #[inline] fn math_round(self) -> Self { Self::new(self.re.round(), self.im.round()) }
-    #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p.re) }
-    #[inline] fn math_mul(self, other: Self) -> Self { self * other }
-    #[inline] fn math_div(self, other: Self) -> Self { self / other }
-}
+impl_complex_mathops!(faer::c32, f32);
+impl_complex_mathops!(faer::c64, f64);
 
 // Macro: apply a MathOps method element-wise via Mat::from_fn.
 macro_rules! mat_elemwise_unary {

@@ -60,6 +60,9 @@ enum ContractionKind {
     Trace,
     /// Outer product: c[i,j] = a[i] * b[j] (no contraction, vector × vector)
     Outer,
+    /// Batch GEMM: c[b..,i,j] = a[b..,i,k] * m[b..,k,j]
+    /// batch_count = number of batch dimensions (leading shared dims)
+    BatchGemm { batch_count: usize },
     /// General loop-based contraction (fallback)
     Fallback,
 }
@@ -286,6 +289,35 @@ fn classify(input: &EinsumInput) -> ContractionKind {
         }
     }
 
+    // Batch GEMM: 2 terms, each with ≥3 indices, exactly 1 contraction index,
+    // leading indices are shared batch dims, inner 2 dims form a GEMM.
+    // Pattern: c[b..,i,j] = a[b..,i,k] * m[b..,k,j]
+    if rhs.len() == 2 && contraction.len() == 1 && free.len() >= 3 {
+        let a = &rhs[0];
+        let b = &rhs[1];
+        if a.indices.len() >= 3 && b.indices.len() >= 3 {
+            let batch_count = a.indices.len() - 2;
+            // Check that leading indices are the same batch dims in both terms
+            if b.indices.len() - 2 == batch_count {
+                let batch_match = (0..batch_count)
+                    .all(|d| a.indices[d].to_string() == b.indices[d].to_string());
+                // Check that inner 2 dims form standard GEMM: a[..,i,k] * b[..,k,j]
+                let k = &contraction[0];
+                let a_inner1 = a.indices[batch_count + 1].to_string();
+                let b_inner0 = b.indices[batch_count].to_string();
+                if batch_match && a_inner1 == *k && b_inner0 == *k {
+                    // Check output is [b..,i,j]
+                    let out_batch_match = (0..batch_count).all(|d| {
+                        free[d].to_string() == a.indices[d].to_string()
+                    });
+                    if out_batch_match && free.len() == batch_count + 2 {
+                        return ContractionKind::BatchGemm { batch_count };
+                    }
+                }
+            }
+        }
+    }
+
     ContractionKind::Fallback
 }
 
@@ -312,11 +344,14 @@ fn codegen_einsum(input: &EinsumInput) -> Result<TokenStream2> {
         ContractionKind::Hadamard => codegen_hadamard(input),
         ContractionKind::Trace => codegen_trace(input),
         ContractionKind::Outer => codegen_outer(input),
+        ContractionKind::BatchGemm { batch_count } => codegen_batch_gemm(input, batch_count),
         ContractionKind::Fallback => codegen_fallback(input),
     }
 }
 
 /// GEMM: emit `Tensor::matmul_into` with optional transposes.
+///
+/// When no transpose is needed, passes references directly (zero-copy).
 fn codegen_gemm(
     input: &EinsumInput,
     transpose_a: bool,
@@ -327,35 +362,36 @@ fn codegen_gemm(
     let a_bind = Ident::new(&format!("__{a_name}"), a_name.span());
     let b_bind = Ident::new(&format!("__{b_name}"), b_name.span());
 
-    let a_expr = if transpose_a {
-        quote! { #a_bind.t() }
+    // When transposed, we must materialise; otherwise borrow directly.
+    let (a_prep, a_ref) = if transpose_a {
+        (quote! { let __a_t = #a_bind.t(); }, quote! { (&__a_t) })
     } else {
-        quote! { #a_bind.clone() }
+        (quote! {}, quote! { #a_bind })
     };
-    let b_expr = if transpose_b {
-        quote! { #b_bind.t() }
+    let (b_prep, b_ref) = if transpose_b {
+        (quote! { let __b_t = #b_bind.t(); }, quote! { (&__b_t) })
     } else {
-        quote! { #b_bind.clone() }
+        (quote! {}, quote! { #b_bind })
     };
 
     Ok(quote! {
         {
             let #a_bind = &#a_name;
             let #b_bind = &#b_name;
-            let __a_op = #a_expr;
-            let __b_op = #b_expr;
-            let __m = __a_op.nrows();
-            let __n = __b_op.ncols();
-            let mut __out = nabla::tensor::Tensor::from_fn(__m, __n, |_, _| {
-                faer_traits::math_utils::zero::<_>()
-            });
-            nabla::tensor::Tensor::matmul_into(&mut __out, &__a_op, &__b_op);
+            #a_prep
+            #b_prep
+            let __m = #a_ref.nrows();
+            let __n = #b_ref.ncols();
+            let mut __out = nabla::tensor::Tensor::zeros(__m, __n);
+            nabla::tensor::Tensor::matmul_into(&mut __out, #a_ref, #b_ref);
             __out
         }
     })
 }
 
 /// GEMV: matrix × vector → column vector, via matmul_into with Mx1 / 1xN.
+///
+/// When no transpose is needed, passes references directly (zero-copy).
 fn codegen_gemv(input: &EinsumInput, mat_first: bool) -> Result<TokenStream2> {
     let (mat_term, vec_term) = if mat_first {
         (&input.rhs_terms[0], &input.rhs_terms[1])
@@ -371,23 +407,20 @@ fn codegen_gemv(input: &EinsumInput, mat_first: bool) -> Result<TokenStream2> {
     // Check if matrix needs transpose: free idx should be at row position.
     let transpose_mat = mat_term.indices[0] != input.output_indices[0];
 
-    let mat_expr = if transpose_mat {
-        quote! { #mat_bind.t() }
+    let (mat_prep, mat_ref) = if transpose_mat {
+        (quote! { let __mat_t = #mat_bind.t(); }, quote! { (&__mat_t) })
     } else {
-        quote! { #mat_bind.clone() }
+        (quote! {}, quote! { #mat_bind })
     };
 
     Ok(quote! {
         {
             let #mat_bind = &#mat_name;
             let #vec_bind = &#vec_name;
-            let __mat = #mat_expr;
-            // Vector is already a column vector (nrows × 1).
-            let __m = __mat.nrows();
-            let mut __out = nabla::tensor::Tensor::from_fn(__m, 1, |_, _| {
-                faer_traits::math_utils::zero::<_>()
-            });
-            nabla::tensor::Tensor::matmul_into(&mut __out, &__mat, #vec_bind);
+            #mat_prep
+            let __m = #mat_ref.nrows();
+            let mut __out = nabla::tensor::Tensor::zeros(__m, 1);
+            nabla::tensor::Tensor::matmul_into(&mut __out, #mat_ref, #vec_bind);
             __out
         }
     })
@@ -475,6 +508,65 @@ fn codegen_outer(input: &EinsumInput) -> Result<TokenStream2> {
     })
 }
 
+/// Batch GEMM: c[b..,i,j] = a[b..,i,k] * m[b..,k,j]
+///
+/// Generates nested batch loops, extracts 2-D slices via `slice_2d`, calls
+/// `Tensor::matmul`, and writes back via `set_slice_2d`.
+fn codegen_batch_gemm(input: &EinsumInput, batch_count: usize) -> Result<TokenStream2> {
+    let a_name = &input.rhs_terms[0].name;
+    let b_name = &input.rhs_terms[1].name;
+    let a_bind = Ident::new(&format!("__{a_name}"), a_name.span());
+    let b_bind = Ident::new(&format!("__{b_name}"), b_name.span());
+
+    // Batch loop variables
+    let batch_vars: Vec<Ident> = (0..batch_count)
+        .map(|d| Ident::new(&format!("__b{d}"), proc_macro2::Span::call_site()))
+        .collect();
+
+    // Shape expressions for each output dimension
+    let mut shape_exprs = Vec::new();
+    for d in 0..batch_count {
+        shape_exprs.push(quote! { #a_bind.dim(#d) });
+    }
+    // Inner matrix dims: rows from a, cols from b
+    let inner_row_dim = batch_count;
+    let inner_col_dim = batch_count + 1;
+    shape_exprs.push(quote! { #a_bind.dim(#inner_row_dim) });
+    shape_exprs.push(quote! { #b_bind.dim(#inner_col_dim) });
+
+    // Build nested batch loops (outermost → innermost)
+    let batch_idx_array = quote! { &[#(#batch_vars),*] };
+    let inner_body = quote! {
+        let __a_slice = #a_bind.slice_2d(#batch_idx_array);
+        let __b_slice = #b_bind.slice_2d(#batch_idx_array);
+        let __c_slice = &__a_slice * &__b_slice;
+        __out.set_slice_2d(#batch_idx_array, &__c_slice);
+    };
+
+    let mut loops = inner_body;
+    for d in (0..batch_count).rev() {
+        let bv = &batch_vars[d];
+        let dim = quote! { #a_bind.dim(#d) };
+        loops = quote! {
+            for #bv in 0..#dim {
+                #loops
+            }
+        };
+    }
+
+    Ok(quote! {
+        {
+            let #a_bind = &#a_name;
+            let #b_bind = &#b_name;
+            let mut __out = nabla::tensor::NdTensor::zeros(
+                &[#(#shape_exprs),*]
+            );
+            #loops
+            __out
+        }
+    })
+}
+
 /// Fallback: general loop-based contraction (supports N-D indices).
 fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
     let free_indices = &input.output_indices;
@@ -548,15 +640,32 @@ fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
             }
         }
     } else {
-        // N-D output (>2 free indices): generate nested loops over batch dims
-        // with inner 2D `from_fn`. For now, fall back to a flat loop approach
-        // that constructs the 2D output from the last two free indices.
-        return Err(Error::new_spanned(
-            &input.output_name,
-            "einsum!: N-D output (>2 free indices) requires N-D tensor support \
-             which is not yet available; consider restructuring as batch loops \
-             over 2-D operations",
-        ));
+        // N-D output (>2 free indices): generate `NdTensor::from_fn`.
+        let mut shape_exprs = Vec::new();
+        for fidx in free_indices {
+            let dim = dim_expr_for_index_any_pos(fidx, rhs_terms)?;
+            shape_exprs.push(dim);
+        }
+        // Map free index idents to closure parameter via `__idx[n]`
+        let idx_bindings: Vec<TokenStream2> = free_indices
+            .iter()
+            .enumerate()
+            .map(|(n, fi)| quote! { let #fi = __idx[#n]; })
+            .collect();
+        quote! {
+            {
+                #(#tensor_bindings)*
+                nabla::tensor::NdTensor::from_fn(
+                    &[#(#shape_exprs),*],
+                    |__idx| {
+                        #(#idx_bindings)*
+                        let mut __acc = faer_traits::math_utils::zero::<_>();
+                        #acc_body
+                        __acc
+                    },
+                )
+            }
+        }
     };
 
     Ok(result)
@@ -630,16 +739,9 @@ fn tensor_element_access(term: &IndexedTensor) -> Result<TokenStream2> {
             Ok(quote! { #binding.get(#i, #j) })
         }
         _ => {
-            // N-D: currently Tensor is 2-D, so N>2 indices require future N-D support.
-            Err(Error::new_spanned(
-                &term.name,
-                format!(
-                    "einsum!: tensor `{}` has {} indices, but only 2-D tensors are \
-                     currently supported; N-D tensor support is planned for a future release",
-                    term.name,
-                    term.indices.len()
-                ),
-            ))
+            // N-D: generate `.get_nd(&[i, j, k, ...])`
+            let indices = &term.indices;
+            Ok(quote! { #binding.get_nd(&[#(#indices),*]) })
         }
     }
 }
@@ -653,11 +755,7 @@ fn dim_expr_for_index(
         for (pos, tidx) in term.indices.iter().enumerate() {
             if tidx == idx && pos == preferred_pos {
                 let binding = Ident::new(&format!("__{}", term.name), term.name.span());
-                return Ok(match pos {
-                    0 => quote! { #binding.nrows() },
-                    1 => quote! { #binding.ncols() },
-                    n => quote! { #binding.dim(#n) },
-                });
+                return Ok(dim_expr_at(&binding, pos, term.indices.len()));
             }
         }
     }
@@ -669,11 +767,7 @@ fn dim_expr_for_index_any_pos(idx: &Ident, rhs_terms: &[IndexedTensor]) -> Resul
         for (pos, tidx) in term.indices.iter().enumerate() {
             if tidx == idx {
                 let binding = Ident::new(&format!("__{}", term.name), term.name.span());
-                return Ok(match pos {
-                    0 => quote! { #binding.nrows() },
-                    1 => quote! { #binding.ncols() },
-                    n => quote! { #binding.dim(#n) },
-                });
+                return Ok(dim_expr_at(&binding, pos, term.indices.len()));
             }
         }
     }
@@ -681,4 +775,21 @@ fn dim_expr_for_index_any_pos(idx: &Ident, rhs_terms: &[IndexedTensor]) -> Resul
         idx,
         format!("einsum!: index `{idx}` not found in any RHS tensor"),
     ))
+}
+
+/// Generate a dimension expression for a tensor at a given axis position.
+///
+/// For 2-D tensors (≤2 indices), uses `.nrows()` / `.ncols()` for readability.
+/// For N-D tensors (>2 indices), always uses `.dim(pos)` because `.nrows()` /
+/// `.ncols()` on `NdTensor` refer to the *last* two dimensions, not axis 0/1.
+fn dim_expr_at(binding: &Ident, pos: usize, ndim: usize) -> TokenStream2 {
+    if ndim > 2 {
+        quote! { #binding.dim(#pos) }
+    } else {
+        match pos {
+            0 => quote! { #binding.nrows() },
+            1 => quote! { #binding.ncols() },
+            n => quote! { #binding.dim(#n) },
+        }
+    }
 }

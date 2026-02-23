@@ -323,7 +323,7 @@ pub mod prelude {
     pub use crate::scalar::Scalar;
     pub use crate::sparse::*;
     pub use crate::tensor::Tensor;
-    pub use crate::tensor::{Array, DynTensor, Matrix, StaticMatrix};
+    pub use crate::tensor::{Array, DynTensor, Matrix, NdTensor, StaticMatrix};
     pub use crate::util::{c32, c64, linspace};
     pub use nabla_macros::{einsum, mat};
 

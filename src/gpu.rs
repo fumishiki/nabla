@@ -37,6 +37,12 @@ unsafe fn bytes_to_scalar<T: Scalar>(bytes: &[u8]) -> Vec<T> {
 
 // ── GpuStorage ───────────────────────────────────────────────────────────────
 
+/// Lock a mutex, recovering from poisoned state.
+#[inline]
+fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Row-major GPU-backed matrix.
 ///
 /// `handle` owns device memory (RAII via Arc-backed ref-count).
@@ -81,7 +87,7 @@ impl<T: Scalar> GpuStorage<T> {
     where
         R::Device: Default,
     {
-        let guard = self.host_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = lock_or_recover(&self.host_cache);
         if let Some(ref v) = *guard {
             return v.clone();
         }
@@ -96,7 +102,7 @@ impl<T: Scalar> GpuStorage<T> {
     where
         R::Device: Default,
     {
-        let mut guard = self.host_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = lock_or_recover(&self.host_cache);
         if guard.is_none() {
             let client = R::client(&R::Device::default());
             let bytes = client.read_one(self.handle.clone());
@@ -953,7 +959,7 @@ pub(crate) fn gpu_set<T: Scalar, R: Runtime>(
         let mut guard = s.fill_cache::<R>();
         guard.as_mut().expect("cache populated")[r * s.ncols + c] = v;
     }
-    let guard = s.host_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = lock_or_recover(&s.host_cache);
     let data = guard.as_ref().expect("cache populated");
     let client = R::client(&R::Device::default());
     // SAFETY: data is a valid [T] slice; reinterpreted as bytes for upload.
@@ -964,7 +970,7 @@ pub(crate) fn gpu_clone<T: Scalar, R: Runtime>(s: &GpuStorage<T>) -> GpuStorage<
 where
     R::Device: Default,
 {
-    let guard = s.host_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = lock_or_recover(&s.host_cache);
     let client = R::client(&R::Device::default());
     let new_handle = if let Some(ref data) = *guard {
         // SAFETY: data is a valid [T] slice.
@@ -1119,7 +1125,7 @@ pub(crate) fn gpu_matmul<T: Scalar, R: Runtime>(
         out.handle = h;
         out.nrows = rows;
         out.ncols = cols;
-        let mut guard = out.host_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = lock_or_recover(&out.host_cache);
         *guard = None;
     } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
         let h = gpu_matmul_tiled_kernel::<f64, R>(&client, &a.handle, &b.handle, rows, kdim, cols)
@@ -1127,7 +1133,7 @@ pub(crate) fn gpu_matmul<T: Scalar, R: Runtime>(
         out.handle = h;
         out.nrows = rows;
         out.ncols = cols;
-        let mut guard = out.host_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = lock_or_recover(&out.host_cache);
         *guard = None;
     } else {
         let ha = a.download::<R>();
@@ -1144,7 +1150,7 @@ pub(crate) fn gpu_matmul<T: Scalar, R: Runtime>(
         out.handle = new.handle;
         out.nrows = rows;
         out.ncols = cols;
-        let mut guard = out.host_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = lock_or_recover(&out.host_cache);
         *guard = new.host_cache.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 }

@@ -660,3 +660,149 @@ fn tensor_dim_out_of_range() {
     let a: Tensor<f64> = Tensor::zeros(2, 2);
     let _ = a.dim(2);
 }
+
+// ===========================================================================
+// N-D Tensor & einsum tests (I3b Phase 2/3)
+// ===========================================================================
+
+#[test]
+fn ndtensor_zeros_and_from_fn() {
+    let t = NdTensor::<f64>::zeros(&[2, 3, 4]);
+    assert_eq!(t.ndim(), 3);
+    assert_eq!(t.dim(0), 2);
+    assert_eq!(t.dim(1), 3);
+    assert_eq!(t.dim(2), 4);
+    assert_eq!(t.len(), 24);
+    for i in 0..2 {
+        for j in 0..3 {
+            for k in 0..4 {
+                assert!(approx_eq(t.get_nd(&[i, j, k]), 0.0));
+            }
+        }
+    }
+
+    let t = NdTensor::<f64>::from_fn(&[2, 3], |idx| (idx[0] * 3 + idx[1]) as f64);
+    assert_eq!(t.ndim(), 2);
+    assert!(approx_eq(t.get_nd(&[1, 2]), 5.0));
+}
+
+#[test]
+fn ndtensor_get_set() {
+    let mut t = NdTensor::<f64>::zeros(&[2, 3]);
+    t.set_nd(&[1, 2], 42.0);
+    assert!(approx_eq(t.get_nd(&[1, 2]), 42.0));
+    assert!(approx_eq(t.get_nd(&[0, 0]), 0.0));
+}
+
+#[test]
+fn ndtensor_slice_2d_roundtrip() {
+    // Create a 2×3×4 tensor, extract 2D slices, set them back
+    let t = NdTensor::<f64>::from_fn(&[2, 3, 4], |idx| {
+        (idx[0] * 100 + idx[1] * 10 + idx[2]) as f64
+    });
+
+    let slice0: Tensor<f64> = t.slice_2d(&[0]);
+    assert_eq!(slice0.shape(), (3, 4));
+    assert!(approx_eq(slice0.get(2, 3), 23.0));
+
+    let slice1: Tensor<f64> = t.slice_2d(&[1]);
+    assert!(approx_eq(slice1.get(0, 0), 100.0));
+    assert!(approx_eq(slice1.get(2, 3), 123.0));
+
+    // Round-trip: set_slice_2d and read back
+    let mut t2 = NdTensor::<f64>::zeros(&[2, 3, 4]);
+    t2.set_slice_2d(&[0], &slice0);
+    t2.set_slice_2d(&[1], &slice1);
+    for i in 0..2 {
+        for j in 0..3 {
+            for k in 0..4 {
+                assert!(approx_eq(t2.get_nd(&[i, j, k]), t.get_nd(&[i, j, k])));
+            }
+        }
+    }
+}
+
+#[test]
+fn einsum_batch_gemm_3d() {
+    // c[b,i,j] = a[b,i,k] * m[b,k,j]  — batch matrix multiply
+    let a = NdTensor::<f64>::from_fn(&[2, 3, 4], |idx| {
+        (idx[0] * 12 + idx[1] * 4 + idx[2] + 1) as f64
+    });
+    let m = NdTensor::<f64>::from_fn(&[2, 4, 2], |idx| {
+        (idx[0] * 8 + idx[1] * 2 + idx[2] + 1) as f64
+    });
+    let c: NdTensor<f64> = einsum!(c[b, i, j] = a[b, i, k] * m[b, k, j]);
+    assert_eq!(c.ndim(), 3);
+    assert_eq!(c.dim(0), 2);
+    assert_eq!(c.dim(1), 3);
+    assert_eq!(c.dim(2), 2);
+
+    // Verify against manual batch matmul
+    for b in 0..2 {
+        for i in 0..3 {
+            for j in 0..2 {
+                let mut expected = 0.0;
+                for k in 0..4 {
+                    expected += a.get_nd(&[b, i, k]) * m.get_nd(&[b, k, j]);
+                }
+                assert!(
+                    approx_eq(c.get_nd(&[b, i, j]), expected),
+                    "mismatch at [{b},{i},{j}]: got {}, expected {expected}",
+                    c.get_nd(&[b, i, j])
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn einsum_nd_fallback_3d_contraction() {
+    // r[i,j,l] = t[i,j,k] * m[k,l]  — 3D × 2D → 3D contraction (general fallback)
+    let t = NdTensor::<f64>::from_fn(&[2, 3, 4], |idx| {
+        (idx[0] * 12 + idx[1] * 4 + idx[2] + 1) as f64
+    });
+    let m: Tensor<f64> = Tensor::from_fn(4, 5, |k, l| (k * 5 + l + 1) as f64);
+    let r: NdTensor<f64> = einsum!(r[i, j, l] = t[i, j, k] * m[k, l]);
+    assert_eq!(r.ndim(), 3);
+    assert_eq!(r.dim(0), 2);
+    assert_eq!(r.dim(1), 3);
+    assert_eq!(r.dim(2), 5);
+
+    // Verify against manual computation
+    for i in 0..2 {
+        for j in 0..3 {
+            for l in 0..5 {
+                let mut expected = 0.0;
+                for k in 0..4 {
+                    expected += t.get_nd(&[i, j, k]) * m.get(k, l);
+                }
+                assert!(
+                    approx_eq(r.get_nd(&[i, j, l]), expected),
+                    "mismatch at [{i},{j},{l}]: got {}, expected {expected}",
+                    r.get_nd(&[i, j, l])
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn einsum_nd_no_contraction_3d() {
+    // r[i,j,k] = a[i,j] * b[k]  — no contraction, 3 free indices
+    let a: Tensor<f64> = Tensor::from_fn(2, 3, |i, j| (i * 3 + j + 1) as f64);
+    let b: Tensor<f64> = Tensor::from_fn(4, 1, |k, _| (k + 1) as f64);
+    let r: NdTensor<f64> = einsum!(r[i, j, k] = a[i, j] * b[k]);
+    assert_eq!(r.ndim(), 3);
+    assert_eq!(r.dim(0), 2);
+    assert_eq!(r.dim(1), 3);
+    assert_eq!(r.dim(2), 4);
+
+    for i in 0..2 {
+        for j in 0..3 {
+            for k in 0..4 {
+                let expected = a.get(i, j) * b.get(k, 0);
+                assert!(approx_eq(r.get_nd(&[i, j, k]), expected));
+            }
+        }
+    }
+}

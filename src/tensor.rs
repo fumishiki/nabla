@@ -79,6 +79,55 @@ pub(crate) fn fmt_matrix(
     write!(f, "]")
 }
 
+/// Generate element-wise math forwarding methods on Tensor.
+macro_rules! impl_tensor_math {
+    ($($(#[$meta:meta])* $name:ident);+ $(;)?) => {
+        impl<T: Scalar, B: Backend> Tensor<T, B> {
+            $(
+                $(#[$meta])*
+                #[must_use]
+                #[inline]
+                pub fn $name(&self) -> Self {
+                    Self::from_storage(B::$name(&self.storage))
+                }
+            )+
+        }
+    };
+}
+
+impl_tensor_math! {
+    /// Element-wise `e^x`.
+    exp;
+    /// Element-wise natural logarithm `ln(x)`.
+    ln;
+    /// Element-wise `ln(1 + x)`.
+    log1p;
+    /// Element-wise `sin(x)`.
+    sin;
+    /// Element-wise `cos(x)`.
+    cos;
+    /// Element-wise `tanh(x)`.
+    tanh;
+    /// Element-wise `sqrt(x)`.
+    sqrt;
+    /// Element-wise absolute value.
+    ///
+    /// For complex types, returns the magnitude as the real part with zero imaginary part.
+    abs;
+    /// Element-wise reciprocal `1/x`.
+    recip;
+    /// Element-wise error function.
+    ///
+    /// Uses the Abramowitz & Stegun polynomial approximation (max error ~1.5e-7).
+    erf;
+    /// Element-wise `ceil(x)`.
+    ceil;
+    /// Element-wise `floor(x)`.
+    floor;
+    /// Element-wise `round(x)`.
+    round;
+}
+
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[inline]
     fn check_range(name: &str, index: usize, bound: usize) {
@@ -275,101 +324,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let bottom_left = self.submatrix(row, self.nrows(), 0, col);
         let bottom_right = self.submatrix(row, self.nrows(), col, self.ncols());
         (top_left, top_right, bottom_left, bottom_right)
-    }
-
-    /// Element-wise `e^x`.
-    #[must_use]
-    #[inline]
-    pub fn exp(&self) -> Self {
-        Self::from_storage(B::exp(&self.storage))
-    }
-
-    /// Element-wise natural logarithm `ln(x)`.
-    #[must_use]
-    #[inline]
-    pub fn ln(&self) -> Self {
-        Self::from_storage(B::ln(&self.storage))
-    }
-
-    /// Element-wise `ln(1 + x)`.
-    #[must_use]
-    #[inline]
-    pub fn log1p(&self) -> Self {
-        Self::from_storage(B::log1p(&self.storage))
-    }
-
-    /// Element-wise `sin(x)`.
-    #[must_use]
-    #[inline]
-    pub fn sin(&self) -> Self {
-        Self::from_storage(B::sin(&self.storage))
-    }
-
-    /// Element-wise `cos(x)`.
-    #[must_use]
-    #[inline]
-    pub fn cos(&self) -> Self {
-        Self::from_storage(B::cos(&self.storage))
-    }
-
-    /// Element-wise `tanh(x)`.
-    #[must_use]
-    #[inline]
-    pub fn tanh(&self) -> Self {
-        Self::from_storage(B::tanh(&self.storage))
-    }
-
-    /// Element-wise `sqrt(x)`.
-    #[must_use]
-    #[inline]
-    pub fn sqrt(&self) -> Self {
-        Self::from_storage(B::sqrt(&self.storage))
-    }
-
-    /// Element-wise absolute value.
-    ///
-    /// For complex types, returns the magnitude as the real part with zero imaginary part.
-    #[must_use]
-    #[inline]
-    pub fn abs(&self) -> Self {
-        Self::from_storage(B::abs(&self.storage))
-    }
-
-    /// Element-wise reciprocal `1/x`.
-    #[must_use]
-    #[inline]
-    pub fn recip(&self) -> Self {
-        Self::from_storage(B::recip(&self.storage))
-    }
-
-    /// Element-wise error function.
-    ///
-    /// Uses the Abramowitz & Stegun polynomial approximation (max error ~1.5e-7).
-    #[must_use]
-    #[inline]
-    pub fn erf(&self) -> Self {
-        Self::from_storage(B::erf(&self.storage))
-    }
-
-    /// Element-wise `ceil(x)`.
-    #[must_use]
-    #[inline]
-    pub fn ceil(&self) -> Self {
-        Self::from_storage(B::ceil(&self.storage))
-    }
-
-    /// Element-wise `floor(x)`.
-    #[must_use]
-    #[inline]
-    pub fn floor(&self) -> Self {
-        Self::from_storage(B::floor(&self.storage))
-    }
-
-    /// Element-wise `round(x)`.
-    #[must_use]
-    #[inline]
-    pub fn round(&self) -> Self {
-        Self::from_storage(B::round(&self.storage))
     }
 
     /// Element-wise `x^p` for scalar exponent `p`.
@@ -633,6 +587,243 @@ impl<T: Scalar + fmt::Debug, B: Backend> fmt::Debug for Tensor<T, B> {
             f,
             Some(&prefix),
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NdTensor<T> — N-dimensional tensor for higher-order einsum operations.
+// ---------------------------------------------------------------------------
+
+/// N-dimensional tensor stored as a flat `Vec<T>` in row-major (C-order) layout.
+///
+/// Designed for use with `einsum!` macro's N-D contraction support.
+/// For 2-D operations, prefer [`Tensor<T, B>`] which uses faer's optimised kernels.
+///
+/// # Examples
+///
+/// ```
+/// use nabla::tensor::NdTensor;
+///
+/// // Create a 2×3×4 tensor
+/// let t = NdTensor::<f64>::from_fn(&[2, 3, 4], |idx| {
+///     (idx[0] * 12 + idx[1] * 4 + idx[2]) as f64
+/// });
+/// assert_eq!(t.ndim(), 3);
+/// assert_eq!(t.dim(0), 2);
+/// assert_eq!(t.dim(1), 3);
+/// assert_eq!(t.dim(2), 4);
+/// assert!((t.get_nd(&[1, 2, 3]) - 23.0).abs() < 1e-10);
+/// ```
+pub struct NdTensor<T: Scalar> {
+    data: Vec<T>,
+    shape: Vec<usize>,
+    strides: Vec<usize>,
+}
+
+impl<T: Scalar> Clone for NdTensor<T> {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            shape: self.shape.clone(),
+            strides: self.strides.clone(),
+        }
+    }
+}
+
+impl<T: Scalar> NdTensor<T> {
+    /// Compute row-major strides from shape via reverse cumulative product.
+    fn compute_strides(shape: &[usize]) -> Vec<usize> {
+        let mut strides = vec![0usize; shape.len()];
+        let mut acc = 1usize;
+        for i in (0..shape.len()).rev() {
+            strides[i] = acc;
+            acc *= shape[i];
+        }
+        strides
+    }
+
+    /// Convert N-D indices to a flat linear index.
+    fn linear_index(&self, indices: &[usize]) -> usize {
+        debug_assert_eq!(
+            indices.len(),
+            self.shape.len(),
+            "NdTensor: expected {} indices, got {}",
+            self.shape.len(),
+            indices.len()
+        );
+        indices.iter().zip(&self.strides).map(|(i, s)| i * s).sum()
+    }
+
+    /// Allocate a zero-filled tensor of the given shape.
+    #[must_use]
+    pub fn zeros(shape: &[usize]) -> Self {
+        let n: usize = shape.iter().product();
+        let zero: T = faer_traits::math_utils::zero();
+        Self {
+            data: vec![zero; n],
+            shape: shape.to_vec(),
+            strides: Self::compute_strides(shape),
+        }
+    }
+
+    /// Allocate a tensor whose element at `indices` is `f(indices)`.
+    ///
+    /// Indices are iterated in row-major order.
+    #[must_use]
+    pub fn from_fn(shape: &[usize], mut f: impl FnMut(&[usize]) -> T) -> Self {
+        let n: usize = shape.iter().product();
+        let strides = Self::compute_strides(shape);
+        let ndim = shape.len();
+        let mut data = Vec::with_capacity(n);
+        let mut indices = vec![0usize; ndim];
+        for _ in 0..n {
+            data.push(f(&indices));
+            // Increment indices in row-major order (last index varies fastest).
+            for d in (0..ndim).rev() {
+                indices[d] += 1;
+                if indices[d] < shape[d] {
+                    break;
+                }
+                indices[d] = 0;
+            }
+        }
+        Self {
+            data,
+            shape: shape.to_vec(),
+            strides,
+        }
+    }
+
+    /// Number of dimensions.
+    #[must_use]
+    #[inline]
+    pub fn ndim(&self) -> usize {
+        self.shape.len()
+    }
+
+    /// Size of dimension `axis`.
+    ///
+    /// # Panics
+    /// Panics if `axis >= ndim()`.
+    #[must_use]
+    #[inline]
+    pub fn dim(&self, axis: usize) -> usize {
+        self.shape[axis]
+    }
+
+    /// Shape as a slice.
+    #[must_use]
+    #[inline]
+    pub fn shape_vec(&self) -> &[usize] {
+        &self.shape
+    }
+
+    /// Read element at the given N-D indices.
+    #[must_use]
+    #[inline]
+    pub fn get_nd(&self, indices: &[usize]) -> T {
+        let idx = self.linear_index(indices);
+        self.data[idx]
+    }
+
+    /// Write element at the given N-D indices.
+    #[inline]
+    pub fn set_nd(&mut self, indices: &[usize], val: T) {
+        let idx = self.linear_index(indices);
+        self.data[idx] = val;
+    }
+
+    /// Total number of elements.
+    #[must_use]
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Whether the tensor is empty (any dimension is 0).
+    #[must_use]
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Extract a 2-D [`Tensor`] from the **last two dimensions**, fixing
+    /// all preceding batch dimensions.
+    ///
+    /// `batch_indices` must have length `ndim() - 2`.
+    #[must_use]
+    pub fn slice_2d(&self, batch_indices: &[usize]) -> Tensor<T> {
+        assert_eq!(
+            batch_indices.len() + 2,
+            self.ndim(),
+            "NdTensor::slice_2d: expected {} batch indices, got {}",
+            self.ndim() - 2,
+            batch_indices.len()
+        );
+        let nrows = self.shape[self.ndim() - 2];
+        let ncols = self.shape[self.ndim() - 1];
+        // Compute flat offset for the batch prefix — avoids per-element Vec allocation.
+        let base_offset: usize = batch_indices
+            .iter()
+            .zip(&self.strides)
+            .map(|(i, s)| i * s)
+            .sum();
+        let row_stride = self.strides[self.ndim() - 2];
+        let col_stride = self.strides[self.ndim() - 1]; // always 1 for row-major
+        Tensor::from_fn(nrows, ncols, |r, c| {
+            self.data[base_offset + r * row_stride + c * col_stride]
+        })
+    }
+
+    /// Set a 2-D slice in the **last two dimensions**, fixing all
+    /// preceding batch dimensions.
+    pub fn set_slice_2d(&mut self, batch_indices: &[usize], tensor: &Tensor<T>) {
+        assert_eq!(
+            batch_indices.len() + 2,
+            self.ndim(),
+            "NdTensor::set_slice_2d: expected {} batch indices, got {}",
+            self.ndim() - 2,
+            batch_indices.len()
+        );
+        let nrows = self.shape[self.ndim() - 2];
+        let ncols = self.shape[self.ndim() - 1];
+        let base_offset: usize = batch_indices
+            .iter()
+            .zip(&self.strides)
+            .map(|(i, s)| i * s)
+            .sum();
+        let row_stride = self.strides[self.ndim() - 2];
+        let col_stride = self.strides[self.ndim() - 1];
+        for r in 0..nrows {
+            for c in 0..ncols {
+                self.data[base_offset + r * row_stride + c * col_stride] = tensor.get(r, c);
+            }
+        }
+    }
+
+    /// Convenience: number of rows for the last-2 dimension.
+    ///
+    /// Equivalent to `self.dim(ndim - 2)`. Allows `NdTensor` to be used
+    /// in generated code that calls `.nrows()`.
+    #[must_use]
+    #[inline]
+    pub fn nrows(&self) -> usize {
+        assert!(self.ndim() >= 2, "NdTensor::nrows requires ndim >= 2");
+        self.shape[self.ndim() - 2]
+    }
+
+    /// Convenience: number of cols for the last dimension.
+    #[must_use]
+    #[inline]
+    pub fn ncols(&self) -> usize {
+        assert!(self.ndim() >= 1, "NdTensor::ncols requires ndim >= 1");
+        self.shape[self.ndim() - 1]
+    }
+}
+
+impl<T: Scalar + fmt::Debug> fmt::Debug for NdTensor<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "NdTensor(shape={:?}, data={:?})", self.shape, self.data)
     }
 }
 
@@ -942,6 +1133,18 @@ pub enum DynTensor {
     Cpu(Tensor<f32, Cpu>),
 }
 
+/// Dispatch a method through all `DynTensor` variants.
+macro_rules! dyn_dispatch {
+    // Single-operand: &self → value
+    (ref $self:expr, $method:ident) => {
+        match $self { DynTensor::Cpu(t) => t.$method() }
+    };
+    // Two-operand: (&self, &Self) → Self
+    (binop $self:expr, $rhs:expr, $op:tt) => {
+        match ($self, $rhs) { (DynTensor::Cpu(a), DynTensor::Cpu(b)) => DynTensor::Cpu(a $op b) }
+    };
+}
+
 impl DynTensor {
     /// Construct a `DynTensor` on the CPU backend.
     pub fn cpu_f32(nrows: usize, ncols: usize, f: impl FnMut(usize, usize) -> f32) -> Self {
@@ -949,54 +1152,27 @@ impl DynTensor {
     }
 
     /// Number of rows.
-    pub fn nrows(&self) -> usize {
-        match self {
-            Self::Cpu(t) => t.nrows(),
-        }
-    }
-
+    pub fn nrows(&self) -> usize { dyn_dispatch!(ref self, nrows) }
     /// Number of columns.
-    pub fn ncols(&self) -> usize {
-        match self {
-            Self::Cpu(t) => t.ncols(),
-        }
-    }
-
+    pub fn ncols(&self) -> usize { dyn_dispatch!(ref self, ncols) }
     /// Shape as `(nrows, ncols)`.
-    pub fn shape(&self) -> (usize, usize) {
-        (self.nrows(), self.ncols())
-    }
+    pub fn shape(&self) -> (usize, usize) { (self.nrows(), self.ncols()) }
 
     /// Read element at `(row, col)`.
     pub fn get(&self, row: usize, col: usize) -> f32 {
-        match self {
-            Self::Cpu(t) => t.get(row, col),
-        }
+        match self { Self::Cpu(t) => t.get(row, col) }
     }
 
     /// Element-wise addition. Panics if shapes differ.
-    ///
-    /// Both operands must use the same backend variant.
-    pub fn add(&self, rhs: &Self) -> Self {
-        match (self, rhs) {
-            (Self::Cpu(a), Self::Cpu(b)) => Self::Cpu(a + b),
-        }
-    }
-
+    pub fn add(&self, rhs: &Self) -> Self { dyn_dispatch!(binop self, rhs, +) }
     /// Element-wise subtraction. Panics if shapes differ.
-    pub fn sub(&self, rhs: &Self) -> Self {
-        match (self, rhs) {
-            (Self::Cpu(a), Self::Cpu(b)) => Self::Cpu(a - b),
-        }
-    }
+    pub fn sub(&self, rhs: &Self) -> Self { dyn_dispatch!(binop self, rhs, -) }
 
     /// Matrix multiplication (`self × rhs`). Panics if shapes are incompatible.
     pub fn matmul(&self, rhs: &Self) -> Self {
         match (self, rhs) {
             (Self::Cpu(a), Self::Cpu(b)) => {
-                let (m, _) = a.shape();
-                let (_, n) = b.shape();
-                let mut out = Tensor::<f32, Cpu>::zeros(m, n);
+                let mut out = Tensor::<f32, Cpu>::zeros(a.nrows(), b.ncols());
                 Tensor::matmul_into(&mut out, a, b);
                 Self::Cpu(out)
             }
@@ -1005,8 +1181,6 @@ impl DynTensor {
 
     /// Move to CPU-backed tensor (always a clone for the Cpu variant).
     pub fn to_cpu(&self) -> Tensor<f32, Cpu> {
-        match self {
-            Self::Cpu(t) => t.clone(),
-        }
+        match self { Self::Cpu(t) => t.clone() }
     }
 }
