@@ -505,3 +505,26 @@ fn sum_all_f32() {
     // [1, 2, 3, 4] → sum = 10
     assert!((a.sum_all() - 10.0_f32).abs() < 1e-5);
 }
+
+#[test]
+fn fill_cpu_f32() {
+    let a: Tensor<f32> = Tensor::fill(2, 3, 7.0_f32);
+    assert_eq!(a.nrows(), 2);
+    assert_eq!(a.ncols(), 3);
+    for r in 0..2 {
+        for c in 0..3 {
+            assert!((a.get(r, c) - 7.0_f32).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn identity_cpu_f64() {
+    let eye: Tensor<f64> = Tensor::identity(3);
+    for r in 0..3 {
+        for c in 0..3 {
+            let expected = if r == c { 1.0_f64 } else { 0.0_f64 };
+            assert!((eye.get(r, c) - expected).abs() < 1e-10);
+        }
+    }
+}

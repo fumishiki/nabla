@@ -123,6 +123,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         }
     }
 
+    /// Allocate an `nrows × ncols` matrix filled with `val`.
+    ///
+    /// On GPU backends (Wgpu / Cuda), this launches a GPU fill kernel (Wave 8).
+    #[must_use]
+    pub fn fill(nrows: usize, ncols: usize, val: T) -> Self {
+        Self {
+            storage: B::fill(nrows, ncols, val),
+        }
+    }
+
     /// Allocate a matrix whose `(i, j)` element is `f(i, j)`.
     #[must_use]
     pub fn from_fn(nrows: usize, ncols: usize, f: impl FnMut(usize, usize) -> T) -> Self {
@@ -132,15 +142,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 
     /// Allocate an `n × n` identity matrix.
+    ///
+    /// On GPU backends (Wgpu / Cuda), this launches a GPU identity kernel (Wave 8).
     #[must_use]
     pub fn identity(n: usize) -> Self {
-        Self::from_fn(n, n, |r, c| {
-            if r == c {
-                T::one_impl()
-            } else {
-                T::zero_impl()
-            }
-        })
+        Self {
+            storage: B::identity(n),
+        }
     }
 
     /// Number of rows.

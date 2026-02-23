@@ -234,6 +234,22 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     /// Allocate a zero-filled matrix.
     fn zeros<T: Scalar>(nrows: usize, ncols: usize) -> Self::Storage<T>;
 
+    /// Allocate a matrix filled with a constant scalar value.
+    ///
+    /// GPU backends override this to launch a GPU fill kernel (no host intermediary).
+    fn fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> Self::Storage<T> {
+        Self::from_fn(nrows, ncols, |_, _| val)
+    }
+
+    /// Allocate an n×n identity matrix.
+    ///
+    /// GPU backends override this to launch a GPU identity kernel (no host intermediary).
+    fn identity<T: Scalar>(n: usize) -> Self::Storage<T> {
+        let zero = <T as faer_traits::ComplexField>::zero_impl();
+        let one  = <T as faer_traits::ComplexField>::one_impl();
+        Self::from_fn(n, n, |r, c| if r == c { one } else { zero })
+    }
+
     /// Allocate a matrix and fill it by calling `f(row, col)`.
     fn from_fn<T: Scalar>(
         nrows: usize,

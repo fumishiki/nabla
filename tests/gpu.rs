@@ -301,3 +301,70 @@ fn clone_is_independent() {
     assert_eq!(a.get(0, 0), 0.0f32);
     assert_eq!(b.get(0, 0), 99.0f32);
 }
+
+// ── Wave 7: Tiled matmul ──────────────────────────────────────────────────────
+
+#[test]
+fn tiled_matmul_square_f32_matches_cpu() {
+    let a_gpu = Tensor::<f32, Wgpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32);
+    let b_gpu = Tensor::<f32, Wgpu>::from_fn(4, 4, |i, j| (i + j * 2 + 1) as f32);
+    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32);
+    let b_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i + j * 2 + 1) as f32);
+    tensors_close_f32(&a_gpu.matmul(&b_gpu), &a_cpu.matmul(&b_cpu));
+}
+
+#[test]
+fn tiled_matmul_non_square_f32_matches_cpu() {
+    // 3×5 * 5×2 = 3×2
+    let a_gpu = Tensor::<f32, Wgpu>::from_fn(3, 5, |i, j| (i + j + 1) as f32);
+    let b_gpu = Tensor::<f32, Wgpu>::from_fn(5, 2, |i, j| (i * 2 + j + 1) as f32);
+    let a_cpu = Tensor::<f32, Cpu>::from_fn(3, 5, |i, j| (i + j + 1) as f32);
+    let b_cpu = Tensor::<f32, Cpu>::from_fn(5, 2, |i, j| (i * 2 + j + 1) as f32);
+    tensors_close_f32(&a_gpu.matmul(&b_gpu), &a_cpu.matmul(&b_cpu));
+}
+
+#[test]
+fn tiled_matmul_large_f32_matches_cpu() {
+    // 20×20 — spans more than one 16×16 tile in every direction
+    let a_gpu = Tensor::<f32, Wgpu>::from_fn(20, 20, |i, j| (i + j + 1) as f32 * 0.1);
+    let b_gpu = Tensor::<f32, Wgpu>::from_fn(20, 20, |i, j| (j + 1) as f32 * 0.1);
+    let a_cpu = Tensor::<f32, Cpu>::from_fn(20, 20, |i, j| (i + j + 1) as f32 * 0.1);
+    let b_cpu = Tensor::<f32, Cpu>::from_fn(20, 20, |i, j| (j + 1) as f32 * 0.1);
+    tensors_close_f32(&a_gpu.matmul(&b_gpu), &a_cpu.matmul(&b_cpu));
+}
+
+// ── Wave 8: GPU construction kernels ─────────────────────────────────────────
+
+#[test]
+fn gpu_zeros_kernel_f32() {
+    let a = Tensor::<f32, Wgpu>::zeros(3, 4);
+    assert_eq!(a.shape(), (3, 4));
+    for i in 0..3 {
+        for j in 0..4 {
+            assert_eq!(a.get(i, j), 0.0_f32);
+        }
+    }
+}
+
+#[test]
+fn gpu_fill_f32() {
+    let a = Tensor::<f32, Wgpu>::fill(3, 4, 5.5_f32);
+    assert_eq!(a.shape(), (3, 4));
+    for i in 0..3 {
+        for j in 0..4 {
+            assert!((a.get(i, j) - 5.5_f32).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn gpu_identity_f32() {
+    let eye = Tensor::<f32, Wgpu>::identity(4);
+    assert_eq!(eye.shape(), (4, 4));
+    for i in 0..4 {
+        for j in 0..4 {
+            let expected = if i == j { 1.0_f32 } else { 0.0_f32 };
+            assert!((eye.get(i, j) - expected).abs() < 1e-6);
+        }
+    }
+}

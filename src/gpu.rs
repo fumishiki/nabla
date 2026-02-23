@@ -188,6 +188,114 @@ fn matmul_naive_kernel<F: Float>(
     }
 }
 
+// Tiled matmul using SharedMemory (TILE=16).
+//
+// Mapping: 1D CubeCount (grid_rows*grid_cols blocks), CubeDim=256 (16×16 tile per block).
+// Each block handles one 16×16 tile of C.
+// SharedMemory holds two 16×16 tiles of A and B for cache-friendly accumulation.
+#[allow(clippy::format_push_string, clippy::many_single_char_names)]
+#[cube(launch)]
+fn matmul_tiled_kernel<F: Float>(
+    a: &Array<F>,
+    b: &Array<F>,
+    out: &mut Array<F>,
+    m: usize,
+    k_dim: usize,
+    n_dim: usize,
+    grid_cols: usize,
+) {
+    // ABSOLUTE_POS is the global thread id (type-compatible with usize kernel params).
+    // With CubeDim=256, each block spans 256 consecutive threads.
+    let global_id = ABSOLUTE_POS;
+    let block_id = global_id / 256_usize;
+    let local_id = global_id % 256_usize;
+
+    // Map flat block → 2D tile position
+    let block_row = block_id / grid_cols;
+    let block_col = block_id % grid_cols;
+
+    // Map local thread → 2D position within 16×16 tile
+    let ty = local_id / 16_usize;
+    let tx = local_id % 16_usize;
+
+    // Global row and column for this thread's output element
+    let row = block_row * 16_usize + ty;
+    let col = block_col * 16_usize + tx;
+
+    let mut sum = F::new(0.0_f32);
+
+    // Shared memory for 16×16 tiles of A and B (256 elements each)
+    let mut tile_a = SharedMemory::<F>::new(comptime!(256usize));
+    let mut tile_b = SharedMemory::<F>::new(comptime!(256usize));
+
+    let n_tiles = (k_dim + 15_usize) / 16_usize;
+
+    for t in 0..n_tiles {
+        // Load tile of A: A[row][t*16 + tx]
+        let a_col = t * 16_usize + tx;
+        tile_a[ty * 16_usize + tx] = if row < m && a_col < k_dim {
+            a[row * k_dim + a_col]
+        } else {
+            F::new(0.0_f32)
+        };
+
+        // Load tile of B: B[t*16 + ty][col]
+        let b_row = t * 16_usize + ty;
+        tile_b[ty * 16_usize + tx] = if b_row < k_dim && col < n_dim {
+            b[b_row * n_dim + col]
+        } else {
+            F::new(0.0_f32)
+        };
+
+        sync_cube();
+
+        // Compute partial dot product for this tile
+        for k in 0..16_usize {
+            sum += tile_a[ty * 16_usize + k] * tile_b[k * 16_usize + tx];
+        }
+
+        sync_cube();
+    }
+
+    if row < m && col < n_dim {
+        out[row * n_dim + col] = sum;
+    }
+}
+
+// ── GPU construction kernels (Wave 8) ─────────────────────────────────────────
+
+/// Fill every element with zero.
+#[allow(clippy::format_push_string)]
+#[cube(launch)]
+fn fill_zeros_kernel<F: Float>(out: &mut Array<F>, n: usize) {
+    let i = ABSOLUTE_POS;
+    if i < n {
+        out[i] = F::new(0.0_f32);
+    }
+}
+
+/// Fill every element with a constant scalar value.
+#[allow(clippy::format_push_string)]
+#[cube(launch)]
+fn fill_scalar_kernel<F: Float + CubeElement>(out: &mut Array<F>, n: usize, val: F) {
+    let i = ABSOLUTE_POS;
+    if i < n {
+        out[i] = val;
+    }
+}
+
+/// Fill an n×n matrix as an identity matrix (1 on diagonal, 0 elsewhere).
+#[allow(clippy::format_push_string)]
+#[cube(launch)]
+fn fill_identity_kernel<F: Float + CubeElement>(out: &mut Array<F>, n: usize) {
+    let i = ABSOLUTE_POS;
+    if i < n * n {
+        let row = i / n;
+        let col = i % n;
+        out[i] = if row == col { F::new(1.0_f32) } else { F::new(0.0_f32) };
+    }
+}
+
 // ── Elementwise math kernels (unary) ─────────────────────────────────────────
 
 #[allow(clippy::format_push_string)]
@@ -446,6 +554,86 @@ fn gpu_matmul_kernel<E: Float + CubeElement, R: Runtime>(
     }
 }
 
+/// Tiled matmul using SharedMemory (TILE=16). Preferred over naive for large matrices.
+fn gpu_matmul_tiled_kernel<E: Float + CubeElement, R: Runtime>(
+    client: &ComputeClient<R>,
+    h_a: &cubecl_runtime::server::Handle,
+    h_b: &cubecl_runtime::server::Handle,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<cubecl_runtime::server::Handle, Error> {
+    let out_n = m * n;
+    let h_out = client.empty(out_n * std::mem::size_of::<E>());
+    let grid_cols = n.div_ceil(16);
+    let grid_rows = m.div_ceil(16);
+    let grid_size = grid_rows * grid_cols;
+    // SAFETY: h_a, h_b, h_out are valid GPU allocations of correct sizes.
+    unsafe {
+        let la = ArrayArg::<R>::from_raw_parts::<E>(h_a, m * k, 1);
+        let lb = ArrayArg::<R>::from_raw_parts::<E>(h_b, k * n, 1);
+        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, out_n, 1);
+        #[allow(clippy::cast_possible_truncation)]
+        matmul_tiled_kernel::launch::<E, R>(
+            client,
+            CubeCount::Static(grid_size as u32, 1, 1),
+            CubeDim::new_1d(256),
+            la, lb, lout,
+            ScalarArg::new(m),
+            ScalarArg::new(k),
+            ScalarArg::new(n),
+            ScalarArg::new(grid_cols),
+        )
+        .map(|()| h_out)
+        .map_err(|e| Error::invalid(format!("GPU tiled matmul failed: {e}")))
+    }
+}
+
+// ── GPU construction kernel helpers (Wave 8) ──────────────────────────────────
+
+fn gpu_zeros_kernel_helper<E: Float + CubeElement, R: Runtime>(
+    client: &ComputeClient<R>,
+    n: usize,
+) -> Result<cubecl_runtime::server::Handle, Error> {
+    let h_out = client.empty(n * core::mem::size_of::<E>());
+    // SAFETY: h_out is a valid GPU allocation for `n` elements of type E.
+    unsafe {
+        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
+        fill_zeros_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), lout, ScalarArg::new(n))
+            .map(|()| h_out)
+            .map_err(|e| Error::invalid(format!("GPU zeros kernel failed: {e}")))
+    }
+}
+
+fn gpu_fill_kernel_helper<E: Float + CubeElement, R: Runtime>(
+    client: &ComputeClient<R>,
+    n: usize,
+    val: E,
+) -> Result<cubecl_runtime::server::Handle, Error> {
+    let h_out = client.empty(n * core::mem::size_of::<E>());
+    // SAFETY: h_out is a valid GPU allocation for `n` elements of type E.
+    unsafe {
+        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n, 1);
+        fill_scalar_kernel::launch::<E, R>(client, cube_count(n), CubeDim::new_1d(256), lout, ScalarArg::new(n), ScalarArg::new(val))
+            .map(|()| h_out)
+            .map_err(|e| Error::invalid(format!("GPU fill kernel failed: {e}")))
+    }
+}
+
+fn gpu_identity_kernel_helper<E: Float + CubeElement, R: Runtime>(
+    client: &ComputeClient<R>,
+    n: usize,
+) -> Result<cubecl_runtime::server::Handle, Error> {
+    let h_out = client.empty(n * n * core::mem::size_of::<E>());
+    // SAFETY: h_out is a valid GPU allocation for `n*n` elements of type E.
+    unsafe {
+        let lout = ArrayArg::<R>::from_raw_parts::<E>(&h_out, n * n, 1);
+        fill_identity_kernel::launch::<E, R>(client, cube_count(n * n), CubeDim::new_1d(256), lout, ScalarArg::new(n))
+            .map(|()| h_out)
+            .map_err(|e| Error::invalid(format!("GPU identity kernel failed: {e}")))
+    }
+}
+
 // ── Unary math kernel helpers (macro to reduce boilerplate) ──────────────────
 
 macro_rules! impl_gpu_unary_math_helper {
@@ -687,8 +875,72 @@ pub(crate) fn gpu_zeros<T: Scalar, R: Runtime>(nrows: usize, ncols: usize) -> Gp
 where
     R::Device: Default,
 {
-    let data = vec![<T as faer_traits::ComplexField>::zero_impl(); nrows * ncols];
-    GpuStorage::upload::<R>(nrows, ncols, data)
+    let n = nrows * ncols;
+    let client = R::client(&R::Device::default());
+    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+        let h = gpu_zeros_kernel_helper::<f32, R>(&client, n)
+            .unwrap_or_else(|e| panic!("GPU zeros failed: {e}"));
+        GpuStorage::from_handle(nrows, ncols, h)
+    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
+        let h = gpu_zeros_kernel_helper::<f64, R>(&client, n)
+            .unwrap_or_else(|e| panic!("GPU zeros failed: {e}"));
+        GpuStorage::from_handle(nrows, ncols, h)
+    } else {
+        let data = vec![<T as faer_traits::ComplexField>::zero_impl(); n];
+        GpuStorage::upload::<R>(nrows, ncols, data)
+    }
+}
+
+/// Create a GPU tensor filled with a scalar constant (Wave 8: fill kernel).
+///
+/// For `f32`/`f64`: uses a GPU fill kernel (no host intermediary).
+/// For `c32`/`c64`: uploads from host.
+pub(crate) fn gpu_fill<T: Scalar, R: Runtime>(nrows: usize, ncols: usize, val: T) -> GpuStorage<T>
+where
+    R::Device: Default,
+{
+    let n = nrows * ncols;
+    let client = R::client(&R::Device::default());
+    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+        // SAFETY: TypeId confirmed T == f32.
+        let f32_val: f32 = unsafe { *(&val as *const T as *const f32) };
+        let h = gpu_fill_kernel_helper::<f32, R>(&client, n, f32_val)
+            .unwrap_or_else(|e| panic!("GPU fill failed: {e}"));
+        GpuStorage::from_handle(nrows, ncols, h)
+    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
+        let f64_val: f64 = unsafe { *(&val as *const T as *const f64) };
+        let h = gpu_fill_kernel_helper::<f64, R>(&client, n, f64_val)
+            .unwrap_or_else(|e| panic!("GPU fill failed: {e}"));
+        GpuStorage::from_handle(nrows, ncols, h)
+    } else {
+        let data = vec![val; n];
+        GpuStorage::upload::<R>(nrows, ncols, data)
+    }
+}
+
+/// Create an n×n identity matrix on the GPU (Wave 8: identity kernel).
+///
+/// For `f32`/`f64`: uses a GPU identity kernel (no host intermediary).
+/// For `c32`/`c64`: uploads from host.
+pub(crate) fn gpu_identity<T: Scalar, R: Runtime>(n: usize) -> GpuStorage<T>
+where
+    R::Device: Default,
+{
+    let client = R::client(&R::Device::default());
+    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+        let h = gpu_identity_kernel_helper::<f32, R>(&client, n)
+            .unwrap_or_else(|e| panic!("GPU identity failed: {e}"));
+        GpuStorage::from_handle(n, n, h)
+    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
+        let h = gpu_identity_kernel_helper::<f64, R>(&client, n)
+            .unwrap_or_else(|e| panic!("GPU identity failed: {e}"));
+        GpuStorage::from_handle(n, n, h)
+    } else {
+        let zero = <T as faer_traits::ComplexField>::zero_impl();
+        let one = <T as faer_traits::ComplexField>::one_impl();
+        let data: Vec<T> = (0..n * n).map(|i| if i / n == i % n { one } else { zero }).collect();
+        GpuStorage::upload::<R>(n, n, data)
+    }
 }
 
 pub(crate) fn gpu_from_fn<T: Scalar, R: Runtime>(
@@ -884,7 +1136,7 @@ pub(crate) fn gpu_matmul<T: Scalar, R: Runtime>(
     let (rows, kdim, cols) = (a.nrows, a.ncols, b.ncols);
     let client = R::client(&R::Device::default());
     if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
-        let h = gpu_matmul_kernel::<f32, R>(&client, &a.handle, &b.handle, rows, kdim, cols)
+        let h = gpu_matmul_tiled_kernel::<f32, R>(&client, &a.handle, &b.handle, rows, kdim, cols)
             .unwrap_or_else(|e| panic!("GPU matmul failed: {e}"));
         out.handle = h;
         out.nrows = rows;
@@ -892,7 +1144,7 @@ pub(crate) fn gpu_matmul<T: Scalar, R: Runtime>(
         let mut guard = out.host_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = None;
     } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        let h = gpu_matmul_kernel::<f64, R>(&client, &a.handle, &b.handle, rows, kdim, cols)
+        let h = gpu_matmul_tiled_kernel::<f64, R>(&client, &a.handle, &b.handle, rows, kdim, cols)
             .unwrap_or_else(|e| panic!("GPU matmul failed: {e}"));
         out.handle = h;
         out.nrows = rows;
@@ -1222,6 +1474,16 @@ macro_rules! impl_gpu_backend {
                 s: &crate::gpu::GpuStorage<T>,
             ) -> (usize, usize) {
                 crate::gpu::gpu_argmax_all::<T, $Runtime>(s)
+            }
+
+            #[inline]
+            fn fill<T: crate::scalar::Scalar>(r: usize, c: usize, val: T) -> crate::gpu::GpuStorage<T> {
+                crate::gpu::gpu_fill::<T, $Runtime>(r, c, val)
+            }
+
+            #[inline]
+            fn identity<T: crate::scalar::Scalar>(n: usize) -> crate::gpu::GpuStorage<T> {
+                crate::gpu::gpu_identity::<T, $Runtime>(n)
             }
 
             #[inline]
