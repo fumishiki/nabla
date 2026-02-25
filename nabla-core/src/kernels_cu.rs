@@ -192,26 +192,36 @@ __device__ float warp_reduce_min_f32(float val) {
 // ── Reduction f32 (grid-stride + vectorized float4) ──────────────────────
 
 // Single-kernel sum: grid-stride + float4 + last-block final reduction
-extern "C" __global__ void k_sum_f32(const float* __restrict__ in,
-                                      float* __restrict__ partial,
-                                      unsigned n,
-                                      float* __restrict__ out) {
-    float acc = 0.0f;
+extern "C" __global__ void __launch_bounds__(256) k_sum_f32(
+    const float* __restrict__ in,
+    float* __restrict__ partial,
+    unsigned n,
+    float* __restrict__ out) {
+    float acc0 = 0.0f, acc1 = 0.0f;
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
-    // Thread 0 of block 0 zeros the counter
     if (blockIdx.x == 0 && tid == 0) {
         unsigned* counter = (unsigned*)&partial[gridDim.x];
         *counter = 0u;
     }
     unsigned n4 = n / 4;
     const float4* in4 = (const float4*)in;
-    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n4; i += grid_stride) {
-        float4 v = in4[i];
-        acc += v.x + v.y + v.z + v.w;
+    unsigned i = blockIdx.x * blockDim.x + tid;
+    unsigned stride2 = grid_stride * 2;
+    // Dual-accumulator loop for ILP
+    for (; i + grid_stride < n4; i += stride2) {
+        float4 v0 = in4[i];
+        float4 v1 = in4[i + grid_stride];
+        acc0 += v0.x + v0.y + v0.z + v0.w;
+        acc1 += v1.x + v1.y + v1.z + v1.w;
     }
-    for (unsigned i = n4 * 4 + blockIdx.x * blockDim.x + tid; i < n; i += grid_stride)
-        acc += in[i];
+    for (; i < n4; i += grid_stride) {
+        float4 v = in4[i];
+        acc0 += v.x + v.y + v.z + v.w;
+    }
+    float acc = acc0 + acc1;
+    for (unsigned j = n4 * 4 + blockIdx.x * blockDim.x + tid; j < n; j += grid_stride)
+        acc += in[j];
 
     acc = warp_reduce_sum_f32(acc);
 
@@ -249,11 +259,13 @@ extern "C" __global__ void k_sum_f32(const float* __restrict__ in,
 }
 
 // Single-kernel max: grid-stride + float4 + last-block aggregation
-extern "C" __global__ void k_max_f32(const float* __restrict__ in,
-                                      float* __restrict__ partial,
-                                      unsigned n,
-                                      float* __restrict__ out) {
-    float acc = -__int_as_float(0x7f800000); // -INFINITY
+extern "C" __global__ void __launch_bounds__(256) k_max_f32(
+    const float* __restrict__ in,
+    float* __restrict__ partial,
+    unsigned n,
+    float* __restrict__ out) {
+    float neg_inf = -__int_as_float(0x7f800000);
+    float acc0 = neg_inf, acc1 = neg_inf;
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
     if (blockIdx.x == 0 && tid == 0) {
@@ -262,18 +274,26 @@ extern "C" __global__ void k_max_f32(const float* __restrict__ in,
     }
     const float4* in4 = (const float4*)in;
     unsigned n4 = n / 4;
-    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n4; i += grid_stride) {
-        float4 v = in4[i];
-        acc = fmaxf(acc, fmaxf(fmaxf(v.x, v.y), fmaxf(v.z, v.w)));
+    unsigned i = blockIdx.x * blockDim.x + tid;
+    unsigned stride2 = grid_stride * 2;
+    for (; i + grid_stride < n4; i += stride2) {
+        float4 v0 = in4[i];
+        float4 v1 = in4[i + grid_stride];
+        acc0 = fmaxf(acc0, fmaxf(fmaxf(v0.x, v0.y), fmaxf(v0.z, v0.w)));
+        acc1 = fmaxf(acc1, fmaxf(fmaxf(v1.x, v1.y), fmaxf(v1.z, v1.w)));
     }
-    for (unsigned i = n4 * 4 + blockIdx.x * blockDim.x + tid; i < n; i += grid_stride)
-        acc = fmaxf(acc, in[i]);
+    for (; i < n4; i += grid_stride) {
+        float4 v = in4[i];
+        acc0 = fmaxf(acc0, fmaxf(fmaxf(v.x, v.y), fmaxf(v.z, v.w)));
+    }
+    float acc = fmaxf(acc0, acc1);
+    for (unsigned j = n4 * 4 + blockIdx.x * blockDim.x + tid; j < n; j += grid_stride)
+        acc = fmaxf(acc, in[j]);
 
     acc = warp_reduce_max_f32(acc);
     __shared__ float sdata[32];
     if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
-    float neg_inf = -__int_as_float(0x7f800000);
     if (tid < 32) {
         acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : neg_inf;
         acc = warp_reduce_max_f32(acc);
