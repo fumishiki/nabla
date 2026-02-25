@@ -197,7 +197,7 @@ extern "C" __global__ void __launch_bounds__(256) k_sum_f32(
     float* __restrict__ partial,
     unsigned n,
     float* __restrict__ out) {
-    float acc0 = 0.0f, acc1 = 0.0f;
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
     if (blockIdx.x == 0 && tid == 0) {
@@ -207,19 +207,23 @@ extern "C" __global__ void __launch_bounds__(256) k_sum_f32(
     unsigned n4 = n / 4;
     const float4* in4 = (const float4*)in;
     unsigned i = blockIdx.x * blockDim.x + tid;
-    unsigned stride2 = grid_stride * 2;
-    // Dual-accumulator loop for ILP
-    for (; i + grid_stride < n4; i += stride2) {
+    unsigned stride4 = grid_stride * 4;
+    // Quad-accumulator loop for maximum ILP
+    for (; i + grid_stride * 3 < n4; i += stride4) {
         float4 v0 = in4[i];
         float4 v1 = in4[i + grid_stride];
+        float4 v2 = in4[i + grid_stride * 2];
+        float4 v3 = in4[i + grid_stride * 3];
         acc0 += v0.x + v0.y + v0.z + v0.w;
         acc1 += v1.x + v1.y + v1.z + v1.w;
+        acc2 += v2.x + v2.y + v2.z + v2.w;
+        acc3 += v3.x + v3.y + v3.z + v3.w;
     }
     for (; i < n4; i += grid_stride) {
         float4 v = in4[i];
         acc0 += v.x + v.y + v.z + v.w;
     }
-    float acc = acc0 + acc1;
+    float acc = (acc0 + acc1) + (acc2 + acc3);
     for (unsigned j = n4 * 4 + blockIdx.x * blockDim.x + tid; j < n; j += grid_stride)
         acc += in[j];
 
@@ -265,7 +269,7 @@ extern "C" __global__ void __launch_bounds__(256) k_max_f32(
     unsigned n,
     float* __restrict__ out) {
     float neg_inf = -__int_as_float(0x7f800000);
-    float acc0 = neg_inf, acc1 = neg_inf;
+    float acc0 = neg_inf, acc1 = neg_inf, acc2 = neg_inf, acc3 = neg_inf;
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
     if (blockIdx.x == 0 && tid == 0) {
@@ -275,18 +279,22 @@ extern "C" __global__ void __launch_bounds__(256) k_max_f32(
     const float4* in4 = (const float4*)in;
     unsigned n4 = n / 4;
     unsigned i = blockIdx.x * blockDim.x + tid;
-    unsigned stride2 = grid_stride * 2;
-    for (; i + grid_stride < n4; i += stride2) {
+    unsigned stride4 = grid_stride * 4;
+    for (; i + grid_stride * 3 < n4; i += stride4) {
         float4 v0 = in4[i];
         float4 v1 = in4[i + grid_stride];
+        float4 v2 = in4[i + grid_stride * 2];
+        float4 v3 = in4[i + grid_stride * 3];
         acc0 = fmaxf(acc0, fmaxf(fmaxf(v0.x, v0.y), fmaxf(v0.z, v0.w)));
         acc1 = fmaxf(acc1, fmaxf(fmaxf(v1.x, v1.y), fmaxf(v1.z, v1.w)));
+        acc2 = fmaxf(acc2, fmaxf(fmaxf(v2.x, v2.y), fmaxf(v2.z, v2.w)));
+        acc3 = fmaxf(acc3, fmaxf(fmaxf(v3.x, v3.y), fmaxf(v3.z, v3.w)));
     }
     for (; i < n4; i += grid_stride) {
         float4 v = in4[i];
         acc0 = fmaxf(acc0, fmaxf(fmaxf(v.x, v.y), fmaxf(v.z, v.w)));
     }
-    float acc = fmaxf(acc0, acc1);
+    float acc = fmaxf(fmaxf(acc0, acc1), fmaxf(acc2, acc3));
     for (unsigned j = n4 * 4 + blockIdx.x * blockDim.x + tid; j < n; j += grid_stride)
         acc = fmaxf(acc, in[j]);
 
