@@ -268,6 +268,7 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
         _gpu_expr: &str,
         _kernel_hash: &str,
         _n_inputs: usize,
+        _reg_estimate: usize,
     ) -> Self::Storage<T> {
         Self::from_fn(nrows, ncols, cpu_fn)
     }

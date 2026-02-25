@@ -121,8 +121,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         gpu_expr: &str,
         kernel_hash: &str,
         n_inputs: usize,
+        reg_estimate: usize,
     ) -> Self {
-        Self::from_storage(B::fuse_launch(inputs, nrows, ncols, cpu_fn, gpu_expr, kernel_hash, n_inputs))
+        Self::from_storage(B::fuse_launch(inputs, nrows, ncols, cpu_fn, gpu_expr, kernel_hash, n_inputs, reg_estimate))
     }
 }
 

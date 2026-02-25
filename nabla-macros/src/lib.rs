@@ -821,6 +821,98 @@ fn cuda_expr(expr: &Expr, tensor_names: &[String]) -> String {
     }
 }
 
+// ── Fusion cost model (register pressure heuristic) ─────────────────────────
+
+/// Maximum recommended registers per thread before spill risk.
+const MAX_FUSE_REGISTERS: usize = 120;
+
+/// Walk the expression tree and estimate register usage for a fused kernel.
+///
+/// Heuristic costs (approximate GPU register usage):
+/// - Each input tensor: 4 registers (float4 vector load)
+/// - Each transcendental op: +12 registers
+/// - Each arithmetic op: +2 registers
+/// - Output: 4 registers (float4 store)
+fn estimate_register_pressure(expr: &Expr, tensor_names: &[String]) -> usize {
+    let mut transcendental = 0usize;
+    let mut arithmetic = 0usize;
+    let mut inputs = std::collections::HashSet::new();
+    count_ops(expr, tensor_names, &mut transcendental, &mut arithmetic, &mut inputs);
+    let input_regs = inputs.len() * 4;
+    let output_regs = 4;
+    input_regs + transcendental * 12 + arithmetic * 2 + output_regs
+}
+
+fn count_ops(
+    expr: &Expr,
+    tensor_names: &[String],
+    transcendental: &mut usize,
+    arithmetic: &mut usize,
+    inputs: &mut std::collections::HashSet<String>,
+) {
+    match expr {
+        Expr::Path(ExprPath { path, .. }) if path.segments.len() == 1 => {
+            let name = path.segments[0].ident.to_string();
+            if tensor_names.contains(&name) {
+                inputs.insert(name);
+            }
+        }
+        Expr::Binary(ExprBinary { left, op, right, .. }) => {
+            match op {
+                syn::BinOp::Add(_) | syn::BinOp::Sub(_) | syn::BinOp::Mul(_) | syn::BinOp::Div(_) => {
+                    *arithmetic += 1;
+                }
+                _ => {}
+            }
+            count_ops(left, tensor_names, transcendental, arithmetic, inputs);
+            count_ops(right, tensor_names, transcendental, arithmetic, inputs);
+        }
+        Expr::Unary(ExprUnary { expr: inner, .. }) => {
+            count_ops(inner, tensor_names, transcendental, arithmetic, inputs);
+        }
+        Expr::MethodCall(ExprMethodCall { receiver, method, args, .. }) => {
+            let name = method.to_string();
+            match name.as_str() {
+                "exp" | "sin" | "cos" | "ln" | "tanh" | "sqrt" | "erf" | "log1p" => {
+                    *transcendental += 1;
+                }
+                "powf" => *transcendental += 1,
+                "abs" | "ceil" | "floor" | "round" | "neg" | "recip" => {
+                    *arithmetic += 1;
+                }
+                _ => {}
+            }
+            count_ops(receiver, tensor_names, transcendental, arithmetic, inputs);
+            for a in args {
+                count_ops(a, tensor_names, transcendental, arithmetic, inputs);
+            }
+        }
+        Expr::Call(ec) => {
+            if let Expr::Path(ExprPath { path, .. }) = &*ec.func {
+                if path.segments.len() == 1 {
+                    let fname = path.segments[0].ident.to_string();
+                    match fname.as_str() {
+                        "exp" | "sin" | "cos" | "ln" | "tanh" | "sqrt" => {
+                            *transcendental += 1;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            for a in &ec.args {
+                count_ops(a, tensor_names, transcendental, arithmetic, inputs);
+            }
+        }
+        Expr::Paren(ep) => {
+            count_ops(&ep.expr, tensor_names, transcendental, arithmetic, inputs);
+        }
+        Expr::Cast(ec) => {
+            count_ops(&ec.expr, tensor_names, transcendental, arithmetic, inputs);
+        }
+        _ => {}
+    }
+}
+
 /// Compute a simple FNV-1a hash of the GPU expression for kernel name deduplication.
 fn expr_hash(s: &str) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -906,6 +998,16 @@ fn fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
         let kernel_hash = expr_hash(&gpu_expr_str);
         let n_inputs = tensors.len();
 
+        // Register pressure estimate (compile-time heuristic)
+        let reg_estimate = estimate_register_pressure(&body, &tensor_names);
+        if reg_estimate > MAX_FUSE_REGISTERS {
+            eprintln!(
+                "warning: fuse! estimated register pressure {reg_estimate} exceeds \
+                 threshold {MAX_FUSE_REGISTERS} — kernel may spill to local memory"
+            );
+        }
+        let reg_est_lit = reg_estimate;
+
         let storage_ptrs: Vec<TokenStream2> = tensors
             .iter()
             .map(|t| quote! { #t.__storage_ptr() })
@@ -926,6 +1028,7 @@ fn fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
                 #gpu_expr_str,
                 #kernel_hash,
                 #n_inputs,
+                #reg_est_lit,
             )
         }})
     } else {

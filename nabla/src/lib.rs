@@ -41,6 +41,10 @@ pub use nabla_core::gpu;
 /// WGSL shader generators (pure string ops, always compiled).
 pub use nabla_core::wgsl;
 
+/// CUDA Graph capture/replay for eliminating kernel launch overhead.
+#[cfg(feature = "cuda")]
+pub use nabla_core::{NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached};
+
 /// Dense linear algebra factorizations and solvers.
 #[cfg(feature = "cpu")]
 pub mod linalg;
@@ -359,4 +363,7 @@ pub mod prelude {
 
     #[cfg(feature = "gpu")]
     pub use nabla_core::backend::Gpu;
+
+    #[cfg(feature = "cuda")]
+    pub use nabla_core::{NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached};
 }

@@ -53,6 +53,9 @@ pub(crate) mod gpu_common;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda_backend;
 
+#[cfg(feature = "cuda")]
+pub use cuda_backend::{NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached};
+
 #[cfg(feature = "hip")]
 pub(crate) mod hip_backend;
 
