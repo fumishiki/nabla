@@ -280,7 +280,56 @@ impl_tensor_math! {
     round;
 }
 
+/// Helper: `T::one() + T::one()` (avoids repeating the pattern).
+#[inline]
+fn two<T: Scalar>() -> T { T::one() + T::one() }
+
 impl<T: Scalar, B: Backend> Tensor<T, B> {
+    /// Validate two tensors have the same shape.
+    fn assert_same_shape(&self, other: &Self, op: &str) {
+        assert!(
+            self.nrows() == other.nrows() && self.ncols() == other.ncols(),
+            "{op}: shape mismatch ({},{}) vs ({},{})",
+            self.nrows(), self.ncols(), other.nrows(), other.ncols()
+        );
+    }
+
+    /// Validate vector matches row/column dimension for broadcast.
+    fn assert_broadcast_shape(&self, vec: &Self, axis: usize, op: &str) {
+        if axis == 0 {
+            assert!(vec.nrows() == 1 && vec.ncols() == self.ncols(),
+                "{op}: expected (1,{}) got ({},{})", self.ncols(), vec.nrows(), vec.ncols());
+        } else {
+            assert!(vec.ncols() == 1 && vec.nrows() == self.nrows(),
+                "{op}: expected ({},1) got ({},{})", self.nrows(), vec.nrows(), vec.ncols());
+        }
+    }
+
+    /// Reduce along axis with a custom fold function and initial value from first element.
+    fn reduce_axis<F: Fn(T, T) -> T>(&self, axis: usize, f: F) -> Self {
+        match axis {
+            0 => Self::from_fn(1, self.ncols(), |_, c| {
+                (0..self.nrows()).map(|r| self.get(r, c))
+                    .fold(self.get(0, c), &f)
+            }),
+            1 => Self::from_fn(self.nrows(), 1, |r, _| {
+                (0..self.ncols()).map(|c| self.get(r, c))
+                    .fold(self.get(r, 0), &f)
+            }),
+            _ => panic!("nabla: reduce_axis axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    /// Apply a binary op between self and a broadcast vector along the given axis.
+    fn apply_broadcast_op<F: Fn(T, T) -> T>(&self, vec: &Self, axis: usize, op: &str, f: F) -> Self {
+        self.assert_broadcast_shape(vec, axis, op);
+        let (m, n) = self.shape();
+        match axis {
+            0 => Self::from_fn(m, n, |r, c| f(self.get(r, c), vec.get(0, c))),
+            _ => Self::from_fn(m, n, |r, c| f(self.get(r, c), vec.get(r, 0))),
+        }
+    }
+
     #[inline]
     fn check_range(name: &str, index: usize, bound: usize) {
         assert!(
@@ -426,68 +475,45 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Element-wise multiplication `self[i,j] * other[i,j]`.
     #[must_use]
     pub fn emul(&self, other: &Self) -> Self {
-        let (lr, lc) = self.shape();
-        let (rr, rc) = other.shape();
-        assert!(
-            lr == rr && lc == rc,
-            "nabla: emul ({lr}×{lc}) vs ({rr}×{rc}) — shapes must match"
-        );
+        self.assert_same_shape(other, "nabla: emul");
         Self::from_storage(B::emul(&self.storage, &other.storage))
     }
 
     /// Element-wise division `self[i,j] / other[i,j]`.
     #[must_use]
     pub fn ediv(&self, other: &Self) -> Self {
-        let (lr, lc) = self.shape();
-        let (rr, rc) = other.shape();
-        assert!(
-            lr == rr && lc == rc,
-            "nabla: ediv ({lr}×{lc}) vs ({rr}×{rc}) — shapes must match"
-        );
+        self.assert_same_shape(other, "nabla: ediv");
         Self::from_storage(B::ediv(&self.storage, &other.storage))
     }
 
     /// Add a row vector `(1×n)` to every row of `self (m×n)`.
     #[must_use]
     pub fn broadcast_add_rows(&self, row: &Self) -> Self {
-        let (m, n) = self.shape();
-        assert!(row.nrows() == 1 && row.ncols() == n,
-            "nabla: broadcast_add_rows expects 1×{n}, got {}×{}", row.nrows(), row.ncols());
-        Self::from_fn(m, n, |r, c| self.get(r, c) + row.get(0, c))
+        self.apply_broadcast_op(row, 0, "nabla: broadcast_add_rows", |a, b| a + b)
     }
 
     /// Add a column vector `(m×1)` to every column of `self (m×n)`.
     #[must_use]
     pub fn broadcast_add_cols(&self, col: &Self) -> Self {
-        let (m, n) = self.shape();
-        assert!(col.nrows() == m && col.ncols() == 1,
-            "nabla: broadcast_add_cols expects {m}×1, got {}×{}", col.nrows(), col.ncols());
-        Self::from_fn(m, n, |r, c| self.get(r, c) + col.get(r, 0))
+        self.apply_broadcast_op(col, 1, "nabla: broadcast_add_cols", |a, b| a + b)
     }
 
     /// Element-wise multiply each row by a row vector `(1×n)`.
     #[must_use]
     pub fn broadcast_mul_rows(&self, row: &Self) -> Self {
-        let (m, n) = self.shape();
-        assert!(row.nrows() == 1 && row.ncols() == n,
-            "nabla: broadcast_mul_rows expects 1×{n}, got {}×{}", row.nrows(), row.ncols());
-        Self::from_fn(m, n, |r, c| self.get(r, c) * row.get(0, c))
+        self.apply_broadcast_op(row, 0, "nabla: broadcast_mul_rows", |a, b| a * b)
     }
 
     /// Element-wise multiply each column by a column vector `(m×1)`.
     #[must_use]
     pub fn broadcast_mul_cols(&self, col: &Self) -> Self {
-        let (m, n) = self.shape();
-        assert!(col.nrows() == m && col.ncols() == 1,
-            "nabla: broadcast_mul_cols expects {m}×1, got {}×{}", col.nrows(), col.ncols());
-        Self::from_fn(m, n, |r, c| self.get(r, c) * col.get(r, 0))
+        self.apply_broadcast_op(col, 1, "nabla: broadcast_mul_cols", |a, b| a * b)
     }
 
     /// In-place add a row vector `(1×n)` to every row.
     pub fn broadcast_add_rows_(&mut self, row: &Self) {
+        self.assert_broadcast_shape(row, 0, "nabla: broadcast_add_rows_");
         let (m, n) = self.shape();
-        assert!(row.nrows() == 1 && row.ncols() == n,
-            "nabla: broadcast_add_rows_ expects 1×{n}, got {}×{}", row.nrows(), row.ncols());
         for r in 0..m {
             for c in 0..n {
                 self.set(r, c, self.get(r, c) + row.get(0, c));
@@ -497,9 +523,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// In-place add a column vector `(m×1)` to every column.
     pub fn broadcast_add_cols_(&mut self, col: &Self) {
+        self.assert_broadcast_shape(col, 1, "nabla: broadcast_add_cols_");
         let (m, n) = self.shape();
-        assert!(col.nrows() == m && col.ncols() == 1,
-            "nabla: broadcast_add_cols_ expects {m}×1, got {}×{}", col.nrows(), col.ncols());
         for r in 0..m {
             for c in 0..n {
                 self.set(r, c, self.get(r, c) + col.get(r, 0));
@@ -513,7 +538,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         match axis {
             1 => {
                 let (m, n) = self.shape();
-                let two = T::one() + T::one();
+                let two = two::<T>();
                 Self::from_fn(m, n, |r, c| {
                     // max via (a + b + |a - b|) / 2
                     let row_max = (0..n).fold(self.get(r, 0), |acc, j| {
@@ -636,7 +661,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Element-wise ReLU: `max(x, 0)`.
     #[must_use]
     pub fn relu(&self) -> Self {
-        let two = T::one() + T::one();
+        let two = two::<T>();
         let (m, n) = self.shape();
         // relu(x) = (x + |x|) / 2  — avoids PartialOrd requirement
         Self::from_fn(m, n, |r, c| {
@@ -682,7 +707,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
                     let row_max = (0..n).fold(self.get(r, 0), |acc, j| {
                         let v = self.get(r, j);
                         // max via (a + b + |a - b|) / 2
-                        let two = T::one() + T::one();
+                        let two = two::<T>();
                         (acc + v + (acc - v).math_abs()) / two
                     });
                     let exp_sum = (0..n).fold(T::zero(), |acc, j| {
@@ -701,7 +726,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Uses `(a + b + |a - b|) / 2` for min/max to avoid `PartialOrd` bound.
     #[must_use]
     pub fn clamp(&self, lo: T, hi: T) -> Self {
-        let two = T::one() + T::one();
+        let two = two::<T>();
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| {
             let x = self.get(r, c);
@@ -1082,33 +1107,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Maximum along axis: axis 0 → 1×n (column-wise), axis 1 → m×1 (row-wise).
     #[must_use]
     pub fn max_axis(&self, axis: usize) -> Self {
-        match axis {
-            0 => Self::from_fn(1, self.ncols(), |_, c| {
-                (0..self.nrows()).map(|r| self.get(r, c))
-                    .fold(self.get(0, c), |a, b| if b.reduction_gt(a) { b } else { a })
-            }),
-            1 => Self::from_fn(self.nrows(), 1, |r, _| {
-                (0..self.ncols()).map(|c| self.get(r, c))
-                    .fold(self.get(r, 0), |a, b| if b.reduction_gt(a) { b } else { a })
-            }),
-            _ => panic!("nabla: max_axis axis must be 0 or 1, got {axis}"),
-        }
+        self.reduce_axis(axis, |a, b| if b.reduction_gt(a) { b } else { a })
     }
 
     /// Minimum along axis: axis 0 → 1×n (column-wise), axis 1 → m×1 (row-wise).
     #[must_use]
     pub fn min_axis(&self, axis: usize) -> Self {
-        match axis {
-            0 => Self::from_fn(1, self.ncols(), |_, c| {
-                (0..self.nrows()).map(|r| self.get(r, c))
-                    .fold(self.get(0, c), |a, b| if a.reduction_gt(b) { b } else { a })
-            }),
-            1 => Self::from_fn(self.nrows(), 1, |r, _| {
-                (0..self.ncols()).map(|c| self.get(r, c))
-                    .fold(self.get(r, 0), |a, b| if a.reduction_gt(b) { b } else { a })
-            }),
-            _ => panic!("nabla: min_axis axis must be 0 or 1, got {axis}"),
-        }
+        self.reduce_axis(axis, |a, b| if a.reduction_gt(b) { b } else { a })
     }
 
     /// Maximum along axis with keepdim semantics (for 2-D, identical to `max_axis`).

@@ -63,75 +63,28 @@ pub trait MathOps: Sized + Copy {
     fn math_div(self, other: Self) -> Self;
 }
 
+/// Helper: generate `#[inline] fn math_X(self) -> Self { self.X() }` for simple delegations.
+macro_rules! delegate_math {
+    ($($math_fn:ident => $std_fn:ident),+ $(,)?) => {
+        $(#[inline] fn $math_fn(self) -> Self { self.$std_fn() })+
+    };
+}
+
 /// Implement `MathOps` for a real float type (`f32` / `f64`).
 macro_rules! impl_real_mathops {
     ($ty:ty, $erf_conv:expr) => {
         impl MathOps for $ty {
-            #[inline]
-            fn math_exp(self) -> Self {
-                self.exp()
-            }
-            #[inline]
-            fn math_ln(self) -> Self {
-                self.ln()
-            }
-            #[inline]
-            fn math_log1p(self) -> Self {
-                self.ln_1p()
-            }
-            #[inline]
-            fn math_sin(self) -> Self {
-                self.sin()
-            }
-            #[inline]
-            fn math_cos(self) -> Self {
-                self.cos()
-            }
-            #[inline]
-            fn math_tanh(self) -> Self {
-                self.tanh()
-            }
-            #[inline]
-            fn math_sqrt(self) -> Self {
-                self.sqrt()
-            }
-            #[inline]
-            fn math_abs(self) -> Self {
-                self.abs()
-            }
-            #[inline]
-            fn math_recip(self) -> Self {
-                self.recip()
-            }
-            #[inline]
-            #[allow(clippy::cast_possible_truncation)]
-            fn math_erf(self) -> Self {
-                $erf_conv(self)
-            }
-            #[inline]
-            fn math_ceil(self) -> Self {
-                self.ceil()
-            }
-            #[inline]
-            fn math_floor(self) -> Self {
-                self.floor()
-            }
-            #[inline]
-            fn math_round(self) -> Self {
-                self.round()
-            }
-            #[inline]
-            fn math_powf(self, p: Self) -> Self {
-                self.powf(p)
-            }
-            #[inline]
-            fn math_mul(self, other: Self) -> Self {
-                self * other
-            }
-            #[inline]
-            fn math_div(self, other: Self) -> Self {
-                self / other
-            }
+            delegate_math!(
+                math_exp => exp, math_ln => ln, math_log1p => ln_1p,
+                math_sin => sin, math_cos => cos, math_tanh => tanh,
+                math_sqrt => sqrt, math_abs => abs, math_recip => recip,
+                math_ceil => ceil, math_floor => floor, math_round => round,
+            );
+            #[inline] #[allow(clippy::cast_possible_truncation)]
+            fn math_erf(self) -> Self { $erf_conv(self) }
+            #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p) }
+            #[inline] fn math_mul(self, other: Self) -> Self { self * other }
+            #[inline] fn math_div(self, other: Self) -> Self { self / other }
         }
     };
 }
@@ -144,74 +97,21 @@ impl_real_mathops!(f64, erf_approx);
 macro_rules! impl_complex_mathops {
     ($ty:ty, $real:ty) => {
         impl MathOps for $ty {
-            #[inline]
-            fn math_exp(self) -> Self {
-                self.exp()
-            }
-            #[inline]
-            fn math_ln(self) -> Self {
-                self.ln()
-            }
-            #[inline]
-            fn math_log1p(self) -> Self {
-                Complex::new(1.0 as $real + self.re, self.im).ln()
-            }
-            #[inline]
-            fn math_sin(self) -> Self {
-                self.sin()
-            }
-            #[inline]
-            fn math_cos(self) -> Self {
-                self.cos()
-            }
-            #[inline]
-            fn math_tanh(self) -> Self {
-                self.tanh()
-            }
-            #[inline]
-            fn math_sqrt(self) -> Self {
-                self.sqrt()
-            }
-            #[inline]
-            fn math_abs(self) -> Self {
-                Complex::new(self.norm(), 0.0)
-            }
-            #[inline]
-            fn math_recip(self) -> Self {
-                self.inv()
-            }
-            #[inline]
-            #[allow(clippy::cast_possible_truncation)]
+            delegate_math!(math_exp => exp, math_ln => ln, math_sin => sin,
+                           math_cos => cos, math_tanh => tanh, math_sqrt => sqrt);
+            #[inline] fn math_log1p(self) -> Self { Complex::new(1.0 as $real + self.re, self.im).ln() }
+            #[inline] fn math_abs(self) -> Self { Complex::new(self.norm(), 0.0) }
+            #[inline] fn math_recip(self) -> Self { self.inv() }
+            #[inline] #[allow(clippy::cast_possible_truncation)]
             fn math_erf(self) -> Self {
-                Complex::new(
-                    erf_approx(f64::from(self.re)) as $real,
-                    erf_approx(f64::from(self.im)) as $real,
-                )
+                Complex::new(erf_approx(f64::from(self.re)) as $real, erf_approx(f64::from(self.im)) as $real)
             }
-            #[inline]
-            fn math_ceil(self) -> Self {
-                Complex::new(self.re.ceil(), self.im.ceil())
-            }
-            #[inline]
-            fn math_floor(self) -> Self {
-                Complex::new(self.re.floor(), self.im.floor())
-            }
-            #[inline]
-            fn math_round(self) -> Self {
-                Complex::new(self.re.round(), self.im.round())
-            }
-            #[inline]
-            fn math_powf(self, p: Self) -> Self {
-                self.powf(p.re)
-            }
-            #[inline]
-            fn math_mul(self, other: Self) -> Self {
-                self * other
-            }
-            #[inline]
-            fn math_div(self, other: Self) -> Self {
-                self / other
-            }
+            #[inline] fn math_ceil(self) -> Self { Complex::new(self.re.ceil(), self.im.ceil()) }
+            #[inline] fn math_floor(self) -> Self { Complex::new(self.re.floor(), self.im.floor()) }
+            #[inline] fn math_round(self) -> Self { Complex::new(self.re.round(), self.im.round()) }
+            #[inline] fn math_powf(self, p: Self) -> Self { self.powf(p.re) }
+            #[inline] fn math_mul(self, other: Self) -> Self { self * other }
+            #[inline] fn math_div(self, other: Self) -> Self { self / other }
         }
     };
 }
@@ -1420,24 +1320,24 @@ impl_complex_scalar!(c64, f64, |v: f64| Complex::new(v, 0.0), |z: c64| z.re);
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "cpu")]
+/// Helper: generate `fn math_X(self) -> Self { <$ty>::from_f32(f32::from(self).X()) }` for half types.
+macro_rules! delegate_half_math {
+    ($ty:ty; $($math_fn:ident => $std_fn:ident),+ $(,)?) => {
+        $(#[inline] fn $math_fn(self) -> Self { <$ty>::from_f32(f32::from(self).$std_fn()) })+
+    };
+}
+
 macro_rules! impl_half_mathops {
     ($ty:ty) => {
         impl MathOps for $ty {
-            #[inline] fn math_exp(self) -> Self { <$ty>::from_f32(f32::from(self).exp()) }
-            #[inline] fn math_ln(self) -> Self { <$ty>::from_f32(f32::from(self).ln()) }
-            #[inline] fn math_log1p(self) -> Self { <$ty>::from_f32(f32::from(self).ln_1p()) }
-            #[inline] fn math_sin(self) -> Self { <$ty>::from_f32(f32::from(self).sin()) }
-            #[inline] fn math_cos(self) -> Self { <$ty>::from_f32(f32::from(self).cos()) }
-            #[inline] fn math_tanh(self) -> Self { <$ty>::from_f32(f32::from(self).tanh()) }
-            #[inline] fn math_sqrt(self) -> Self { <$ty>::from_f32(f32::from(self).sqrt()) }
-            #[inline] fn math_abs(self) -> Self { <$ty>::from_f32(f32::from(self).abs()) }
-            #[inline] fn math_recip(self) -> Self { <$ty>::from_f32(f32::from(self).recip()) }
-            #[inline]
-            #[allow(clippy::cast_possible_truncation)]
+            delegate_half_math!($ty;
+                math_exp => exp, math_ln => ln, math_log1p => ln_1p,
+                math_sin => sin, math_cos => cos, math_tanh => tanh,
+                math_sqrt => sqrt, math_abs => abs, math_recip => recip,
+                math_ceil => ceil, math_floor => floor, math_round => round,
+            );
+            #[inline] #[allow(clippy::cast_possible_truncation)]
             fn math_erf(self) -> Self { <$ty>::from_f32(erf_approx(f64::from(f32::from(self))) as f32) }
-            #[inline] fn math_ceil(self) -> Self { <$ty>::from_f32(f32::from(self).ceil()) }
-            #[inline] fn math_floor(self) -> Self { <$ty>::from_f32(f32::from(self).floor()) }
-            #[inline] fn math_round(self) -> Self { <$ty>::from_f32(f32::from(self).round()) }
             #[inline] fn math_powf(self, p: Self) -> Self { <$ty>::from_f32(f32::from(self).powf(f32::from(p))) }
             #[inline] fn math_mul(self, other: Self) -> Self { <$ty>::from_f32(f32::from(self) * f32::from(other)) }
             #[inline] fn math_div(self, other: Self) -> Self { <$ty>::from_f32(f32::from(self) / f32::from(other)) }

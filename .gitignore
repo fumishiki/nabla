@@ -5,7 +5,7 @@ nabla-macros/target/
 nabla/target/
 
 # Docs (local only)
-/docs/
+docs/
 
 # IDE
 .idea/

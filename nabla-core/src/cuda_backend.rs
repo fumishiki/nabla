@@ -15,7 +15,11 @@ use cudarc::driver::sys::{CUdeviceptr, CUevent, CUfunction, CUmodule, CUstreamCa
 use cudarc::driver::{result, CudaContext as CudarcContext, CudaGraph as CudarcCudaGraph, CudaStream};
 use cudarc::nvrtc;
 
-use crate::gpu_common::{self, EnsureCache, RtcStorage, grid_1d, lock_or_recover, type_suffix};
+use crate::gpu_common::{
+    self, EnsureCache, FreeBlock, GpuPtr, MemoryPool, RtcStorage,
+    grid_1d, lock_or_recover, type_suffix, round_size,
+    SMALL_LARGE_BOUNDARY, SMALL_ALLOC_SIZE, LARGE_ALLOC_SIZE,
+};
 use crate::kernels_cu::{self, BLOCK_SIZE};
 use crate::scalar::Scalar;
 
@@ -56,158 +60,11 @@ type CudaResult<T> = Result<T, CudaError>;
 
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
-/// Round up to 512-byte alignment (PyTorch-style, much less waste than power-of-2).
-fn round_size(size: usize) -> usize {
-    const ALIGN: usize = 512;
-    if size == 0 { return ALIGN; }
-    (size + ALIGN - 1) & !(ALIGN - 1)
-}
+type CudaPool = MemoryPool<CUdeviceptr>;
 
-/// Boundary between small pool (<1MB) and large pool (≥1MB).
-const SMALL_LARGE_BOUNDARY: usize = 1 << 20; // 1MB
-/// Minimum split remainder for small pool blocks.
-const SMALL_SPLIT_MIN: usize = 512;
-/// Minimum split remainder for large pool blocks.
-const LARGE_SPLIT_MIN: usize = 1 << 20; // 1MB
-/// Over-allocate size for small allocs (batch cudaMalloc calls).
-const SMALL_ALLOC_SIZE: usize = 2 << 20; // 2MB
-/// Over-allocate size for large allocs.
-const LARGE_ALLOC_SIZE: usize = 20 << 20; // 20MB
-/// GC threshold: free cached blocks when usage exceeds this fraction.
-const GC_THRESHOLD: f64 = 0.9;
-
-/// A free block in the pool, tracked for best-fit + coalescing.
-struct FreeBlock {
-    ptr: CUdeviceptr,
-    size: usize,
-}
-
-/// Best-fit caching memory pool with block splitting and coalescing.
-/// Mirrors PyTorch's CUDACachingAllocator design:
-/// - 512B-aligned sizes (not power-of-2)
-/// - Dual pools: small (<1MB) and large (≥1MB)
-/// - Block splitting when remainder ≥ threshold
-/// - Best-fit search (sorted by size)
-/// - GC threshold to avoid OOM
-struct MemoryPool {
-    small_free: Vec<FreeBlock>, // sorted by size ascending
-    large_free: Vec<FreeBlock>, // sorted by size ascending
-    allocated_bytes: usize,
-    cached_bytes: usize,
-}
-
-impl MemoryPool {
-    fn new() -> Self {
-        Self {
-            small_free: Vec::new(),
-            large_free: Vec::new(),
-            allocated_bytes: 0,
-            cached_bytes: 0,
-        }
-    }
-
-    /// Best-fit: find smallest block ≥ requested size. Returns index if found.
-    fn best_fit(pool: &[FreeBlock], size: usize) -> Option<usize> {
-        // Binary search for first block with size >= requested
-        let pos = pool.partition_point(|b| b.size < size);
-        if pos < pool.len() { Some(pos) } else { None }
-    }
-
-    fn free_list(&mut self, size: usize) -> &mut Vec<FreeBlock> {
-        if size < SMALL_LARGE_BOUNDARY { &mut self.small_free } else { &mut self.large_free }
-    }
-
-    fn split_min(size: usize) -> usize {
-        if size < SMALL_LARGE_BOUNDARY { SMALL_SPLIT_MIN } else { LARGE_SPLIT_MIN }
-    }
-
-    /// Try to allocate from pool. Splits oversized blocks.
-    /// Returns (ptr, actual_alloc_size) or None.
-    fn try_alloc(&mut self, size: usize) -> Option<(CUdeviceptr, usize)> {
-        let rounded = round_size(size);
-        let pool = if rounded < SMALL_LARGE_BOUNDARY {
-            &mut self.small_free
-        } else {
-            &mut self.large_free
-        };
-        let idx = Self::best_fit(pool, rounded)?;
-        let block = pool.remove(idx);
-        self.cached_bytes -= block.size;
-
-        let remainder = block.size - rounded;
-        let split_threshold = Self::split_min(rounded);
-        if remainder >= split_threshold {
-            // Split: return requested portion, keep remainder in pool
-            let split_block = FreeBlock {
-                ptr: block.ptr + rounded as u64,
-                size: remainder,
-            };
-            let target = if remainder < SMALL_LARGE_BOUNDARY {
-                &mut self.small_free
-            } else {
-                &mut self.large_free
-            };
-            let pos = target.partition_point(|b| b.size < remainder);
-            target.insert(pos, split_block);
-            self.cached_bytes += remainder;
-            Some((block.ptr, rounded))
-        } else {
-            // Use entire block (avoid tiny fragments)
-            Some((block.ptr, block.size))
-        }
-    }
-
-    /// Return a block to the pool, inserting sorted by size.
-    fn release(&mut self, ptr: CUdeviceptr, size: usize) {
-        let pool = if size < SMALL_LARGE_BOUNDARY {
-            &mut self.small_free
-        } else {
-            &mut self.large_free
-        };
-        let pos = pool.partition_point(|b| b.size < size);
-        pool.insert(pos, FreeBlock { ptr, size });
-        self.cached_bytes += size;
-    }
-
-    /// GC: free cached blocks if allocated exceeds threshold.
-    fn maybe_gc(&mut self) {
-        let total = self.allocated_bytes + self.cached_bytes;
-        if total == 0 { return; }
-        let usage_ratio = self.allocated_bytes as f64 / total as f64;
-        if usage_ratio > GC_THRESHOLD && self.cached_bytes > 0 {
-            self.trim(0);
-        }
-    }
-
-    /// Free cached blocks until pool size ≤ target_bytes. Returns bytes freed.
-    fn trim(&mut self, target_bytes: usize) -> usize {
-        let mut freed = 0usize;
-        // Free large blocks first (bigger impact)
-        while self.cached_bytes > target_bytes {
-            if let Some(block) = self.large_free.pop() {
-                unsafe { let _ = result::free_sync(block.ptr); }
-                self.cached_bytes -= block.size;
-                freed += block.size;
-            } else if let Some(block) = self.small_free.pop() {
-                unsafe { let _ = result::free_sync(block.ptr); }
-                self.cached_bytes -= block.size;
-                freed += block.size;
-            } else {
-                break;
-            }
-        }
-        freed
-    }
-}
-
-impl Drop for MemoryPool {
+impl Drop for CudaPool {
     fn drop(&mut self) {
-        for block in self.small_free.drain(..) {
-            unsafe { let _ = result::free_sync(block.ptr); }
-        }
-        for block in self.large_free.drain(..) {
-            unsafe { let _ = result::free_sync(block.ptr); }
-        }
+        self.drain_all(|ptr, _| unsafe { let _ = result::free_sync(ptr); });
     }
 }
 
@@ -382,7 +239,7 @@ impl Drop for CuBuffer {
                 let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 pool.allocated_bytes = pool.allocated_bytes.saturating_sub(self.alloc_size);
                 pool.release(self.ptr, self.alloc_size);
-                pool.maybe_gc();
+                pool.maybe_gc(|ptr, _| unsafe { let _ = result::free_sync(ptr); });
             } else {
                 unsafe { let _ = result::free_sync(self.ptr); }
             }
@@ -1068,98 +925,6 @@ pub fn cuda_graph_capture_cached<F: FnOnce()>(
 
 // ── Fused element-wise kernel launch ────────────────────────────────────────
 
-/// Generate full CUDA C kernel source from a fused expression body.
-/// For f32: generates float4-vectorized kernel with scalar tail.
-/// For f64: generates scalar kernel (double2 shows minimal benefit).
-fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_name: &str, reg_estimate: usize) -> String {
-    let is_f32 = type_name == "float";
-    let mut src = String::with_capacity(if is_f32 { 1536 } else { 512 });
-
-    // Annotate kernel with register pressure estimate
-    src.push_str(&format!("// estimated registers: {reg_estimate}\n"));
-
-    if is_f32 {
-        // float4-vectorized kernel: each thread processes 4 elements
-        // Replace `inN[i]` with scalar variable `v_inN` in the expression
-        let scalar_expr = gpu_expr.to_string(); // uses inN[i] pattern
-
-        src.push_str("extern \"C\" __global__ void ");
-        src.push_str(kernel_name);
-        src.push('(');
-        for i in 0..n_inputs {
-            src.push_str("const float* in");
-            src.push_str(&i.to_string());
-            src.push_str(", ");
-        }
-        src.push_str("float* out, unsigned n) {\n");
-        src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
-        src.push_str("    unsigned i = i4 * 4;\n");
-        src.push_str("    if (i + 3 < n) {\n");
-        // Load float4 for each input
-        for j in 0..n_inputs {
-            src.push_str(&format!(
-                "        float4 v{j} = __ldg(reinterpret_cast<const float4*>(in{j}) + i4);\n"
-            ));
-        }
-        // Apply expression to each component (.x, .y, .z, .w)
-        src.push_str("        float4 r;\n");
-        for comp in &["x", "y", "z", "w"] {
-            // Replace inN[i] with vN.comp
-            let mut comp_expr = scalar_expr.clone();
-            for j in (0..n_inputs).rev() {
-                comp_expr = comp_expr.replace(
-                    &format!("in{j}[i]"),
-                    &format!("v{j}.{comp}"),
-                );
-            }
-            src.push_str(&format!("        r.{comp} = {comp_expr};\n"));
-        }
-        src.push_str("        reinterpret_cast<float4*>(out)[i4] = r;\n");
-        src.push_str("    } else {\n");
-        src.push_str("        for (unsigned j = i; j < n && j < i + 4; j++) {\n");
-        // Scalar tail: replace inN[i] with inN[j]
-        let mut tail_expr = scalar_expr;
-        for j in (0..n_inputs).rev() {
-            tail_expr = tail_expr.replace(
-                &format!("in{j}[i]"),
-                &format!("__ldg(&in{j}[j])"),
-            );
-        }
-        src.push_str(&format!("            out[j] = {tail_expr};\n"));
-        src.push_str("        }\n");
-        src.push_str("    }\n}\n");
-    } else {
-        // f64 scalar kernel with __ldg prefetch
-        src.push_str("extern \"C\" __global__ void ");
-        src.push_str(kernel_name);
-        src.push('(');
-        for i in 0..n_inputs {
-            src.push_str("const ");
-            src.push_str(type_name);
-            src.push_str("* in");
-            src.push_str(&i.to_string());
-            src.push_str(", ");
-        }
-        src.push_str(type_name);
-        src.push_str("* out, unsigned n) {\n");
-        src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
-        src.push_str("    if (i < n) {\n");
-        // Replace inN[i] with __ldg(&inN[i]) for read-only cache hint
-        let mut ldg_expr = gpu_expr.to_string();
-        for j in (0..n_inputs).rev() {
-            ldg_expr = ldg_expr.replace(
-                &format!("in{j}[i]"),
-                &format!("__ldg(&in{j}[i])"),
-            );
-        }
-        src.push_str("        out[i] = ");
-        src.push_str(&ldg_expr);
-        src.push_str(";\n");
-        src.push_str("    }\n}\n");
-    }
-    src
-}
-
 fn cuda_fuse_launch<T: Scalar>(
     inputs: &[*const u8],
     nrows: usize,
@@ -1180,7 +945,7 @@ fn cuda_fuse_launch<T: Scalar>(
         if !map.contains_key(&kernel_name) {
             drop(map);
             let type_name = if tsuf == "f32" { "float" } else { "double" };
-            let src = fuse_kernel_source(gpu_expr, n_inputs, type_name, &kernel_name, reg_estimate);
+            let src = gpu_common::fuse_kernel_source(gpu_expr, n_inputs, type_name, &kernel_name, reg_estimate, true);
             let (major, minor) = query_compute_capability();
             let arch: &'static str = nvrtc_arch(major, minor);
             // Limit register usage when pressure is high to allow more warps per SM
@@ -1256,100 +1021,6 @@ pub(crate) struct MegaFuseOp {
     pub n_inputs: usize,
 }
 
-/// Generate a mega-kernel that fuses multiple element-wise operations into a
-/// single launch.  Each op reads from its own input buffers and writes to its
-/// own output buffer.  Ops execute sequentially within the same thread so
-/// later ops can read from earlier outputs if the caller arranges the
-/// pointers accordingly.
-fn mega_fuse_kernel_source(
-    ops: &[(String, usize)], // (gpu_expr, n_inputs)
-    type_name: &str,
-    kernel_name: &str,
-) -> String {
-    let is_f32 = type_name == "float";
-    let mut src = String::with_capacity(2048);
-
-    // Build per-op parameter names: opK_in0 .. opK_inN, opK_out
-    // Signature
-    src.push_str("extern \"C\" __global__ void ");
-    src.push_str(kernel_name);
-    src.push('(');
-    let mut first = true;
-    for (op_idx, (_expr, n_in)) in ops.iter().enumerate() {
-        for j in 0..*n_in {
-            if !first { src.push_str(", "); }
-            first = false;
-            src.push_str(&format!("const {type_name}* op{op_idx}_in{j}"));
-        }
-        if !first { src.push_str(", "); }
-        first = false;
-        src.push_str(&format!("{type_name}* op{op_idx}_out"));
-    }
-    src.push_str(", unsigned n) {\n");
-
-    if is_f32 {
-        src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
-        src.push_str("    unsigned i = i4 * 4;\n");
-        src.push_str("    if (i + 3 < n) {\n");
-
-        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
-            src.push_str(&format!("        // Op {op_idx}\n"));
-            // Load float4 for each input
-            for j in 0..*n_in {
-                src.push_str(&format!(
-                    "        float4 op{op_idx}_v{j} = __ldg(reinterpret_cast<const float4*>(op{op_idx}_in{j}) + i4);\n"
-                ));
-            }
-            src.push_str(&format!("        float4 op{op_idx}_r;\n"));
-            for comp in &["x", "y", "z", "w"] {
-                // Replace inN[i] → opK_vN.comp
-                let mut comp_expr = gpu_expr.clone();
-                for j in (0..*n_in).rev() {
-                    comp_expr = comp_expr.replace(
-                        &format!("in{j}[i]"),
-                        &format!("op{op_idx}_v{j}.{comp}"),
-                    );
-                }
-                src.push_str(&format!("        op{op_idx}_r.{comp} = {comp_expr};\n"));
-            }
-            src.push_str(&format!(
-                "        reinterpret_cast<float4*>(op{op_idx}_out)[i4] = op{op_idx}_r;\n"
-            ));
-        }
-
-        src.push_str("    } else {\n");
-        src.push_str("        for (unsigned j = i; j < n && j < i + 4; j++) {\n");
-        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
-            let mut tail_expr = gpu_expr.clone();
-            for j in (0..*n_in).rev() {
-                tail_expr = tail_expr.replace(
-                    &format!("in{j}[i]"),
-                    &format!("__ldg(&op{op_idx}_in{j}[j])"),
-                );
-            }
-            src.push_str(&format!("            op{op_idx}_out[j] = {tail_expr};\n"));
-        }
-        src.push_str("        }\n");
-        src.push_str("    }\n}\n");
-    } else {
-        // f64 scalar kernel
-        src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
-        src.push_str("    if (i < n) {\n");
-        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
-            let mut ldg_expr = gpu_expr.clone();
-            for j in (0..*n_in).rev() {
-                ldg_expr = ldg_expr.replace(
-                    &format!("in{j}[i]"),
-                    &format!("__ldg(&op{op_idx}_in{j}[i])"),
-                );
-            }
-            src.push_str(&format!("        op{op_idx}_out[i] = {ldg_expr};\n"));
-        }
-        src.push_str("    }\n}\n");
-    }
-    src
-}
-
 /// Launch a mega-kernel that executes multiple fused element-wise operations
 /// in a single GPU kernel launch, eliminating inter-op launch overhead.
 ///
@@ -1374,7 +1045,7 @@ pub(crate) fn cuda_mega_fuse_launch<T: Scalar>(
             let op_descs: Vec<(String, usize)> = ops.iter()
                 .map(|op| (op.gpu_expr.clone(), op.n_inputs))
                 .collect();
-            let src = mega_fuse_kernel_source(&op_descs, type_name, &kernel_name);
+            let src = gpu_common::mega_fuse_kernel_source(&op_descs, type_name, &kernel_name, true);
             let (major, minor) = query_compute_capability();
             let arch: &'static str = nvrtc_arch(major, minor);
             let ptx = nvrtc::compile_ptx_with_opts(
@@ -1514,16 +1185,6 @@ impl crate::backend::Backend for crate::backend::Cuda {
     }
 
     #[inline]
-    fn add<T: Scalar>(a: &CudaStorage<T>, b: &CudaStorage<T>) -> CudaStorage<T> {
-        launch_binary(a, b, "add")
-    }
-
-    #[inline]
-    fn sub<T: Scalar>(a: &CudaStorage<T>, b: &CudaStorage<T>) -> CudaStorage<T> {
-        launch_binary(a, b, "sub")
-    }
-
-    #[inline]
     fn neg<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "neg") }
 
     #[inline]
@@ -1535,57 +1196,11 @@ impl crate::backend::Backend for crate::backend::Cuda {
     #[inline]
     fn clone_storage<T: Scalar>(s: &CudaStorage<T>) -> CudaStorage<T> { cuda_clone(s) }
 
-    #[inline]
-    fn exp<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "exp") }
-
-    #[inline]
-    fn ln<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "ln") }
-
-    #[inline]
-    fn log1p<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "log1p") }
-
-    #[inline]
-    fn sin<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "sin") }
-
-    #[inline]
-    fn cos<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "cos") }
-
-    #[inline]
-    fn tanh<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "tanh") }
-
-    #[inline]
-    fn sqrt<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "sqrt") }
-
-    #[inline]
-    fn abs<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "abs") }
-
-    #[inline]
-    fn recip<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "recip") }
-
-    #[inline]
-    fn erf<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "erf") }
-
-    #[inline]
-    fn ceil<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "ceil") }
-
-    #[inline]
-    fn floor<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "floor") }
-
-    #[inline]
-    fn round<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> { launch_unary(a, "round") }
+    gpu_common::gpu_unary_ops!(CudaStorage; exp, ln, log1p, sin, cos, tanh, sqrt, abs, recip, erf, ceil, floor, round);
+    gpu_common::gpu_binary_ops!(CudaStorage; add, sub, emul, ediv);
 
     #[inline]
     fn powf<T: Scalar>(a: &CudaStorage<T>, p: T) -> CudaStorage<T> { cuda_powf(a, p) }
-
-    #[inline]
-    fn emul<T: Scalar>(a: &CudaStorage<T>, b: &CudaStorage<T>) -> CudaStorage<T> {
-        launch_binary(a, b, "emul")
-    }
-
-    #[inline]
-    fn ediv<T: Scalar>(a: &CudaStorage<T>, b: &CudaStorage<T>) -> CudaStorage<T> {
-        launch_binary(a, b, "ediv")
-    }
 
     #[inline]
     fn sum_all<T: Scalar>(a: &CudaStorage<T>) -> T { cuda_sum_all(a) }

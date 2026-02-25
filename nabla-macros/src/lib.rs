@@ -553,6 +553,48 @@ const ELEMENTWISE_UNARY: &[&str] = &[
 // Element-wise unary methods that take one scalar arg (fusible as scalar ops).
 const ELEMENTWISE_UNARY_ARG: &[&str] = &["powf"];
 
+/// Map Rust method names to their MathOps scalar trait equivalents.
+fn scalar_method_name(method: &str) -> Option<&'static str> {
+    match method {
+        "exp" => Some("math_exp"),
+        "ln" => Some("math_ln"),
+        "log1p" => Some("math_log1p"),
+        "sin" => Some("math_sin"),
+        "cos" => Some("math_cos"),
+        "tanh" => Some("math_tanh"),
+        "sqrt" => Some("math_sqrt"),
+        "abs" => Some("math_abs"),
+        "recip" => Some("math_recip"),
+        "erf" => Some("math_erf"),
+        "ceil" => Some("math_ceil"),
+        "floor" => Some("math_floor"),
+        "round" => Some("math_round"),
+        "powf" => Some("math_powf"),
+        _ => None,
+    }
+}
+
+/// Map Rust method names to their CUDA C equivalents (f64 versions).
+fn cuda_method_expr(method: &str, recv: &str) -> Option<String> {
+    match method {
+        "exp" => Some(format!("exp({recv})")),
+        "ln" => Some(format!("log({recv})")),
+        "log1p" => Some(format!("log1p({recv})")),
+        "sin" => Some(format!("sin({recv})")),
+        "cos" => Some(format!("cos({recv})")),
+        "tanh" => Some(format!("tanh({recv})")),
+        "sqrt" => Some(format!("sqrt({recv})")),
+        "abs" => Some(format!("fabs({recv})")),
+        "recip" => Some(format!("(1.0/({recv}))")),
+        "erf" => Some(format!("erf({recv})")),
+        "ceil" => Some(format!("ceil({recv})")),
+        "floor" => Some(format!("floor({recv})")),
+        "round" => Some(format!("round({recv})")),
+        "neg" => Some(format!("(-{recv})")),
+        _ => None,
+    }
+}
+
 /// Check if the entire expression tree can be fused into a single from_fn pass.
 /// Returns true only when all ops are element-wise (no matmul, reduction, slicing, etc.).
 fn is_elementwise_fusible(expr: &Expr) -> bool {
@@ -648,26 +690,15 @@ fn scalar_expr(expr: &Expr, tensor_names: &[String]) -> TokenStream2 {
             let recv = scalar_expr(receiver, tensor_names);
             let rewritten_args: Vec<_> = args.iter().map(|a| scalar_expr(a, tensor_names)).collect();
             let method_name = method.to_string();
-            // Map tensor-level method names to MathOps scalar trait methods
-            let scalar_method = match method_name.as_str() {
-                "exp" => quote! { math_exp },
-                "ln" => quote! { math_ln },
-                "log1p" => quote! { math_log1p },
-                "sin" => quote! { math_sin },
-                "cos" => quote! { math_cos },
-                "tanh" => quote! { math_tanh },
-                "sqrt" => quote! { math_sqrt },
-                "abs" => quote! { math_abs },
-                "recip" => quote! { math_recip },
-                "erf" => quote! { math_erf },
-                "ceil" => quote! { math_ceil },
-                "floor" => quote! { math_floor },
-                "round" => quote! { math_round },
-                "powf" => quote! { math_powf },
-                "neg" => return quote! { (-#recv) },
-                _ => quote! { #method },
-            };
-            quote! { #recv.#scalar_method(#(#rewritten_args),*) }
+            if method_name == "neg" {
+                return quote! { (-#recv) };
+            }
+            if let Some(scalar_name) = scalar_method_name(&method_name) {
+                let scalar_method = Ident::new(scalar_name, method.span());
+                quote! { #recv.#scalar_method(#(#rewritten_args),*) }
+            } else {
+                quote! { #recv.#method(#(#rewritten_args),*) }
+            }
         }
 
         Expr::Call(ec) => {
@@ -676,16 +707,10 @@ fn scalar_expr(expr: &Expr, tensor_names: &[String]) -> TokenStream2 {
                 && ec.args.len() == 1
             {
                 let fname = path.segments[0].ident.to_string();
-                let arg = scalar_expr(&ec.args[0], tensor_names);
-                match fname.as_str() {
-                    "exp" => return quote! { #arg.math_exp() },
-                    "ln" => return quote! { #arg.math_ln() },
-                    "sqrt" => return quote! { #arg.math_sqrt() },
-                    "abs" => return quote! { #arg.math_abs() },
-                    "sin" => return quote! { #arg.math_sin() },
-                    "cos" => return quote! { #arg.math_cos() },
-                    "tanh" => return quote! { #arg.math_tanh() },
-                    _ => {}
+                if let Some(scalar_name) = scalar_method_name(&fname) {
+                    let arg = scalar_expr(&ec.args[0], tensor_names);
+                    let method = Ident::new(scalar_name, path.segments[0].ident.span());
+                    return quote! { #arg.#method() };
                 }
             }
             let func = &ec.func;
@@ -759,26 +784,13 @@ fn cuda_expr(expr: &Expr, tensor_names: &[String]) -> String {
         Expr::MethodCall(ExprMethodCall { receiver, method, args, .. }) => {
             let recv = cuda_expr(receiver, tensor_names);
             let method_name = method.to_string();
-            match method_name.as_str() {
-                "exp" => format!("exp({recv})"),
-                "ln" => format!("log({recv})"),
-                "log1p" => format!("log1p({recv})"),
-                "sin" => format!("sin({recv})"),
-                "cos" => format!("cos({recv})"),
-                "tanh" => format!("tanh({recv})"),
-                "sqrt" => format!("sqrt({recv})"),
-                "abs" => format!("fabs({recv})"),
-                "recip" => format!("(1.0/({recv}))"),
-                "erf" => format!("erf({recv})"),
-                "ceil" => format!("ceil({recv})"),
-                "floor" => format!("floor({recv})"),
-                "round" => format!("round({recv})"),
-                "neg" => format!("(-{recv})"),
-                "powf" if args.len() == 1 => {
-                    let p = cuda_expr(&args[0], tensor_names);
-                    format!("pow({recv}, {p})")
-                }
-                _ => panic!("fuse!: unsupported GPU method: {method_name}"),
+            if let Some(result) = cuda_method_expr(&method_name, &recv) {
+                result
+            } else if method_name == "powf" && args.len() == 1 {
+                let p = cuda_expr(&args[0], tensor_names);
+                format!("pow({recv}, {p})")
+            } else {
+                panic!("fuse!: unsupported GPU method: {method_name}")
             }
         }
 
@@ -789,15 +801,8 @@ fn cuda_expr(expr: &Expr, tensor_names: &[String]) -> String {
             {
                 let fname = path.segments[0].ident.to_string();
                 let arg = cuda_expr(&ec.args[0], tensor_names);
-                match fname.as_str() {
-                    "exp" => return format!("exp({arg})"),
-                    "ln" => return format!("log({arg})"),
-                    "sqrt" => return format!("sqrt({arg})"),
-                    "abs" => return format!("fabs({arg})"),
-                    "sin" => return format!("sin({arg})"),
-                    "cos" => return format!("cos({arg})"),
-                    "tanh" => return format!("tanh({arg})"),
-                    _ => {}
+                if let Some(result) = cuda_method_expr(&fname, &arg) {
+                    return result;
                 }
             }
             panic!("fuse!: unsupported GPU function call")
@@ -1398,4 +1403,166 @@ fn nabla_grad_impl(item: TokenStream2) -> Result<TokenStream2> {
             (__nabla_result.value, __nabla_result.deriv)
         }
     })
+}
+
+// ── mega_fuse! (L4 Mega-kernel Fusion) ───────────────────────────────────────
+
+/// Mega-fused element-wise macro — executes multiple element-wise operations
+/// as a **single** GPU kernel launch, eliminating all inter-op launch overhead.
+///
+/// # Syntax
+///
+/// ```rust,ignore
+/// let (y, z) = mega_fuse!(
+///     a.exp().sin();        // op 0 → y
+///     b.tanh() + a;         // op 1 → z
+///     inputs: a, b
+/// );
+/// ```
+///
+/// The last clause `inputs: <vars>` lists all input tensors.  Each preceding
+/// semicolon-separated expression becomes one output tensor.  All inputs and
+/// outputs must have the same `(nrows, ncols)` dimensions.
+///
+/// On GPU backends (CUDA/HIP) the macro emits a single JIT-compiled
+/// mega-kernel.  On the CPU backend each expression is evaluated
+/// independently.
+#[proc_macro]
+pub fn mega_fuse(input: TokenStream) -> TokenStream {
+    match mega_fuse_impl(input.into()) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+struct MegaFuseInput {
+    bodies: Vec<Expr>,
+    tensors: Vec<Ident>,
+}
+
+impl Parse for MegaFuseInput {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let mut bodies = Vec::new();
+
+        // Parse expressions separated by `;` until we hit `inputs:`
+        loop {
+            if input.peek(syn::Ident) {
+                let fork = input.fork();
+                let ident: Ident = fork.parse()?;
+                if ident == "inputs" && fork.peek(syn::Token![:]) {
+                    // Consume `inputs:`
+                    let _: Ident = input.parse()?;
+                    let _: syn::Token![:] = input.parse()?;
+                    break;
+                }
+            }
+            let body: Expr = input.parse()?;
+            bodies.push(body);
+            let _: syn::Token![;] = input.parse()?;
+        }
+
+        if bodies.is_empty() {
+            return Err(Error::new(
+                Span::call_site(),
+                "mega_fuse! needs at least one expression before `inputs:`",
+            ));
+        }
+
+        let tensors: Vec<Ident> = Punctuated::<Ident, Comma>::parse_separated_nonempty(input)?
+            .into_iter()
+            .collect();
+        if tensors.is_empty() {
+            return Err(Error::new(
+                Span::call_site(),
+                "mega_fuse! needs at least one tensor after `inputs:`",
+            ));
+        }
+
+        Ok(MegaFuseInput { bodies, tensors })
+    }
+}
+
+fn mega_fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
+    let MegaFuseInput { bodies, tensors } = syn::parse2(input)?;
+    let tensor_names: Vec<String> = tensors.iter().map(|t| t.to_string()).collect();
+
+    // Validate all expressions are element-wise fusible
+    for (i, body) in bodies.iter().enumerate() {
+        if !is_elementwise_fusible(body) {
+            return Err(Error::new(
+                Span::call_site(),
+                format!(
+                    "mega_fuse! expression {i} is not element-wise fusible — \
+                     only element-wise ops (exp, sin, tanh, +, -, *, /) are supported"
+                ),
+            ));
+        }
+    }
+
+    let first = &tensors[0];
+    let shape_checks: Vec<TokenStream2> = tensors
+        .iter()
+        .skip(1)
+        .map(|t| quote! { assert_eq!(#first.shape(), #t.shape(), "mega_fuse!: shape mismatch"); })
+        .collect();
+
+    let n_inputs = tensors.len();
+    let storage_ptrs: Vec<TokenStream2> = tensors
+        .iter()
+        .map(|t| quote! { #t.__storage_ptr() })
+        .collect();
+
+    // Per-op: simplify, generate GPU expr, CPU closure
+    let mut gpu_exprs = Vec::new();
+    let mut cpu_closures = Vec::new();
+    let mut combined_hash = String::new();
+
+    for body in &bodies {
+        let simplified = eqsat_simplify(body);
+        let gpu_str = cuda_expr(&simplified, &tensor_names);
+        combined_hash.push_str(&gpu_str);
+        combined_hash.push(';');
+        gpu_exprs.push(gpu_str);
+
+        let scalar_body = scalar_expr(&simplified, &tensor_names);
+        let let_bindings: Vec<TokenStream2> = tensors
+            .iter()
+            .map(|t| {
+                let var = Ident::new(&format!("__fuse_v_{t}"), t.span());
+                quote! { let #var = #t.get(__fuse_r, __fuse_c); }
+            })
+            .collect();
+        cpu_closures.push(quote! {
+            Box::new(|__fuse_r: usize, __fuse_c: usize| {
+                #(#let_bindings)*
+                #scalar_body
+            }) as Box<dyn FnMut(usize, usize) -> _>
+        });
+    }
+
+    let kernel_hash = expr_hash(&combined_hash);
+    let n_ops = bodies.len();
+
+    // Build the ops array: Vec<(Vec<*const u8>, String, usize)>
+    let gpu_expr_lits: Vec<TokenStream2> = gpu_exprs.iter().map(|e| quote! { #e }).collect();
+    let n_inputs_repeated = std::iter::repeat(quote! { #n_inputs }).take(n_ops);
+
+    Ok(quote! {{
+        #(#shape_checks)*
+        use nabla::scalar::MathOps as _;
+        let __mega_ptrs: Vec<*const u8> = vec![#(#storage_ptrs),*];
+        let __mega_ops: Vec<(Vec<*const u8>, String, usize)> = vec![
+            #( (__mega_ptrs.clone(), #gpu_expr_lits.to_string(), #n_inputs_repeated) ),*
+        ];
+        let __mega_cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> _>> = vec![
+            #(#cpu_closures),*
+        ];
+        nabla::tensor::Tensor::__mega_fuse_elementwise(
+            &__mega_ops,
+            #first.nrows(),
+            #first.ncols(),
+            __mega_cpu_fns,
+            #kernel_hash,
+        )
+    }})
 }

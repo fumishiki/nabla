@@ -99,48 +99,6 @@ impl Expr {
         Self::wrap(ExprKind::Lit(val))
     }
 
-    /// `sin(e)`.
-    #[must_use]
-    pub fn sin(e: &Self) -> Self {
-        Self::wrap(ExprKind::Sin(e.clone()))
-    }
-
-    /// `cos(e)`.
-    #[must_use]
-    pub fn cos(e: &Self) -> Self {
-        Self::wrap(ExprKind::Cos(e.clone()))
-    }
-
-    /// `exp(e)`.
-    #[must_use]
-    pub fn exp(e: &Self) -> Self {
-        Self::wrap(ExprKind::Exp(e.clone()))
-    }
-
-    /// `ln(e)`.
-    #[must_use]
-    pub fn ln(e: &Self) -> Self {
-        Self::wrap(ExprKind::Ln(e.clone()))
-    }
-
-    /// `tanh(e)`.
-    #[must_use]
-    pub fn tanh(e: &Self) -> Self {
-        Self::wrap(ExprKind::Tanh(e.clone()))
-    }
-
-    /// `sqrt(e)`.
-    #[must_use]
-    pub fn sqrt(e: &Self) -> Self {
-        Self::wrap(ExprKind::Sqrt(e.clone()))
-    }
-
-    /// `abs(e)`.
-    #[must_use]
-    pub fn abs(e: &Self) -> Self {
-        Self::wrap(ExprKind::Abs(e.clone()))
-    }
-
     /// `base ^ exp`.
     #[must_use]
     pub fn pow(base: &Self, exp: &Self) -> Self {
@@ -148,30 +106,37 @@ impl Expr {
     }
 }
 
+/// Generate unary math constructor methods on `Expr`.
+macro_rules! cas_unary {
+    ($($name:ident => $variant:ident),+ $(,)?) => {
+        impl Expr {
+            $(
+                #[doc = concat!("`", stringify!($name), "(e)`.")]
+                #[must_use]
+                pub fn $name(e: &Self) -> Self { Self::wrap(ExprKind::$variant(e.clone())) }
+            )+
+        }
+    };
+}
+cas_unary!(sin => Sin, cos => Cos, exp => Exp, ln => Ln, tanh => Tanh, sqrt => Sqrt, abs => Abs);
+
 // ---------------------------------------------------------------------------
 // Operator overloads
 // ---------------------------------------------------------------------------
 
-impl Add for &Expr {
-    type Output = Expr;
-    fn add(self, rhs: &Expr) -> Expr {
-        Expr::wrap(ExprKind::Add(self.clone(), rhs.clone()))
-    }
+macro_rules! impl_expr_binop {
+    ($($trait:ident, $method:ident, $variant:ident);+ $(;)?) => {
+        $(
+            impl $trait for &Expr {
+                type Output = Expr;
+                fn $method(self, rhs: &Expr) -> Expr {
+                    Expr::wrap(ExprKind::$variant(self.clone(), rhs.clone()))
+                }
+            }
+        )+
+    };
 }
-
-impl Mul for &Expr {
-    type Output = Expr;
-    fn mul(self, rhs: &Expr) -> Expr {
-        Expr::wrap(ExprKind::Mul(self.clone(), rhs.clone()))
-    }
-}
-
-impl Div for &Expr {
-    type Output = Expr;
-    fn div(self, rhs: &Expr) -> Expr {
-        Expr::wrap(ExprKind::Div(self.clone(), rhs.clone()))
-    }
-}
+impl_expr_binop!(Add, add, Add; Mul, mul, Mul; Div, div, Div);
 
 impl Neg for &Expr {
     type Output = Expr;
@@ -187,37 +152,27 @@ impl Sub for &Expr {
     }
 }
 
-// Mixed: &Expr op f64
+// Mixed: &Expr op f64, f64 op &Expr
 
-impl Add<f64> for &Expr {
-    type Output = Expr;
-    fn add(self, rhs: f64) -> Expr {
-        self + &Expr::lit(rhs)
-    }
+macro_rules! impl_expr_f64_binop {
+    ($($trait:ident, $method:ident);+ $(;)?) => {
+        $(
+            impl $trait<f64> for &Expr {
+                type Output = Expr;
+                fn $method(self, rhs: f64) -> Expr {
+                    $trait::$method(self, &Expr::lit(rhs))
+                }
+            }
+            impl $trait<&Expr> for f64 {
+                type Output = Expr;
+                fn $method(self, rhs: &Expr) -> Expr {
+                    $trait::$method(&Expr::lit(self), rhs)
+                }
+            }
+        )+
+    };
 }
-
-impl Mul<f64> for &Expr {
-    type Output = Expr;
-    fn mul(self, rhs: f64) -> Expr {
-        self * &Expr::lit(rhs)
-    }
-}
-
-// Mixed: f64 op &Expr
-
-impl Add<&Expr> for f64 {
-    type Output = Expr;
-    fn add(self, rhs: &Expr) -> Expr {
-        &Expr::lit(self) + rhs
-    }
-}
-
-impl Mul<&Expr> for f64 {
-    type Output = Expr;
-    fn mul(self, rhs: &Expr) -> Expr {
-        &Expr::lit(self) * rhs
-    }
-}
+impl_expr_f64_binop!(Add, add; Mul, mul);
 
 // ---------------------------------------------------------------------------
 // Display

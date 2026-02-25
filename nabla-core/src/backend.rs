@@ -98,6 +98,13 @@ macro_rules! cpu_unary_op {
     };
 }
 
+// Batch version: define multiple unary ops via Scalar::math_* methods.
+macro_rules! cpu_unary_ops {
+    ($($fn_name:ident => $method:ident),* $(,)?) => {
+        $(cpu_unary_op!($fn_name, |x| x.$method());)*
+    };
+}
+
 // Internal macro: generate a Backend binary method that zips two CpuStorage.
 macro_rules! cpu_binary_op {
     ($fn_name:ident, |$x:ident, $y:ident| $body:expr) => {
@@ -289,7 +296,7 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     /// GPU backends emit a single mega-kernel; the CPU fallback runs each
     /// `cpu_fn` independently via `from_fn`.
     fn mega_fuse_launch<T: Scalar>(
-        ops: &[(Vec<*const u8>, String, usize)],
+        _ops: &[(Vec<*const u8>, String, usize)],
         nrows: usize,
         ncols: usize,
         cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,
@@ -303,6 +310,27 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
 
 /// CPU backend — row-major `Vec<T>` storage, no external BLAS dependencies.
 pub struct Cpu;
+
+// Shared helpers for CPU reduction ops.
+#[inline]
+fn cpu_fold_first<T: Scalar>(a: &CpuStorage<T>, f: impl Fn(T, T) -> T) -> T {
+    assert!(!a.data.is_empty(), "reduction on empty matrix");
+    let mut it = a.data.iter();
+    let init = *it.next().unwrap();
+    it.fold(init, |acc, &x| f(acc, x))
+}
+
+#[inline]
+fn cpu_argext<T: Scalar>(a: &CpuStorage<T>, is_better: impl Fn(T, T) -> bool) -> (usize, usize) {
+    assert!(!a.data.is_empty(), "argext on empty matrix");
+    let mut best = 0usize;
+    for i in 1..a.data.len() {
+        if is_better(a.data[i], a.data[best]) {
+            best = i;
+        }
+    }
+    (best / a.ncols, best % a.ncols)
+}
 
 impl private::Sealed for Cpu {}
 
@@ -435,31 +463,21 @@ impl Backend for Cpu {
         }
     }
 
-    cpu_unary_op!(exp, |x| x.math_exp());
-
-    cpu_unary_op!(ln, |x| x.math_ln());
-
-    cpu_unary_op!(log1p, |x| x.math_log1p());
-
-    cpu_unary_op!(sin, |x| x.math_sin());
-
-    cpu_unary_op!(cos, |x| x.math_cos());
-
-    cpu_unary_op!(tanh, |x| x.math_tanh());
-
-    cpu_unary_op!(sqrt, |x| x.math_sqrt());
-
-    cpu_unary_op!(abs, |x| x.math_abs());
-
-    cpu_unary_op!(recip, |x| x.math_recip());
-
-    cpu_unary_op!(erf, |x| x.math_erf());
-
-    cpu_unary_op!(ceil, |x| x.math_ceil());
-
-    cpu_unary_op!(floor, |x| x.math_floor());
-
-    cpu_unary_op!(round, |x| x.math_round());
+    cpu_unary_ops!(
+        exp   => math_exp,
+        ln    => math_ln,
+        log1p => math_log1p,
+        sin   => math_sin,
+        cos   => math_cos,
+        tanh  => math_tanh,
+        sqrt  => math_sqrt,
+        abs   => math_abs,
+        recip => math_recip,
+        erf   => math_erf,
+        ceil  => math_ceil,
+        floor => math_floor,
+        round => math_round,
+    );
 
     #[inline]
     fn powf<T: Scalar>(a: &CpuStorage<T>, p: T) -> CpuStorage<T> {
@@ -479,70 +497,22 @@ impl Backend for Cpu {
 
     #[inline]
     fn max_all<T: Scalar>(a: &CpuStorage<T>) -> T {
-        assert!(
-            a.nrows > 0 && a.ncols > 0,
-            "max_all: matrix must be non-empty"
-        );
-        let mut it = a.data.iter();
-        let init = *it.next().expect("non-empty checked above");
-        it.fold(init, |acc, &x| acc.reduction_max(x))
+        cpu_fold_first(a, |acc, x| acc.reduction_max(x))
     }
 
     #[inline]
     fn min_all<T: Scalar>(a: &CpuStorage<T>) -> T {
-        assert!(
-            a.nrows > 0 && a.ncols > 0,
-            "min_all: matrix must be non-empty"
-        );
-        let mut it = a.data.iter();
-        let init = *it.next().expect("non-empty checked above");
-        it.fold(init, |acc, &x| acc.reduction_min(x))
+        cpu_fold_first(a, |acc, x| acc.reduction_min(x))
     }
 
     #[inline]
     fn argmax_all<T: Scalar>(a: &CpuStorage<T>) -> (usize, usize) {
-        assert!(
-            a.nrows > 0 && a.ncols > 0,
-            "argmax_all: matrix must be non-empty"
-        );
-        let (r, c) = (a.nrows, a.ncols);
-        let mut best = (0usize, 0usize);
-        for i in 0..r {
-            for j in 0..c {
-                if i == 0 && j == 0 {
-                    continue;
-                }
-                if a.get_unchecked(i, j)
-                    .reduction_gt(a.get_unchecked(best.0, best.1))
-                {
-                    best = (i, j);
-                }
-            }
-        }
-        best
+        cpu_argext(a, |cur, best| cur.reduction_gt(best))
     }
 
     #[inline]
     fn argmin_all<T: Scalar>(a: &CpuStorage<T>) -> (usize, usize) {
-        assert!(
-            a.nrows > 0 && a.ncols > 0,
-            "argmin_all: matrix must be non-empty"
-        );
-        let (r, c) = (a.nrows, a.ncols);
-        let mut best = (0usize, 0usize);
-        for i in 0..r {
-            for j in 0..c {
-                if i == 0 && j == 0 {
-                    continue;
-                }
-                if a.get_unchecked(best.0, best.1)
-                    .reduction_gt(a.get_unchecked(i, j))
-                {
-                    best = (i, j);
-                }
-            }
-        }
-        best
+        cpu_argext(a, |cur, best| best.reduction_gt(cur))
     }
 }
 

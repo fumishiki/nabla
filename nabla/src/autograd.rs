@@ -181,6 +181,11 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         self.grad_slot.as_ref().map(Rc::downgrade)
     }
 
+    /// Capture weak refs for use in backward closures.
+    fn input_refs(&self) -> (Option<Weak<TapeEntry<T, B>>>, Option<WeakSlot<T, B>>) {
+        (self.entry_weak(), self.slot_weak())
+    }
+
     // -----------------------------------------------------------------------
     // Upstream gradient propagation
     // -----------------------------------------------------------------------
@@ -202,6 +207,12 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         }
     }
 
+    /// Shorthand: propagate using a (entry, slot) tuple.
+    #[inline]
+    fn prop(refs: &(Option<Weak<TapeEntry<T, B>>>, Option<WeakSlot<T, B>>), delta: &Tensor<T, B>) {
+        Self::propagate(refs.0.as_ref(), refs.1.as_ref(), delta);
+    }
+
     // -----------------------------------------------------------------------
     // Forward operations (each records its backward closure)
     // -----------------------------------------------------------------------
@@ -212,11 +223,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn add_var(&self, rhs: &Self) -> Self {
         let out = &self.data + &rhs.data;
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
-        let (be, bs) = (rhs.entry_weak(), rhs.slot_weak());
+        let (lr, rr) = (self.input_refs(), rhs.input_refs());
         let entry = TapeEntry::new(move |g| {
-            Self::propagate(ae.as_ref(), as_.as_ref(), g);
-            Self::propagate(be.as_ref(), bs.as_ref(), g);
+            Self::prop(&lr, g);
+            Self::prop(&rr, g);
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -227,12 +237,11 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn sub_var(&self, rhs: &Self) -> Self {
         let out = &self.data - &rhs.data;
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
-        let (be, bs) = (rhs.entry_weak(), rhs.slot_weak());
+        let (lr, rr) = (self.input_refs(), rhs.input_refs());
         let entry = TapeEntry::new(move |g| {
-            Self::propagate(ae.as_ref(), as_.as_ref(), g);
+            Self::prop(&lr, g);
             let ng = -g;
-            Self::propagate(be.as_ref(), bs.as_ref(), &ng);
+            Self::prop(&rr, &ng);
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -243,10 +252,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn neg_var(&self) -> Self {
         let out = -&self.data;
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
+        let lr = self.input_refs();
         let entry = TapeEntry::new(move |g| {
             let ng = -g;
-            Self::propagate(ae.as_ref(), as_.as_ref(), &ng);
+            Self::prop(&lr, &ng);
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -257,15 +266,11 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn emul(&self, rhs: &Self) -> Self {
         let out = self.data.emul(&rhs.data);
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
-        let (be, bs) = (rhs.entry_weak(), rhs.slot_weak());
-        let b_data = rhs.data.clone();
-        let a_data = self.data.clone();
+        let (lr, rr) = (self.input_refs(), rhs.input_refs());
+        let (a_data, b_data) = (self.data.clone(), rhs.data.clone());
         let entry = TapeEntry::new(move |g| {
-            let da = g.emul(&b_data);
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
-            let db = g.emul(&a_data);
-            Self::propagate(be.as_ref(), bs.as_ref(), &db);
+            Self::prop(&lr, &g.emul(&b_data));
+            Self::prop(&rr, &g.emul(&a_data));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -276,15 +281,11 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn matmul(&self, rhs: &Self) -> Self {
         let out = &self.data * &rhs.data;
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
-        let (be, bs) = (rhs.entry_weak(), rhs.slot_weak());
-        let b_t = rhs.data.t();
-        let a_t = self.data.t();
+        let (lr, rr) = (self.input_refs(), rhs.input_refs());
+        let (a_t, b_t) = (self.data.t(), rhs.data.t());
         let entry = TapeEntry::new(move |g| {
-            let da = g * &b_t;
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
-            let db = &a_t * g;
-            Self::propagate(be.as_ref(), bs.as_ref(), &db);
+            Self::prop(&lr, &(g * &b_t));
+            Self::prop(&rr, &(&a_t * g));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -295,10 +296,9 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn scale(&self, s: T) -> Self {
         let out = &self.data * s;
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
+        let lr = self.input_refs();
         let entry = TapeEntry::new(move |g| {
-            let da = g * s;
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
+            Self::prop(&lr, &(g * s));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -309,11 +309,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn exp(&self) -> Self {
         let out = self.data.exp();
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
+        let lr = self.input_refs();
         let exp_a = out.clone();
         let entry = TapeEntry::new(move |g| {
-            let da = g.emul(&exp_a);
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
+            Self::prop(&lr, &g.emul(&exp_a));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -324,11 +323,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn ln(&self) -> Self {
         let out = self.data.ln();
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
+        let lr = self.input_refs();
         let a_data = self.data.clone();
         let entry = TapeEntry::new(move |g| {
-            let da = g.ediv(&a_data);
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
+            Self::prop(&lr, &g.ediv(&a_data));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -339,11 +337,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn sin(&self) -> Self {
         let out = self.data.sin();
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
+        let lr = self.input_refs();
         let cos_a = self.data.cos();
         let entry = TapeEntry::new(move |g| {
-            let da = g.emul(&cos_a);
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
+            Self::prop(&lr, &g.emul(&cos_a));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -354,11 +351,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn cos(&self) -> Self {
         let out = self.data.cos();
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
+        let lr = self.input_refs();
         let neg_sin_a = -&self.data.sin();
         let entry = TapeEntry::new(move |g| {
-            let da = g.emul(&neg_sin_a);
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
+            Self::prop(&lr, &g.emul(&neg_sin_a));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -369,15 +365,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn tanh(&self) -> Self {
         let out = self.data.tanh();
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
-        // sech²(a) = 1 - tanh²(a), computed element-wise.
+        let lr = self.input_refs();
         let one = T::one_impl();
         let two = one + one;
         let (nrows, ncols) = out.shape();
         let sech2 = Tensor::from_fn(nrows, ncols, |i, j| one - out.get(i, j).math_powf(two));
         let entry = TapeEntry::new(move |g| {
-            let da = g.emul(&sech2);
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
+            Self::prop(&lr, &g.emul(&sech2));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -388,13 +382,11 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn sqrt(&self) -> Self {
         let out = self.data.sqrt();
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
-        // 2 * sqrt(a) = 2 * out
+        let lr = self.input_refs();
         let two = T::one_impl() + T::one_impl();
         let two_sqrt_a = &out * two;
         let entry = TapeEntry::new(move |g| {
-            let da = g.ediv(&two_sqrt_a);
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
+            Self::prop(&lr, &g.ediv(&two_sqrt_a));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -405,16 +397,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     #[must_use]
     pub fn powf(&self, p: T) -> Self {
         let out = self.data.powf(p);
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
-        // p * a^(p-1) stored as a tensor coefficient.
+        let lr = self.input_refs();
         let one = T::one_impl();
-        let p_minus_1 = p - one;
-        let a_pm1 = self.data.powf(p_minus_1);
+        let a_pm1 = self.data.powf(p - one);
         let (nrows, ncols) = a_pm1.shape();
         let coeff = Tensor::from_fn(nrows, ncols, |i, j| a_pm1.get(i, j).math_mul(p));
         let entry = TapeEntry::new(move |g| {
-            let da = g.emul(&coeff);
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
+            Self::prop(&lr, &g.emul(&coeff));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -427,11 +416,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let s = self.data.sum_all();
         let (nrows, ncols) = self.data.shape();
         let out = Tensor::fill(1, 1, s);
-        let (ae, as_) = (self.entry_weak(), self.slot_weak());
+        let lr = self.input_refs();
         let entry = TapeEntry::new(move |g| {
             let g_val = g.get(0, 0);
-            let da = Tensor::fill(nrows, ncols, g_val);
-            Self::propagate(ae.as_ref(), as_.as_ref(), &da);
+            Self::prop(&lr, &Tensor::fill(nrows, ncols, g_val));
         });
         Self::derived(&self.tape, out, entry)
     }

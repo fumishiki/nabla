@@ -241,18 +241,32 @@ fn matmul_buf(l: &[f64], u: &[f64], n: usize) -> Vec<f64> {
 /// `symmetric` variant: solve_transpose/solve_adjoint delegate to solve_impl (A = A^T).
 /// `general` variant: solve_transpose rebuilds via reconstruct+refactor.
 macro_rules! impl_factorization_methods {
+    // Common methods shared by both symmetric and general factorizations.
+    (@common $Type:ident) => {
+        /// Solve `A·x = b`.
+        #[must_use]
+        pub fn solve(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
+            self.solve_impl(rhs)
+        }
+        /// Solve in place.
+        pub fn solve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
+            *rhs = self.solve_impl(rhs);
+        }
+        /// Reconstruct original matrix.
+        #[must_use]
+        pub fn reconstruct(&self) -> Tensor<f64, Cpu> {
+            self.reconstruct_impl()
+        }
+        /// Compute matrix inverse.
+        #[must_use]
+        pub fn inverse(&self) -> Tensor<f64, Cpu> {
+            self.inverse_impl()
+        }
+    };
     // Symmetric factorizations: A^T = A, so transpose/adjoint solve = regular solve.
     (symmetric $Type:ident) => {
         impl $Type<f64> {
-            /// Solve `A·x = b`.
-            #[must_use]
-            pub fn solve(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
-                self.solve_impl(rhs)
-            }
-            /// Solve in place.
-            pub fn solve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
-                *rhs = self.solve_impl(rhs);
-            }
+            impl_factorization_methods!(@common $Type);
             /// Solve `A^T·x = b` (same as solve for symmetric A).
             #[must_use]
             pub fn solve_transpose(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
@@ -263,36 +277,17 @@ macro_rules! impl_factorization_methods {
             pub fn solve_adjoint(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
                 self.solve_impl(rhs)
             }
-            /// Reconstruct original matrix.
-            #[must_use]
-            pub fn reconstruct(&self) -> Tensor<f64, Cpu> {
-                self.reconstruct_impl()
-            }
-            /// Compute matrix inverse.
-            #[must_use]
-            pub fn inverse(&self) -> Tensor<f64, Cpu> {
-                self.inverse_impl()
-            }
         }
     };
     // General (non-symmetric) factorizations with full solve variants.
     (general $Type:ident) => {
         impl $Type<f64> {
-            /// Solve `A·x = b`.
-            #[must_use]
-            pub fn solve(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
-                self.solve_impl(rhs)
-            }
-            /// Solve in place.
-            pub fn solve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
-                *rhs = self.solve_impl(rhs);
-            }
+            impl_factorization_methods!(@common $Type);
             /// Solve `A^T·x = b`.
             #[must_use]
             pub fn solve_transpose(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
                 let a = self.reconstruct_impl();
                 let at = a.t();
-                // Factorization of A^T; fall back to rhs on singular (should not happen).
                 match $Type::factorize(&at) {
                     Ok(f) => f.solve_impl(rhs),
                     Err(_) => rhs.clone(),
@@ -325,16 +320,6 @@ macro_rules! impl_factorization_methods {
             /// Solve in place `x·A = b`.
             pub fn rsolve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
                 *rhs = self.rsolve(rhs);
-            }
-            /// Reconstruct original matrix.
-            #[must_use]
-            pub fn reconstruct(&self) -> Tensor<f64, Cpu> {
-                self.reconstruct_impl()
-            }
-            /// Compute matrix inverse.
-            #[must_use]
-            pub fn inverse(&self) -> Tensor<f64, Cpu> {
-                self.inverse_impl()
             }
         }
     };

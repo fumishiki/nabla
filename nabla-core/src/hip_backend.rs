@@ -11,7 +11,8 @@ use std::sync::{Mutex, OnceLock};
 
 use hip_runtime_sys as hip;
 
-use crate::gpu_common::{self, EnsureCache, RtcStorage, grid_1d, lock_or_recover, type_suffix};
+use crate::gpu_common::{self, EnsureCache, MemoryPool, RtcStorage, grid_1d, lock_or_recover, round_size, type_suffix,
+    SMALL_LARGE_BOUNDARY, SMALL_ALLOC_SIZE, LARGE_ALLOC_SIZE};
 use crate::kernels_cu::{self, BLOCK_SIZE};
 use crate::scalar::Scalar;
 
@@ -48,135 +49,11 @@ fn check(err: hip::hipError_t) -> HipResult<()> {
 
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
-/// Round up to 512-byte alignment (PyTorch-style).
-fn round_size(size: usize) -> usize {
-    const ALIGN: usize = 512;
-    if size == 0 { return ALIGN; }
-    (size + ALIGN - 1) & !(ALIGN - 1)
+type HipPool = MemoryPool<*mut c_void>;
+
+fn hip_free(ptr: *mut c_void, _size: usize) {
+    unsafe { let _ = hip::hipFree(ptr); }
 }
-
-const SMALL_LARGE_BOUNDARY: usize = 1 << 20;
-const SMALL_SPLIT_MIN: usize = 512;
-const LARGE_SPLIT_MIN: usize = 1 << 20;
-const SMALL_ALLOC_SIZE: usize = 2 << 20;
-const LARGE_ALLOC_SIZE: usize = 20 << 20;
-const GC_THRESHOLD: f64 = 0.9;
-
-struct FreeBlock {
-    ptr: *mut c_void,
-    size: usize,
-}
-
-/// Best-fit caching memory pool for HIP (mirrors CUDA MemoryPool).
-struct HipMemoryPool {
-    small_free: Vec<FreeBlock>,
-    large_free: Vec<FreeBlock>,
-    allocated_bytes: usize,
-    cached_bytes: usize,
-}
-
-impl HipMemoryPool {
-    fn new() -> Self {
-        Self {
-            small_free: Vec::new(),
-            large_free: Vec::new(),
-            allocated_bytes: 0,
-            cached_bytes: 0,
-        }
-    }
-
-    fn best_fit(pool: &[FreeBlock], size: usize) -> Option<usize> {
-        let pos = pool.partition_point(|b| b.size < size);
-        if pos < pool.len() { Some(pos) } else { None }
-    }
-
-    fn split_min(size: usize) -> usize {
-        if size < SMALL_LARGE_BOUNDARY { SMALL_SPLIT_MIN } else { LARGE_SPLIT_MIN }
-    }
-
-    fn try_alloc(&mut self, size: usize) -> Option<(*mut c_void, usize)> {
-        let rounded = round_size(size);
-        let pool = if rounded < SMALL_LARGE_BOUNDARY {
-            &mut self.small_free
-        } else {
-            &mut self.large_free
-        };
-        let idx = Self::best_fit(pool, rounded)?;
-        let block = pool.remove(idx);
-        self.cached_bytes -= block.size;
-
-        let remainder = block.size - rounded;
-        let split_threshold = Self::split_min(rounded);
-        if remainder >= split_threshold {
-            let split_ptr = unsafe { block.ptr.byte_add(rounded) };
-            let split_block = FreeBlock { ptr: split_ptr, size: remainder };
-            let target = if remainder < SMALL_LARGE_BOUNDARY {
-                &mut self.small_free
-            } else {
-                &mut self.large_free
-            };
-            let pos = target.partition_point(|b| b.size < remainder);
-            target.insert(pos, split_block);
-            self.cached_bytes += remainder;
-            Some((block.ptr, rounded))
-        } else {
-            Some((block.ptr, block.size))
-        }
-    }
-
-    fn release(&mut self, ptr: *mut c_void, size: usize) {
-        let pool = if size < SMALL_LARGE_BOUNDARY {
-            &mut self.small_free
-        } else {
-            &mut self.large_free
-        };
-        let pos = pool.partition_point(|b| b.size < size);
-        pool.insert(pos, FreeBlock { ptr, size });
-        self.cached_bytes += size;
-    }
-
-    fn maybe_gc(&mut self) {
-        let total = self.allocated_bytes + self.cached_bytes;
-        if total == 0 { return; }
-        let usage_ratio = self.allocated_bytes as f64 / total as f64;
-        if usage_ratio > GC_THRESHOLD && self.cached_bytes > 0 {
-            self.trim(0);
-        }
-    }
-
-    fn trim(&mut self, target_bytes: usize) -> usize {
-        let mut freed = 0usize;
-        while self.cached_bytes > target_bytes {
-            if let Some(block) = self.large_free.pop() {
-                unsafe { let _ = hip::hipFree(block.ptr); }
-                self.cached_bytes -= block.size;
-                freed += block.size;
-            } else if let Some(block) = self.small_free.pop() {
-                unsafe { let _ = hip::hipFree(block.ptr); }
-                self.cached_bytes -= block.size;
-                freed += block.size;
-            } else {
-                break;
-            }
-        }
-        freed
-    }
-}
-
-impl Drop for HipMemoryPool {
-    fn drop(&mut self) {
-        for block in self.small_free.drain(..) {
-            unsafe { let _ = hip::hipFree(block.ptr); }
-        }
-        for block in self.large_free.drain(..) {
-            unsafe { let _ = hip::hipFree(block.ptr); }
-        }
-    }
-}
-
-// SAFETY: HipMemoryPool stores raw GPU device pointers that are not
-// dereferenced on the host. HIP API calls are thread-safe.
-unsafe impl Send for HipMemoryPool {}
 
 pub struct HipBuffer {
     pub(crate) ptr: *mut c_void,
@@ -358,7 +235,7 @@ impl Drop for HipBuffer {
                 let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 pool.allocated_bytes = pool.allocated_bytes.saturating_sub(self.alloc_size);
                 pool.release(self.ptr, self.alloc_size);
-                pool.maybe_gc();
+                pool.maybe_gc(hip_free);
             } else {
                 unsafe { let _ = hip::hipFree(self.ptr); }
             }
@@ -406,7 +283,7 @@ unsafe impl Sync for KernelEntry {}
 
 struct HipCtx {
     kernels: Mutex<HashMap<String, KernelEntry>>,
-    pool: Mutex<HipMemoryPool>,
+    pool: Mutex<HipPool>,
     /// Separate stream for H2D/D2H transfers (multi-stream pipeline).
     copy_stream: hip::hipStream_t,
 }
@@ -431,7 +308,7 @@ fn get_ctx() -> &'static HipCtx {
         }
         let hip_ctx = HipCtx {
             kernels: Mutex::new(HashMap::new()),
-            pool: Mutex::new(HipMemoryPool::new()),
+            pool: Mutex::new(HipPool::new()),
             copy_stream,
         };
         if let Err(e) = compile_all_kernels(&hip_ctx) {
@@ -800,78 +677,7 @@ pub(crate) fn hip_argmin_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) { g
 
 // ── Fused element-wise kernel launch ────────────────────────────────────────
 
-fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_name: &str, reg_estimate: usize) -> String {
-    let is_f32 = type_name == "float";
-    let mut src = String::with_capacity(if is_f32 { 1536 } else { 512 });
 
-    // Annotate kernel with register pressure estimate
-    src.push_str(&format!("// estimated registers: {reg_estimate}\n"));
-
-    if is_f32 {
-        let scalar_expr = gpu_expr.to_string();
-        src.push_str("extern \"C\" __global__ void ");
-        src.push_str(kernel_name);
-        src.push('(');
-        for i in 0..n_inputs {
-            src.push_str("const float* in");
-            src.push_str(&i.to_string());
-            src.push_str(", ");
-        }
-        src.push_str("float* out, unsigned n) {\n");
-        src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
-        src.push_str("    unsigned i = i4 * 4;\n");
-        src.push_str("    if (i + 3 < n) {\n");
-        for j in 0..n_inputs {
-            src.push_str(&format!(
-                "        float4 v{j} = reinterpret_cast<const float4*>(in{j})[i4];\n"
-            ));
-        }
-        src.push_str("        float4 r;\n");
-        for comp in &["x", "y", "z", "w"] {
-            let mut comp_expr = scalar_expr.clone();
-            for j in (0..n_inputs).rev() {
-                comp_expr = comp_expr.replace(
-                    &format!("in{j}[i]"),
-                    &format!("v{j}.{comp}"),
-                );
-            }
-            src.push_str(&format!("        r.{comp} = {comp_expr};\n"));
-        }
-        src.push_str("        reinterpret_cast<float4*>(out)[i4] = r;\n");
-        src.push_str("    } else {\n");
-        src.push_str("        for (unsigned j = i; j < n && j < i + 4; j++) {\n");
-        let mut tail_expr = scalar_expr;
-        for j in (0..n_inputs).rev() {
-            tail_expr = tail_expr.replace(
-                &format!("in{j}[i]"),
-                &format!("in{j}[j]"),
-            );
-        }
-        src.push_str(&format!("            out[j] = {tail_expr};\n"));
-        src.push_str("        }\n");
-        src.push_str("    }\n}\n");
-    } else {
-        src.push_str("extern \"C\" __global__ void ");
-        src.push_str(kernel_name);
-        src.push('(');
-        for i in 0..n_inputs {
-            src.push_str("const ");
-            src.push_str(type_name);
-            src.push_str("* in");
-            src.push_str(&i.to_string());
-            src.push_str(", ");
-        }
-        src.push_str(type_name);
-        src.push_str("* out, unsigned n) {\n");
-        src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
-        src.push_str("    if (i < n) {\n");
-        src.push_str("        out[i] = ");
-        src.push_str(gpu_expr);
-        src.push_str(";\n");
-        src.push_str("    }\n}\n");
-    }
-    src
-}
 
 fn hip_fuse_launch<T: Scalar>(
     inputs: &[*const u8],
@@ -893,7 +699,7 @@ fn hip_fuse_launch<T: Scalar>(
         if !map.contains_key(&kernel_name) {
             drop(map);
             let type_name = if tsuf == "f32" { "float" } else { "double" };
-            let src_str = fuse_kernel_source(gpu_expr, n_inputs, type_name, &kernel_name, reg_estimate);
+            let src_str = gpu_common::fuse_kernel_source(gpu_expr, n_inputs, type_name, &kernel_name, reg_estimate, false);
             let c_src = CString::new(src_str).unwrap_or_else(|_| panic!("null in source"));
             let prog_name = CString::new("nabla_fuse").unwrap_or_else(|_| panic!("null"));
 
@@ -975,92 +781,6 @@ pub(crate) struct MegaFuseOp {
     pub n_inputs: usize,
 }
 
-/// Generate a mega-kernel that fuses multiple element-wise operations into a
-/// single launch (HIP variant — no `__ldg`, uses direct float4 loads).
-fn mega_fuse_kernel_source(
-    ops: &[(String, usize)],
-    type_name: &str,
-    kernel_name: &str,
-) -> String {
-    let is_f32 = type_name == "float";
-    let mut src = String::with_capacity(2048);
-
-    src.push_str("extern \"C\" __global__ void ");
-    src.push_str(kernel_name);
-    src.push('(');
-    let mut first = true;
-    for (op_idx, (_expr, n_in)) in ops.iter().enumerate() {
-        for j in 0..*n_in {
-            if !first { src.push_str(", "); }
-            first = false;
-            src.push_str(&format!("const {type_name}* op{op_idx}_in{j}"));
-        }
-        if !first { src.push_str(", "); }
-        first = false;
-        src.push_str(&format!("{type_name}* op{op_idx}_out"));
-    }
-    src.push_str(", unsigned n) {\n");
-
-    if is_f32 {
-        src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
-        src.push_str("    unsigned i = i4 * 4;\n");
-        src.push_str("    if (i + 3 < n) {\n");
-
-        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
-            src.push_str(&format!("        // Op {op_idx}\n"));
-            for j in 0..*n_in {
-                src.push_str(&format!(
-                    "        float4 op{op_idx}_v{j} = reinterpret_cast<const float4*>(op{op_idx}_in{j})[i4];\n"
-                ));
-            }
-            src.push_str(&format!("        float4 op{op_idx}_r;\n"));
-            for comp in &["x", "y", "z", "w"] {
-                let mut comp_expr = gpu_expr.clone();
-                for j in (0..*n_in).rev() {
-                    comp_expr = comp_expr.replace(
-                        &format!("in{j}[i]"),
-                        &format!("op{op_idx}_v{j}.{comp}"),
-                    );
-                }
-                src.push_str(&format!("        op{op_idx}_r.{comp} = {comp_expr};\n"));
-            }
-            src.push_str(&format!(
-                "        reinterpret_cast<float4*>(op{op_idx}_out)[i4] = op{op_idx}_r;\n"
-            ));
-        }
-
-        src.push_str("    } else {\n");
-        src.push_str("        for (unsigned j = i; j < n && j < i + 4; j++) {\n");
-        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
-            let mut tail_expr = gpu_expr.clone();
-            for j in (0..*n_in).rev() {
-                tail_expr = tail_expr.replace(
-                    &format!("in{j}[i]"),
-                    &format!("op{op_idx}_in{j}[j]"),
-                );
-            }
-            src.push_str(&format!("            op{op_idx}_out[j] = {tail_expr};\n"));
-        }
-        src.push_str("        }\n");
-        src.push_str("    }\n}\n");
-    } else {
-        src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
-        src.push_str("    if (i < n) {\n");
-        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
-            let mut expr = gpu_expr.clone();
-            for j in (0..*n_in).rev() {
-                expr = expr.replace(
-                    &format!("in{j}[i]"),
-                    &format!("op{op_idx}_in{j}[i]"),
-                );
-            }
-            src.push_str(&format!("        op{op_idx}_out[i] = {expr};\n"));
-        }
-        src.push_str("    }\n}\n");
-    }
-    src
-}
-
 /// Launch a mega-kernel that executes multiple fused element-wise operations
 /// in a single GPU kernel launch (HIP backend).
 pub(crate) fn hip_mega_fuse_launch<T: Scalar>(
@@ -1083,7 +803,7 @@ pub(crate) fn hip_mega_fuse_launch<T: Scalar>(
             let op_descs: Vec<(String, usize)> = ops.iter()
                 .map(|op| (op.gpu_expr.clone(), op.n_inputs))
                 .collect();
-            let src_str = mega_fuse_kernel_source(&op_descs, type_name, &kernel_name);
+            let src_str = gpu_common::mega_fuse_kernel_source(&op_descs, type_name, &kernel_name, false);
             let c_src = CString::new(src_str).unwrap_or_else(|_| panic!("null in source"));
             let prog_name = CString::new("nabla_mega_fuse").unwrap_or_else(|_| panic!("null"));
 
@@ -1216,10 +936,6 @@ impl crate::backend::Backend for crate::backend::Hip {
     }
 
     #[inline]
-    fn add<T: Scalar>(a: &HipStorage<T>, b: &HipStorage<T>) -> HipStorage<T> { launch_binary(a, b, "add") }
-    #[inline]
-    fn sub<T: Scalar>(a: &HipStorage<T>, b: &HipStorage<T>) -> HipStorage<T> { launch_binary(a, b, "sub") }
-    #[inline]
     fn neg<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "neg") }
     #[inline]
     fn transpose<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { hip_transpose(a) }
@@ -1228,38 +944,11 @@ impl crate::backend::Backend for crate::backend::Hip {
     #[inline]
     fn clone_storage<T: Scalar>(s: &HipStorage<T>) -> HipStorage<T> { hip_clone(s) }
 
-    #[inline]
-    fn exp<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "exp") }
-    #[inline]
-    fn ln<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "ln") }
-    #[inline]
-    fn log1p<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "log1p") }
-    #[inline]
-    fn sin<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "sin") }
-    #[inline]
-    fn cos<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "cos") }
-    #[inline]
-    fn tanh<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "tanh") }
-    #[inline]
-    fn sqrt<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "sqrt") }
-    #[inline]
-    fn abs<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "abs") }
-    #[inline]
-    fn recip<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "recip") }
-    #[inline]
-    fn erf<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "erf") }
-    #[inline]
-    fn ceil<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "ceil") }
-    #[inline]
-    fn floor<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "floor") }
-    #[inline]
-    fn round<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "round") }
+    gpu_common::gpu_unary_ops!(HipStorage; exp, ln, log1p, sin, cos, tanh, sqrt, abs, recip, erf, ceil, floor, round);
+    gpu_common::gpu_binary_ops!(HipStorage; add, sub, emul, ediv);
+
     #[inline]
     fn powf<T: Scalar>(a: &HipStorage<T>, p: T) -> HipStorage<T> { hip_powf(a, p) }
-    #[inline]
-    fn emul<T: Scalar>(a: &HipStorage<T>, b: &HipStorage<T>) -> HipStorage<T> { launch_binary(a, b, "emul") }
-    #[inline]
-    fn ediv<T: Scalar>(a: &HipStorage<T>, b: &HipStorage<T>) -> HipStorage<T> { launch_binary(a, b, "ediv") }
 
     #[inline]
     fn sum_all<T: Scalar>(a: &HipStorage<T>) -> T { hip_sum_all(a) }

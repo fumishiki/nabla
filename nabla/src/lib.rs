@@ -335,7 +335,7 @@ pub mod prelude {
     pub use nabla_core::tensor::{Array, NdTensor, StaticMatrix};
     #[cfg(feature = "cpu")]
     pub use nabla_core::tensor::{DynTensor, Matrix};
-    pub use nabla_macros::{axis, einsum, fuse, generated, mat, nabla_grad, named, named_zeros};
+    pub use nabla_macros::{axis, einsum, fuse, generated, mat, mega_fuse, nabla_grad, named, named_zeros};
 
     pub use crate::autograd::{Tape, Variable};
     #[cfg(feature = "cpu")]
