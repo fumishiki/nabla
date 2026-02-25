@@ -24,13 +24,7 @@
     )
 )]
 
-// Enforce exactly one backend feature.
-#[cfg(all(feature = "cpu", feature = "gpu"))]
-compile_error!("nabla-core: features 'cpu' and 'gpu' are mutually exclusive");
-#[cfg(all(feature = "cpu", feature = "cuda"))]
-compile_error!("nabla-core: features 'cpu' and 'cuda' are mutually exclusive");
-#[cfg(all(feature = "cpu", feature = "hip"))]
-compile_error!("nabla-core: features 'cpu' and 'hip' are mutually exclusive");
+// Enforce mutually exclusive GPU backends. CPU may combine with any GPU backend.
 #[cfg(all(feature = "gpu", feature = "cuda"))]
 compile_error!("nabla-core: features 'gpu' and 'cuda' are mutually exclusive");
 #[cfg(all(feature = "gpu", feature = "hip"))]
@@ -48,7 +42,7 @@ pub mod scalar;
 pub mod backend;
 
 #[cfg(feature = "gpu")]
-pub(crate) mod gpu;
+pub mod gpu;
 
 #[cfg(any(feature = "cuda", feature = "hip"))]
 pub(crate) mod kernels_cu;

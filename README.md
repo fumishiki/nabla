@@ -66,7 +66,7 @@ nabla's scope is limited to **mathematically invariant rules** — operations wh
 1. **Zero-GC, zero-copy** — `Drop` = deterministic deallocation. `&` = zero-copy borrow. `_into(out: &mut)` = zero-allocation in-place. No reference counting in the hot path.
 2. **Python's ease, C's speed** — PyTorch-familiar API (`loss.backward()`, `.exp()`, `.sum()`) at native Rust speed. Macro layer absorbs the syntax gap vs Julia.
 3. **Macros = notation layer** — proc macros (`einsum!`, `fuse!`, `stencil!`) provide concise math notation; type-safe Rust underneath. No runtime overhead.
-4. **Build-time exclusive backend** — exactly one of `cpu`/`wgpu`/`cuda`/`hip`. `compile_error!` on multi-select. CPU fallback on GPU builds is a silent performance bug source — nabla makes it impossible.
+4. **Build-time exclusive GPU backend** — GPU backends (`wgpu`/`cuda`/`hip`) are mutually exclusive (`compile_error!` on multi-select). `cpu` may be combined with any GPU backend to enable linalg/sparse alongside GPU compute.
 5. **Self-contained LA** — zero external LA deps (no LAPACK, no BLAS, no C++ wrappers). Row-major `CpuStorage`, 9 dense factorizations, CSC sparse — all pure Rust.
 6. **Two kernel codebases, not one abstraction** — WGSL (wgpu) + CUDA/HIP shared C source. 32 fixed ops → dual maintenance is manageable and avoids abstraction overhead (no CubeCL/Triton).
 7. **Errors read like math** — shape mismatch says `nabla: matmul 3×2 · 4×2` not `type parameter mismatch`. `einsum!` compile errors point to the exact index character.
@@ -130,9 +130,24 @@ nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, 
 
 # AMD HIP GPU — hiprtc JIT (f32 + f64)
 nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["hip"] }
+
+# CPU linalg + CUDA GPU — full stack (recommended for NVIDIA)
+nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["cpu", "cuda"] }
+
+# CPU linalg + wgpu GPU — full stack (cross-platform)
+nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["cpu", "gpu"] }
 ```
 
-Exactly one backend must be enabled — `compile_error!` on multi-select. No implicit CPU fallback on GPU builds.
+GPU backends (wgpu/cuda/hip) are mutually exclusive. `cpu` may be combined with any GPU backend to enable linalg/sparse alongside GPU compute:
+
+```rust
+// features = ["cpu", "cuda"]
+let m: Tensor<f64, Cpu> = Tensor::from_fn(4, 4, |i, j| (i + j) as f64);
+let lu = m.lu()?;               // CPU linalg — always available via Tensor<T, Cpu>
+
+let a: Tensor<f32> = zeros(1024, 1024);  // DefaultBackend = Cuda
+let c = &a * &b;                          // GPU matmul
+```
 
 ---
 
@@ -311,7 +326,7 @@ let dx = tape.grad(&xv);
 
 ## Backend system
 
-Compile-time exclusive selection — exactly one backend per binary.
+Compile-time exclusive GPU selection — GPU backends are mutually exclusive. `cpu` may be combined with any GPU backend.
 
 | Feature | Backend | Scalar types | Notes |
 |---|---|---|---|
@@ -329,7 +344,7 @@ cargo build --no-default-features --features cuda        # NVIDIA
 cargo build --no-default-features --features hip         # AMD
 ```
 
-**Prohibited**: two features enabled simultaneously → `compile_error!`. No implicit CPU fallback on GPU backends.
+**Prohibited**: two GPU features enabled simultaneously → `compile_error!`. `cpu` may be combined with any single GPU backend.
 
 **CUDA/HIP runtime requirements** — no CUDA/HIP SDK needed at build time. Libraries are dynamically loaded at runtime via `libloading`:
 - CUDA: `libcuda.so` + `libnvrtc.so` (NVIDIA driver ≥ Volta recommended for WMMA)
@@ -440,7 +455,7 @@ MSRV: **1.85.0** (Rust edition 2024)
 |---|---|
 | No wgpu f64 | WGSL / Metal lacks f64 — use `cuda` or `hip` for f64 |
 | No GPU complex | c32 / c64 unsupported on all GPU backends (compile error by design) |
-| GPU linalg: TRSM only | `gpu_trsm_lower` (recursive GEMM) — full LU / Cholesky / QR are CPU-only |
+| GPU linalg: TRSM only | `gpu_trsm_lower` available; full LU/Cholesky/QR: use `Tensor<T, Cpu>` with `features = ["cpu", "cuda"]` |
 | `from_fn` requires host | Closures cannot execute on GPU — use `fuse!` for GPU element-wise ops |
 | L2/L3 `fuse!` GPU fusion | L1 element-wise fusion on CPU; GPU kernel fusion requires codegen extension |
 | Tape AD overhead | `Tape` is Rc + dynamic graph (CPU) — use `GpuTape` for GPU-resident AD |

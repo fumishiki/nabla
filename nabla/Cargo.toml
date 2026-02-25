@@ -12,6 +12,8 @@ categories = ["mathematics", "science"]
 default = ["cpu"]
 cpu = ["nabla-core/cpu"]
 gpu = ["nabla-core/gpu"]
+cuda = ["nabla-core/cuda"]
+hip = ["nabla-core/hip"]
 
 [dependencies]
 nabla-core = { path = "../nabla-core" }
