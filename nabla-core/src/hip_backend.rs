@@ -48,48 +48,128 @@ fn check(err: hip::hipError_t) -> HipResult<()> {
 
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
-// Round up to next power-of-2 (minimum 256 bytes).
-fn hip_size_class(size: usize) -> usize {
-    let min = 256;
-    if size <= min { return min; }
-    size.next_power_of_two()
+/// Round up to 512-byte alignment (PyTorch-style).
+fn round_size(size: usize) -> usize {
+    const ALIGN: usize = 512;
+    if size == 0 { return ALIGN; }
+    (size + ALIGN - 1) & !(ALIGN - 1)
 }
 
-/// Block-based caching memory pool for HIP (mirrors CUDA MemoryPool).
+const SMALL_LARGE_BOUNDARY: usize = 1 << 20;
+const SMALL_SPLIT_MIN: usize = 512;
+const LARGE_SPLIT_MIN: usize = 1 << 20;
+const SMALL_ALLOC_SIZE: usize = 2 << 20;
+const LARGE_ALLOC_SIZE: usize = 20 << 20;
+const GC_THRESHOLD: f64 = 0.9;
+
+struct FreeBlock {
+    ptr: *mut c_void,
+    size: usize,
+}
+
+/// Best-fit caching memory pool for HIP (mirrors CUDA MemoryPool).
 struct HipMemoryPool {
-    bins: HashMap<usize, Vec<*mut c_void>>,
+    small_free: Vec<FreeBlock>,
+    large_free: Vec<FreeBlock>,
+    allocated_bytes: usize,
     cached_bytes: usize,
 }
 
 impl HipMemoryPool {
     fn new() -> Self {
-        Self { bins: HashMap::new(), cached_bytes: 0 }
+        Self {
+            small_free: Vec::new(),
+            large_free: Vec::new(),
+            allocated_bytes: 0,
+            cached_bytes: 0,
+        }
     }
 
-    fn try_alloc(&mut self, size_bytes: usize) -> Option<(*mut c_void, usize)> {
-        let sc = hip_size_class(size_bytes);
-        if let Some(bin) = self.bins.get_mut(&sc) {
-            if let Some(ptr) = bin.pop() {
-                self.cached_bytes -= sc;
-                return Some((ptr, sc));
+    fn best_fit(pool: &[FreeBlock], size: usize) -> Option<usize> {
+        let pos = pool.partition_point(|b| b.size < size);
+        if pos < pool.len() { Some(pos) } else { None }
+    }
+
+    fn split_min(size: usize) -> usize {
+        if size < SMALL_LARGE_BOUNDARY { SMALL_SPLIT_MIN } else { LARGE_SPLIT_MIN }
+    }
+
+    fn try_alloc(&mut self, size: usize) -> Option<(*mut c_void, usize)> {
+        let rounded = round_size(size);
+        let pool = if rounded < SMALL_LARGE_BOUNDARY {
+            &mut self.small_free
+        } else {
+            &mut self.large_free
+        };
+        let idx = Self::best_fit(pool, rounded)?;
+        let block = pool.remove(idx);
+        self.cached_bytes -= block.size;
+
+        let remainder = block.size - rounded;
+        let split_threshold = Self::split_min(rounded);
+        if remainder >= split_threshold {
+            let split_ptr = unsafe { block.ptr.byte_add(rounded) };
+            let split_block = FreeBlock { ptr: split_ptr, size: remainder };
+            let target = if remainder < SMALL_LARGE_BOUNDARY {
+                &mut self.small_free
+            } else {
+                &mut self.large_free
+            };
+            let pos = target.partition_point(|b| b.size < remainder);
+            target.insert(pos, split_block);
+            self.cached_bytes += remainder;
+            Some((block.ptr, rounded))
+        } else {
+            Some((block.ptr, block.size))
+        }
+    }
+
+    fn release(&mut self, ptr: *mut c_void, size: usize) {
+        let pool = if size < SMALL_LARGE_BOUNDARY {
+            &mut self.small_free
+        } else {
+            &mut self.large_free
+        };
+        let pos = pool.partition_point(|b| b.size < size);
+        pool.insert(pos, FreeBlock { ptr, size });
+        self.cached_bytes += size;
+    }
+
+    fn maybe_gc(&mut self) {
+        let total = self.allocated_bytes + self.cached_bytes;
+        if total == 0 { return; }
+        let usage_ratio = self.allocated_bytes as f64 / total as f64;
+        if usage_ratio > GC_THRESHOLD && self.cached_bytes > 0 {
+            self.trim(0);
+        }
+    }
+
+    fn trim(&mut self, target_bytes: usize) -> usize {
+        let mut freed = 0usize;
+        while self.cached_bytes > target_bytes {
+            if let Some(block) = self.large_free.pop() {
+                unsafe { let _ = hip::hipFree(block.ptr); }
+                self.cached_bytes -= block.size;
+                freed += block.size;
+            } else if let Some(block) = self.small_free.pop() {
+                unsafe { let _ = hip::hipFree(block.ptr); }
+                self.cached_bytes -= block.size;
+                freed += block.size;
+            } else {
+                break;
             }
         }
-        None
-    }
-
-    fn release(&mut self, ptr: *mut c_void, allocated_size: usize) {
-        let sc = hip_size_class(allocated_size);
-        self.bins.entry(sc).or_default().push(ptr);
-        self.cached_bytes += sc;
+        freed
     }
 }
 
 impl Drop for HipMemoryPool {
     fn drop(&mut self) {
-        for (_, ptrs) in self.bins.drain() {
-            for ptr in ptrs {
-                unsafe { let _ = hip::hipFree(ptr); }
-            }
+        for block in self.small_free.drain(..) {
+            unsafe { let _ = hip::hipFree(block.ptr); }
+        }
+        for block in self.large_free.drain(..) {
+            unsafe { let _ = hip::hipFree(block.ptr); }
         }
     }
 }
@@ -122,13 +202,26 @@ impl HipBuffer {
         let (ptr, alloc_size) = if let Some((p, sc)) = pool.try_alloc(size_bytes) {
             (p, sc)
         } else {
+            let rounded = round_size(size_bytes);
+            let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
+                rounded.max(SMALL_ALLOC_SIZE)
+            } else {
+                rounded.max(LARGE_ALLOC_SIZE)
+            };
             drop(pool);
-            let sc = hip_size_class(size_bytes);
             let mut ptr: *mut c_void = core::ptr::null_mut();
-            check(unsafe { hip::hipMalloc(&mut ptr, sc) })?;
-            (ptr, sc)
+            check(unsafe { hip::hipMalloc(&mut ptr, alloc_sz) })?;
+            if alloc_sz > rounded {
+                let split_ptr = unsafe { ptr.byte_add(rounded) };
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.release(split_ptr, alloc_sz - rounded);
+                pool.allocated_bytes += rounded;
+            } else {
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.allocated_bytes += alloc_sz;
+            }
+            (ptr, rounded)
         };
-        // SAFETY: zeroing allocated device memory.
         check(unsafe { hip::hipMemset(ptr, 0, alloc_size) })?;
         Ok(Self { ptr, size: size_bytes, alloc_size, pooled: true })
     }
@@ -143,13 +236,26 @@ impl HipBuffer {
         let (ptr, alloc_size) = if let Some((p, sc)) = pool.try_alloc(bytes) {
             (p, sc)
         } else {
+            let rounded = round_size(bytes);
+            let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
+                rounded.max(SMALL_ALLOC_SIZE)
+            } else {
+                rounded.max(LARGE_ALLOC_SIZE)
+            };
             drop(pool);
-            let sc = hip_size_class(bytes);
             let mut ptr: *mut c_void = core::ptr::null_mut();
-            check(unsafe { hip::hipMalloc(&mut ptr, sc) })?;
-            (ptr, sc)
+            check(unsafe { hip::hipMalloc(&mut ptr, alloc_sz) })?;
+            if alloc_sz > rounded {
+                let split_ptr = unsafe { ptr.byte_add(rounded) };
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.release(split_ptr, alloc_sz - rounded);
+                pool.allocated_bytes += rounded;
+            } else {
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.allocated_bytes += alloc_sz;
+            }
+            (ptr, rounded)
         };
-        // SAFETY: T is POD (Scalar: Copy); uploading raw bytes to GPU.
         check(unsafe {
             hip::hipMemcpy(ptr, data.as_ptr().cast(), bytes, hip::hipMemcpyKind::hipMemcpyHostToDevice)
         })?;
@@ -194,12 +300,12 @@ impl Drop for HipBuffer {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             if self.pooled {
-                // Return buffer to pool for reuse instead of freeing.
                 let ctx = get_ctx();
                 let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.allocated_bytes = pool.allocated_bytes.saturating_sub(self.alloc_size);
                 pool.release(self.ptr, self.alloc_size);
+                pool.maybe_gc();
             } else {
-                // SAFETY: freeing device memory not managed by pool.
                 unsafe { let _ = hip::hipFree(self.ptr); }
             }
         }

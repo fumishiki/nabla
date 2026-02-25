@@ -56,58 +56,144 @@ type CudaResult<T> = Result<T, CudaError>;
 
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
-// Round up to next power-of-2 (minimum 256 bytes).
-fn size_class(size: usize) -> usize {
-    let min = 256;
-    if size <= min { return min; }
-    size.next_power_of_two()
+/// Round up to 512-byte alignment (PyTorch-style, much less waste than power-of-2).
+fn round_size(size: usize) -> usize {
+    const ALIGN: usize = 512;
+    if size == 0 { return ALIGN; }
+    (size + ALIGN - 1) & !(ALIGN - 1)
 }
 
-/// Block-based caching memory pool. Eliminates cudaMalloc overhead by
-/// reusing freed GPU buffers keyed by size class (power-of-2).
+/// Boundary between small pool (<1MB) and large pool (≥1MB).
+const SMALL_LARGE_BOUNDARY: usize = 1 << 20; // 1MB
+/// Minimum split remainder for small pool blocks.
+const SMALL_SPLIT_MIN: usize = 512;
+/// Minimum split remainder for large pool blocks.
+const LARGE_SPLIT_MIN: usize = 1 << 20; // 1MB
+/// Over-allocate size for small allocs (batch cudaMalloc calls).
+const SMALL_ALLOC_SIZE: usize = 2 << 20; // 2MB
+/// Over-allocate size for large allocs.
+const LARGE_ALLOC_SIZE: usize = 20 << 20; // 20MB
+/// GC threshold: free cached blocks when usage exceeds this fraction.
+const GC_THRESHOLD: f64 = 0.9;
+
+/// A free block in the pool, tracked for best-fit + coalescing.
+struct FreeBlock {
+    ptr: CUdeviceptr,
+    size: usize,
+}
+
+/// Best-fit caching memory pool with block splitting and coalescing.
+/// Mirrors PyTorch's CUDACachingAllocator design:
+/// - 512B-aligned sizes (not power-of-2)
+/// - Dual pools: small (<1MB) and large (≥1MB)
+/// - Block splitting when remainder ≥ threshold
+/// - Best-fit search (sorted by size)
+/// - GC threshold to avoid OOM
 struct MemoryPool {
-    bins: HashMap<usize, Vec<CUdeviceptr>>,
+    small_free: Vec<FreeBlock>, // sorted by size ascending
+    large_free: Vec<FreeBlock>, // sorted by size ascending
+    allocated_bytes: usize,
     cached_bytes: usize,
 }
 
 impl MemoryPool {
     fn new() -> Self {
-        Self { bins: HashMap::new(), cached_bytes: 0 }
-    }
-
-    /// Try to pop a free block from the pool. Returns None on miss.
-    fn try_alloc(&mut self, size_bytes: usize) -> Option<(CUdeviceptr, usize)> {
-        let sc = size_class(size_bytes);
-        if let Some(bin) = self.bins.get_mut(&sc) {
-            if let Some(ptr) = bin.pop() {
-                self.cached_bytes -= sc;
-                return Some((ptr, sc));
-            }
+        Self {
+            small_free: Vec::new(),
+            large_free: Vec::new(),
+            allocated_bytes: 0,
+            cached_bytes: 0,
         }
-        None
     }
 
-    /// Return a block to the pool for reuse.
-    fn release(&mut self, ptr: CUdeviceptr, allocated_size: usize) {
-        let sc = size_class(allocated_size);
-        self.bins.entry(sc).or_default().push(ptr);
-        self.cached_bytes += sc;
+    /// Best-fit: find smallest block ≥ requested size. Returns index if found.
+    fn best_fit(pool: &[FreeBlock], size: usize) -> Option<usize> {
+        // Binary search for first block with size >= requested
+        let pos = pool.partition_point(|b| b.size < size);
+        if pos < pool.len() { Some(pos) } else { None }
+    }
+
+    fn free_list(&mut self, size: usize) -> &mut Vec<FreeBlock> {
+        if size < SMALL_LARGE_BOUNDARY { &mut self.small_free } else { &mut self.large_free }
+    }
+
+    fn split_min(size: usize) -> usize {
+        if size < SMALL_LARGE_BOUNDARY { SMALL_SPLIT_MIN } else { LARGE_SPLIT_MIN }
+    }
+
+    /// Try to allocate from pool. Splits oversized blocks.
+    /// Returns (ptr, actual_alloc_size) or None.
+    fn try_alloc(&mut self, size: usize) -> Option<(CUdeviceptr, usize)> {
+        let rounded = round_size(size);
+        let pool = if rounded < SMALL_LARGE_BOUNDARY {
+            &mut self.small_free
+        } else {
+            &mut self.large_free
+        };
+        let idx = Self::best_fit(pool, rounded)?;
+        let block = pool.remove(idx);
+        self.cached_bytes -= block.size;
+
+        let remainder = block.size - rounded;
+        let split_threshold = Self::split_min(rounded);
+        if remainder >= split_threshold {
+            // Split: return requested portion, keep remainder in pool
+            let split_block = FreeBlock {
+                ptr: block.ptr + rounded as u64,
+                size: remainder,
+            };
+            let target = if remainder < SMALL_LARGE_BOUNDARY {
+                &mut self.small_free
+            } else {
+                &mut self.large_free
+            };
+            let pos = target.partition_point(|b| b.size < remainder);
+            target.insert(pos, split_block);
+            self.cached_bytes += remainder;
+            Some((block.ptr, rounded))
+        } else {
+            // Use entire block (avoid tiny fragments)
+            Some((block.ptr, block.size))
+        }
+    }
+
+    /// Return a block to the pool, inserting sorted by size.
+    fn release(&mut self, ptr: CUdeviceptr, size: usize) {
+        let pool = if size < SMALL_LARGE_BOUNDARY {
+            &mut self.small_free
+        } else {
+            &mut self.large_free
+        };
+        let pos = pool.partition_point(|b| b.size < size);
+        pool.insert(pos, FreeBlock { ptr, size });
+        self.cached_bytes += size;
+    }
+
+    /// GC: free cached blocks if allocated exceeds threshold.
+    fn maybe_gc(&mut self) {
+        let total = self.allocated_bytes + self.cached_bytes;
+        if total == 0 { return; }
+        let usage_ratio = self.allocated_bytes as f64 / total as f64;
+        if usage_ratio > GC_THRESHOLD && self.cached_bytes > 0 {
+            self.trim(0);
+        }
     }
 
     /// Free cached blocks until pool size ≤ target_bytes. Returns bytes freed.
     fn trim(&mut self, target_bytes: usize) -> usize {
         let mut freed = 0usize;
+        // Free large blocks first (bigger impact)
         while self.cached_bytes > target_bytes {
-            // Find any non-empty bin and free one block
-            let sc = match self.bins.iter().find(|(_, v)| !v.is_empty()) {
-                Some((&sc, _)) => sc,
-                None => break,
-            };
-            if let Some(ptr) = self.bins.get_mut(&sc).and_then(|v| v.pop()) {
-                // SAFETY: freeing GPU memory that was previously allocated.
-                unsafe { let _ = result::free_sync(ptr); }
-                self.cached_bytes -= sc;
-                freed += sc;
+            if let Some(block) = self.large_free.pop() {
+                unsafe { let _ = result::free_sync(block.ptr); }
+                self.cached_bytes -= block.size;
+                freed += block.size;
+            } else if let Some(block) = self.small_free.pop() {
+                unsafe { let _ = result::free_sync(block.ptr); }
+                self.cached_bytes -= block.size;
+                freed += block.size;
+            } else {
+                break;
             }
         }
         freed
@@ -116,10 +202,11 @@ impl MemoryPool {
 
 impl Drop for MemoryPool {
     fn drop(&mut self) {
-        for (_, ptrs) in self.bins.drain() {
-            for ptr in ptrs {
-                unsafe { let _ = result::free_sync(ptr); }
-            }
+        for block in self.small_free.drain(..) {
+            unsafe { let _ = result::free_sync(block.ptr); }
+        }
+        for block in self.large_free.drain(..) {
+            unsafe { let _ = result::free_sync(block.ptr); }
         }
     }
 }
@@ -141,11 +228,25 @@ impl CuBuffer {
         let (dptr, alloc_size) = if let Some((ptr, sc)) = pool.try_alloc(size_bytes) {
             (ptr, sc)
         } else {
+            // Over-allocate to batch cudaMalloc calls (PyTorch strategy)
+            let rounded = round_size(size_bytes);
+            let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
+                rounded.max(SMALL_ALLOC_SIZE)
+            } else {
+                rounded.max(LARGE_ALLOC_SIZE)
+            };
             drop(pool);
-            let sc = size_class(size_bytes);
-            // SAFETY: stream-ordered async allocation for new blocks.
-            let dptr = unsafe { result::malloc_async(stream.cu_stream(), sc)? };
-            (dptr, sc)
+            let dptr = unsafe { result::malloc_async(stream.cu_stream(), alloc_sz)? };
+            // If over-allocated, split remainder back into pool
+            if alloc_sz > rounded {
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.release(dptr + rounded as u64, alloc_sz - rounded);
+                pool.allocated_bytes += rounded;
+            } else {
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.allocated_bytes += alloc_sz;
+            }
+            (dptr, rounded)
         };
         // SAFETY: zeroing allocated device memory.
         unsafe { result::memset_d8_async(dptr, 0, alloc_size, stream.cu_stream())? };
@@ -161,11 +262,23 @@ impl CuBuffer {
         if let Some((ptr, sc)) = pool.try_alloc(size_bytes) {
             return Ok(Self { ptr, size: size_bytes, alloc_size: sc, pooled: true });
         }
+        let rounded = round_size(size_bytes);
+        let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
+            rounded.max(SMALL_ALLOC_SIZE)
+        } else {
+            rounded.max(LARGE_ALLOC_SIZE)
+        };
         drop(pool);
-        let sc = size_class(size_bytes);
-        // SAFETY: stream-ordered async allocation for new blocks.
-        let dptr = unsafe { result::malloc_async(stream.cu_stream(), sc)? };
-        Ok(Self { ptr: dptr, size: size_bytes, alloc_size: sc, pooled: true })
+        let dptr = unsafe { result::malloc_async(stream.cu_stream(), alloc_sz)? };
+        if alloc_sz > rounded {
+            let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            pool.release(dptr + rounded as u64, alloc_sz - rounded);
+            pool.allocated_bytes += rounded;
+        } else {
+            let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            pool.allocated_bytes += alloc_sz;
+        }
+        Ok(Self { ptr: dptr, size: size_bytes, alloc_size: rounded, pooled: true })
     }
 
     fn from_host<T: Scalar>(stream: &Arc<CudaStream>, data: &[T]) -> CudaResult<Self> {
@@ -178,10 +291,23 @@ impl CuBuffer {
         let (dptr, alloc_size) = if let Some((ptr, sc)) = pool.try_alloc(bytes) {
             (ptr, sc)
         } else {
+            let rounded = round_size(bytes);
+            let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
+                rounded.max(SMALL_ALLOC_SIZE)
+            } else {
+                rounded.max(LARGE_ALLOC_SIZE)
+            };
             drop(pool);
-            let sc = size_class(bytes);
-            let dptr = unsafe { result::malloc_async(stream.cu_stream(), sc)? };
-            (dptr, sc)
+            let dptr = unsafe { result::malloc_async(stream.cu_stream(), alloc_sz)? };
+            if alloc_sz > rounded {
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.release(dptr + rounded as u64, alloc_sz - rounded);
+                pool.allocated_bytes += rounded;
+            } else {
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.allocated_bytes += alloc_sz;
+            }
+            (dptr, rounded)
         };
         // SAFETY: T is POD (Scalar: Copy + Send + Sync); uploading raw bytes to GPU.
         unsafe { result::memcpy_htod_async(dptr, data, stream.cu_stream())? };
@@ -218,12 +344,12 @@ impl Drop for CuBuffer {
     fn drop(&mut self) {
         if self.ptr != 0 {
             if self.pooled {
-                // Return buffer to pool for reuse instead of freeing.
                 let ctx = get_ctx();
                 let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.allocated_bytes = pool.allocated_bytes.saturating_sub(self.alloc_size);
                 pool.release(self.ptr, self.alloc_size);
+                pool.maybe_gc();
             } else {
-                // SAFETY: freeing GPU memory not managed by pool.
                 unsafe { let _ = result::free_sync(self.ptr); }
             }
         }
@@ -827,7 +953,7 @@ fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_n
         // Load float4 for each input
         for j in 0..n_inputs {
             src.push_str(&format!(
-                "        float4 v{j} = reinterpret_cast<const float4*>(in{j})[i4];\n"
+                "        float4 v{j} = __ldg(reinterpret_cast<const float4*>(in{j}) + i4);\n"
             ));
         }
         // Apply expression to each component (.x, .y, .z, .w)
@@ -851,14 +977,14 @@ fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_n
         for j in (0..n_inputs).rev() {
             tail_expr = tail_expr.replace(
                 &format!("in{j}[i]"),
-                &format!("in{j}[j]"),
+                &format!("__ldg(&in{j}[j])"),
             );
         }
         src.push_str(&format!("            out[j] = {tail_expr};\n"));
         src.push_str("        }\n");
         src.push_str("    }\n}\n");
     } else {
-        // f64 scalar kernel
+        // f64 scalar kernel with __ldg prefetch
         src.push_str("extern \"C\" __global__ void ");
         src.push_str(kernel_name);
         src.push('(');
@@ -873,8 +999,16 @@ fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_n
         src.push_str("* out, unsigned n) {\n");
         src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
         src.push_str("    if (i < n) {\n");
+        // Replace inN[i] with __ldg(&inN[i]) for read-only cache hint
+        let mut ldg_expr = gpu_expr.to_string();
+        for j in (0..n_inputs).rev() {
+            ldg_expr = ldg_expr.replace(
+                &format!("in{j}[i]"),
+                &format!("__ldg(&in{j}[i])"),
+            );
+        }
         src.push_str("        out[i] = ");
-        src.push_str(gpu_expr);
+        src.push_str(&ldg_expr);
         src.push_str(";\n");
         src.push_str("    }\n}\n");
     }
