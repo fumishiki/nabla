@@ -70,15 +70,20 @@ nabla/                       [workspace root]
 │   │   ├── autograd.rs      Reverse-mode AD: Tape + Variable + backward
 │   │   ├── cas.rs           Symbolic CAS: Expr tree + diff/simplify/eval (E-graph W4-5)
 │   │   └── ode.rs           ODE solvers: euler/rk4/dormand_prince/bdf1/if_euler + parareal (W18)
-│   ├── scripts/             rust-script examples (W16)
-│   │   ├── ode_vanderpol.rs
-│   │   ├── linear_regression.rs
-│   │   ├── sparse_solve.rs
-│   │   └── cas_simplify.rs
+│   ├── examples/            cargo run --example <name>
+│   │   ├── 01_matrix_ops.rs
+│   │   ├── 02_least_squares.rs
+│   │   ├── 03_svd_compress.rs
+│   │   ├── 04_autograd_mlp.rs
+│   │   ├── 05_ode_lorenz.rs
+│   │   ├── 06_sparse_solve.rs
+│   │   ├── 07_einsum_attention.rs
+│   │   ├── 08_cas_symbolic.rs
+│   │   ├── 09_dae_pendulum.rs
+│   │   └── 10_half_precision.rs
 │   └── tests/
-│       ├── boundary.rs      CPU boundary tests (131)
+│       ├── boundary.rs      CPU boundary tests (157)
 │       ├── gpu.rs           GPU backend tests (feature-gated)
-│       ├── new_ops.rs       reshape/flatten/sum_axis/mean_axis/vcat/hcat
 │       └── einsum_errors/   trybuild compile-fail fixtures
 └── docs/
     └── spec.md              this file
@@ -1192,7 +1197,7 @@ All spec items implemented. No remaining items.
 | W13 | `fuse!` L1 element-wise fusion (single `from_fn` pass), Einsum L1 tiled contraction (tile=64) + path annotation |
 | W14 | CUDA backend (cudarc 0.19, 42 kernels f32/f64, NVRTC JIT), HIP backend (hip-runtime-sys 0.1, hiprtc), wgpu multi-versioned kernels (wg 64/128/256, matmul tile 8/16/32) |
 | W15 | WMMA tensor cores (`nvcuda::wmma` Volta+, `rocwmma` CDNA2+) + warp shuffle reductions (`__shfl_down_sync`, 8x shared mem reduction), Recursive GEMM TRSM (`gpu_trsm_lower`, base n≤32 → CPU), `GpuTape<T>` GPU-resident AD (12-op enum, buffer tape, backward via existing kernels) |
-| W16 | `BcsrMatrix<T>` GPU sparse (BCSR format, `from_sparse`, CPU SpMM, `WGSL_BCSR_SPMM` kernel source), `mixed_spmm_f64` mixed-precision refinement, `StaticMatrix::outer`, rust-script examples (ode_vanderpol/linear_regression/sparse_solve/cas_simplify) |
+| W16 | `BcsrMatrix<T>` GPU sparse (BCSR format, `from_sparse`, CPU SpMM, `WGSL_BCSR_SPMM` kernel source), `mixed_spmm_f64` mixed-precision refinement, `StaticMatrix::outer`, Cargo examples (01-10, `cargo run --example`) |
 | W17 | `LinearLayout<N>` F₂ binary matrix swizzle (`identity`/`compose`/`apply`/`swizzle_for_tile`/`to_wgsl_swizzle_fn`, LinearLayout16/32/64), `fuse!` L3 GEMM+activation fusion (`detect_gemm_activation`, `GEMM_ACTIVATIONS`, `Tensor::map`, `Tensor::matmul_fused`) |
 | W18 | `PararealConfig` + `parareal_solve` CPU parallel-in-time (rayon fine propagator), `#[nabla_grad]` source-transform AD (Dual<T> lifting, forward-mode), `Dual` convenience methods (exp/ln/sin/cos/tanh/sqrt/abs/recip + mixed arithmetic), wgpu 2D register-tile software MMA (`gen_matmul_register_tile`, `select_register_tile_params`, `MatmulRegTile` dispatch ≥64³) |
 
