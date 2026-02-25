@@ -2024,3 +2024,461 @@ fn einsum_canon_hadamard_renamed() {
     let expected_h = a.emul(&b);
     assert_approx_grid(&h1, &expected_h, 1e-10);
 }
+
+// ── New operations tests (§14.1 parity) ──────────────────────────
+
+#[test]
+fn silu_known() {
+    let x: Tensor<f64> = mat![[0.0, 1.0, -1.0]];
+    let y = x.silu();
+    assert!((y.get(0, 0) - 0.0).abs() < 1e-10);
+    assert!((y.get(0, 1) - 0.7310585786).abs() < 1e-6);
+    assert!((y.get(0, 2) - (-0.2689414214)).abs() < 1e-6);
+}
+
+#[test]
+fn mish_known() {
+    let x: Tensor<f64> = mat![[0.0, 1.0]];
+    let y = x.mish();
+    assert!((y.get(0, 0) - 0.0).abs() < 1e-10);
+    assert!((y.get(0, 1) - 0.8651).abs() < 1e-3);
+}
+
+#[test]
+fn leaky_relu_known() {
+    let x: Tensor<f64> = mat![[2.0, -3.0, 0.0]];
+    let y = x.leaky_relu(0.01);
+    assert!((y.get(0, 0) - 2.0).abs() < 1e-10);
+    assert!((y.get(0, 1) - (-0.03)).abs() < 1e-10);
+}
+
+#[test]
+fn elu_known() {
+    let x: Tensor<f64> = mat![[1.0, -1.0, 0.0]];
+    let y = x.elu(1.0);
+    assert!((y.get(0, 0) - 1.0).abs() < 1e-6);
+    assert!((y.get(0, 1) - (-0.6321)).abs() < 1e-3);
+}
+
+#[test]
+fn hardswish_known() {
+    let x: Tensor<f64> = mat![[0.0, 3.0, -3.0, 1.0]];
+    let y = x.hardswish();
+    assert!((y.get(0, 0) - 0.0).abs() < 1e-10);
+    assert!((y.get(0, 1) - 3.0).abs() < 1e-10);
+    assert!((y.get(0, 2) - 0.0).abs() < 1e-10);
+    assert!((y.get(0, 3) - 0.6667).abs() < 1e-3);
+}
+
+#[test]
+fn mse_loss_known() {
+    let pred: Tensor<f64> = mat![[1.0, 2.0, 3.0]];
+    let target: Tensor<f64> = mat![[1.5, 2.5, 3.5]];
+    let loss = pred.mse_loss(&target);
+    assert!((loss - 0.25).abs() < 1e-10);
+}
+
+#[test]
+fn l1_loss_known() {
+    let pred: Tensor<f64> = mat![[1.0, 2.0, 3.0]];
+    let target: Tensor<f64> = mat![[1.5, 2.5, 3.5]];
+    assert!((pred.l1_loss(&target) - 0.5).abs() < 1e-10);
+}
+
+#[test]
+fn smooth_l1_loss_known() {
+    let pred: Tensor<f64> = mat![[0.0, 0.0]];
+    let target: Tensor<f64> = mat![[0.5, 2.0]];
+    assert!((pred.smooth_l1_loss(&target, 1.0) - 0.8125).abs() < 1e-6);
+}
+
+#[test]
+fn bce_with_logits_known() {
+    let logits: Tensor<f64> = mat![[0.0]];
+    let target: Tensor<f64> = mat![[1.0]];
+    assert!((logits.bce_with_logits(&target) - 0.6931).abs() < 1e-3);
+}
+
+#[test]
+fn nll_loss_known() {
+    let lp: Tensor<f64> = mat![[-0.5, -1.0, -2.0], [-2.0, -0.3, -1.5], [-1.0, -1.0, -0.2]];
+    let targets: Tensor<f64> = mat![[0.0], [1.0], [2.0]];
+    assert!((lp.nll_loss(&targets) - 0.3333).abs() < 1e-3);
+}
+
+#[test]
+fn kl_div_known() {
+    let log_p: Tensor<f64> = mat![[-1.0, -1.0]];
+    let q: Tensor<f64> = mat![[0.5, 0.5]];
+    assert!((log_p.kl_div(&q) - 0.3069).abs() < 1e-3);
+}
+
+#[test]
+fn prod_all_known() {
+    let x: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    assert!((x.prod_all() - 24.0).abs() < 1e-10);
+}
+
+#[test]
+fn count_nonzero_known() {
+    let x: Tensor<f64> = mat![[1.0, 0.0], [0.0, 3.0]];
+    assert_eq!(x.count_nonzero(), 2);
+}
+
+#[test]
+fn argmax_axis_rows() {
+    let x: Tensor<f64> = mat![[1.0, 3.0, 2.0], [5.0, 4.0, 6.0]];
+    let idx = x.argmax_axis(1);
+    assert_eq!(idx.get(0, 0) as usize, 1);
+    assert_eq!(idx.get(1, 0) as usize, 2);
+}
+
+#[test]
+fn argmin_axis_rows() {
+    let x: Tensor<f64> = mat![[3.0, 1.0, 2.0]];
+    let idx = x.argmin_axis(1);
+    assert_eq!(idx.get(0, 0) as usize, 1);
+}
+
+#[test]
+fn cumprod_axis1() {
+    let x: Tensor<f64> = mat![[1.0, 2.0, 3.0]];
+    let y = x.cumprod(1);
+    assert!((y.get(0, 0) - 1.0).abs() < 1e-10);
+    assert!((y.get(0, 1) - 2.0).abs() < 1e-10);
+    assert!((y.get(0, 2) - 6.0).abs() < 1e-10);
+}
+
+#[test]
+fn norm_axis_l2() {
+    let x: Tensor<f64> = mat![[3.0, 4.0]];
+    let n = x.norm_axis(2.0, 1);
+    assert!((n.get(0, 0) - 5.0).abs() < 1e-10);
+}
+
+#[test]
+fn arange_known() {
+    let x: Tensor<f64> = Tensor::arange(0.0, 1.0, 5);
+    assert_eq!(x.shape(), (1, 5));
+    assert!((x.get(0, 3) - 3.0).abs() < 1e-10);
+}
+
+#[test]
+fn linspace_known() {
+    let x: Tensor<f64> = Tensor::linspace(0.0, 1.0, 5);
+    assert!((x.get(0, 0) - 0.0).abs() < 1e-10);
+    assert!((x.get(0, 4) - 1.0).abs() < 1e-10);
+    assert!((x.get(0, 2) - 0.5).abs() < 1e-10);
+}
+
+#[test]
+fn full_like_known() {
+    let x: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let y = x.full_like(7.0);
+    assert_eq!(y.shape(), (2, 2));
+    assert!((y.get(0, 0) - 7.0).abs() < 1e-10);
+}
+
+#[test]
+fn split_axis0() {
+    let x = linear_f64(4, 2);
+    let parts = x.split(&[1, 3], 0);
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0].shape(), (1, 2));
+    assert_eq!(parts[1].shape(), (3, 2));
+}
+
+#[test]
+fn repeat_known() {
+    let x: Tensor<f64> = mat![[1.0, 2.0]];
+    let y = x.repeat(2, 3);
+    assert_eq!(y.shape(), (2, 6));
+    assert!((y.get(1, 4) - 1.0).abs() < 1e-10);
+}
+
+#[test]
+fn expand_known() {
+    let x: Tensor<f64> = mat![[1.0, 2.0, 3.0]];
+    let y = x.expand(4, 3);
+    assert_eq!(y.shape(), (4, 3));
+    assert!((y.get(3, 1) - 2.0).abs() < 1e-10);
+}
+
+#[test]
+fn pad_known() {
+    let x: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let y = x.pad([1, 1, 1, 1], 0.0);
+    assert_eq!(y.shape(), (4, 4));
+    assert!((y.get(0, 0) - 0.0).abs() < 1e-10);
+    assert!((y.get(1, 1) - 1.0).abs() < 1e-10);
+}
+
+#[test]
+fn gather_axis1() {
+    let x: Tensor<f64> = mat![[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]];
+    let idx: Tensor<f64> = mat![[2.0, 0.0], [1.0, 1.0]];
+    let y = x.gather(1, &idx);
+    assert_eq!(y.shape(), (2, 2));
+    assert!((y.get(0, 0) - 30.0).abs() < 1e-10);
+    assert!((y.get(0, 1) - 10.0).abs() < 1e-10);
+}
+
+#[test]
+fn scatter_axis1() {
+    let x: Tensor<f64> = Tensor::zeros(2, 3);
+    let idx: Tensor<f64> = mat![[0.0], [2.0]];
+    let src: Tensor<f64> = mat![[10.0], [20.0]];
+    let y = x.scatter(1, &idx, &src);
+    assert!((y.get(0, 0) - 10.0).abs() < 1e-10);
+    assert!((y.get(1, 2) - 20.0).abs() < 1e-10);
+}
+
+#[test]
+fn index_select_axis0() {
+    let x: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]];
+    let idx: Tensor<f64> = mat![[2.0], [0.0]];
+    let y = x.index_select(0, &idx);
+    assert_eq!(y.shape(), (2, 2));
+    assert!((y.get(0, 0) - 5.0).abs() < 1e-10);
+    assert!((y.get(1, 1) - 2.0).abs() < 1e-10);
+}
+
+#[test]
+fn masked_fill_known() {
+    let x: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let mask: Tensor<f64> = mat![[1.0, 0.0], [0.0, 1.0]];
+    let y = x.masked_fill(&mask, -999.0);
+    assert!((y.get(0, 0) - (-999.0)).abs() < 1e-10);
+    assert!((y.get(0, 1) - 2.0).abs() < 1e-10);
+}
+
+#[test]
+fn where_cond_known() {
+    let a: Tensor<f64> = mat![[1.0, 2.0]];
+    let b: Tensor<f64> = mat![[10.0, 20.0]];
+    let cond: Tensor<f64> = mat![[1.0, 0.0]];
+    let y = a.where_cond(&cond, &b);
+    assert!((y.get(0, 0) - 1.0).abs() < 1e-10);
+    assert!((y.get(0, 1) - 20.0).abs() < 1e-10);
+}
+
+#[test]
+fn triu_known() {
+    let x: Tensor<f64> = Tensor::fill(3, 3, 1.0);
+    let y = x.triu(0);
+    assert!((y.get(0, 0) - 1.0).abs() < 1e-10);
+    assert!((y.get(1, 0) - 0.0).abs() < 1e-10);
+    assert!((y.get(1, 1) - 1.0).abs() < 1e-10);
+}
+
+#[test]
+fn tril_known() {
+    let x: Tensor<f64> = Tensor::fill(3, 3, 1.0);
+    let y = x.tril(0);
+    assert!((y.get(0, 1) - 0.0).abs() < 1e-10);
+    assert!((y.get(1, 0) - 1.0).abs() < 1e-10);
+}
+
+#[test]
+fn roll_axis1() {
+    let x: Tensor<f64> = mat![[1.0, 2.0, 3.0]];
+    let y = x.roll(1, 1);
+    assert!((y.get(0, 0) - 3.0).abs() < 1e-10);
+    assert!((y.get(0, 1) - 1.0).abs() < 1e-10);
+}
+
+#[test]
+fn flip_axis1() {
+    let x: Tensor<f64> = mat![[1.0, 2.0, 3.0]];
+    let y = x.flip(1);
+    assert!((y.get(0, 0) - 3.0).abs() < 1e-10);
+    assert!((y.get(0, 2) - 1.0).abs() < 1e-10);
+}
+
+#[test]
+fn topk_known() {
+    let x: Tensor<f64> = mat![[1.0, 5.0, 3.0, 2.0, 4.0]];
+    let (vals, _) = x.topk(3, 1);
+    assert_eq!(vals.shape(), (1, 3));
+    assert!((vals.get(0, 0) - 5.0).abs() < 1e-10);
+    assert!((vals.get(0, 1) - 4.0).abs() < 1e-10);
+    assert!((vals.get(0, 2) - 3.0).abs() < 1e-10);
+}
+
+#[test]
+fn sort_ascending() {
+    let x: Tensor<f64> = mat![[3.0, 1.0, 2.0]];
+    let (vals, _) = x.sort(1, false);
+    assert!((vals.get(0, 0) - 1.0).abs() < 1e-10);
+    assert!((vals.get(0, 2) - 3.0).abs() < 1e-10);
+}
+
+#[test]
+fn meshgrid_known() {
+    let x: Tensor<f64> = Tensor::arange(0.0, 1.0, 3);
+    let y: Tensor<f64> = Tensor::arange(0.0, 1.0, 2);
+    let (gx, gy) = Tensor::meshgrid(&x, &y);
+    assert_eq!(gx.shape(), (2, 3));
+    assert!((gx.get(0, 1) - 1.0).abs() < 1e-10);
+    assert!((gy.get(1, 0) - 1.0).abs() < 1e-10);
+}
+
+#[test]
+fn rms_norm_known() {
+    let x: Tensor<f64> = mat![[3.0, 4.0]];
+    let w: Tensor<f64> = mat![[1.0, 1.0]];
+    let y = x.rms_norm(1, &w, 1e-8);
+    let rms = (12.5_f64).sqrt();
+    assert!((y.get(0, 0) - 3.0 / rms).abs() < 1e-4);
+    assert!((y.get(0, 1) - 4.0 / rms).abs() < 1e-4);
+}
+
+#[test]
+fn batch_norm_known() {
+    let x: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let mean: Tensor<f64> = mat![[2.0, 3.0]];
+    let var: Tensor<f64> = mat![[1.0, 1.0]];
+    let weight: Tensor<f64> = mat![[1.0, 1.0]];
+    let bias: Tensor<f64> = mat![[0.0, 0.0]];
+    let y = x.batch_norm(&mean, &var, &weight, &bias, 1e-5);
+    assert!((y.get(0, 0) - (-1.0)).abs() < 1e-4);
+    assert!((y.get(1, 0) - 1.0).abs() < 1e-4);
+}
+
+#[test]
+fn group_norm_known() {
+    let x: Tensor<f64> = mat![[1.0, 2.0, 3.0, 4.0]];
+    let w: Tensor<f64> = mat![[1.0, 1.0, 1.0, 1.0]];
+    let b: Tensor<f64> = mat![[0.0, 0.0, 0.0, 0.0]];
+    let y = x.group_norm(2, &w, &b, 1e-5);
+    assert!((y.get(0, 0) - (-1.0)).abs() < 1e-3);
+    assert!((y.get(0, 1) - 1.0).abs() < 1e-3);
+}
+
+#[test]
+fn bmm_known() {
+    let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]];
+    let b: Tensor<f64> = mat![[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0]];
+    let c = a.bmm(&b, 2, 2, 2, 2);
+    assert_eq!(c.shape(), (4, 2));
+    assert!((c.get(0, 0) - 1.0).abs() < 1e-10);
+    assert!((c.get(2, 0) - 5.0).abs() < 1e-10);
+}
+
+#[test]
+fn addmm_known() {
+    let c: Tensor<f64> = Tensor::fill(2, 2, 1.0);
+    let a: Tensor<f64> = mat![[1.0, 0.0], [0.0, 1.0]];
+    let b: Tensor<f64> = mat![[2.0, 3.0], [4.0, 5.0]];
+    let y = c.addmm(&a, &b, 0.5, 2.0);
+    assert!((y.get(0, 0) - 4.5).abs() < 1e-10);
+    assert!((y.get(0, 1) - 6.5).abs() < 1e-10);
+}
+
+#[test]
+fn conv1d_known() {
+    let x: Tensor<f64> = mat![[1.0, 2.0, 3.0, 4.0, 5.0]];
+    let w: Tensor<f64> = mat![[1.0, 1.0, 1.0]];
+    let y = x.conv1d(&w, None, 1, 1, 5, 1, 3, 1, 0, 1, 1);
+    assert_eq!(y.shape(), (1, 3));
+    assert!((y.get(0, 0) - 6.0).abs() < 1e-10);
+    assert!((y.get(0, 1) - 9.0).abs() < 1e-10);
+    assert!((y.get(0, 2) - 12.0).abs() < 1e-10);
+}
+
+#[test]
+fn conv2d_simple() {
+    let x: Tensor<f64> = Tensor::from_fn(1, 9, |_, c| (c + 1) as f64); // 3x3
+    let w: Tensor<f64> = mat![[1.0, 1.0, 1.0, 1.0]]; // 2x2 kernel
+    let y = x.conv2d(&w, None, 1, 1, 3, 3, 1, 2, 2, (1,1), (0,0), (1,1), 1);
+    assert_eq!(y.shape(), (1, 4));
+    assert!((y.get(0, 0) - 12.0).abs() < 1e-10);
+    assert!((y.get(0, 3) - 28.0).abs() < 1e-10);
+}
+
+#[test]
+fn max_pool2d_known() {
+    let x: Tensor<f64> = Tensor::from_fn(1, 16, |_, c| (c + 1) as f64);
+    let y = x.max_pool2d(4, 4, 2, 2, (2, 2), (0, 0));
+    assert_eq!(y.shape(), (1, 4));
+    assert!((y.get(0, 0) - 6.0).abs() < 1e-10);
+}
+
+#[test]
+fn avg_pool2d_known() {
+    let x: Tensor<f64> = Tensor::from_fn(1, 4, |_, c| (c + 1) as f64);
+    let y = x.avg_pool2d(2, 2, 2, 2, (2, 2), (0, 0));
+    assert_eq!(y.shape(), (1, 1));
+    assert!((y.get(0, 0) - 2.5).abs() < 1e-10);
+}
+
+#[test]
+fn adaptive_avg_pool2d_known() {
+    let x: Tensor<f64> = Tensor::from_fn(1, 16, |_, c| (c + 1) as f64);
+    let y = x.adaptive_avg_pool2d(4, 4, 2, 2);
+    assert_eq!(y.shape(), (1, 4));
+    assert!((y.get(0, 0) - 3.5).abs() < 1e-10);
+}
+
+#[test]
+fn max_pool1d_known() {
+    let x: Tensor<f64> = mat![[1.0, 3.0, 2.0, 5.0, 4.0]];
+    let y = x.max_pool1d(5, 2, 1, 0);
+    assert_eq!(y.shape(), (1, 4));
+    assert!((y.get(0, 0) - 3.0).abs() < 1e-10);
+    assert!((y.get(0, 3) - 5.0).abs() < 1e-10);
+}
+
+#[test]
+fn embedding_known() {
+    let weight: Tensor<f64> = mat![[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]];
+    let indices: Tensor<f64> = mat![[2.0, 0.0, 1.0]];
+    let y = Tensor::embedding(&indices, &weight);
+    assert_eq!(y.shape(), (3, 2));
+    assert!((y.get(0, 0) - 0.5).abs() < 1e-10);
+    assert!((y.get(1, 0) - 0.1).abs() < 1e-10);
+    assert!((y.get(2, 1) - 0.4).abs() < 1e-10);
+}
+
+#[test]
+fn sdpa_basic() {
+    let q: Tensor<f64> = mat![[1.0, 0.0], [0.0, 1.0]];
+    let k: Tensor<f64> = mat![[1.0, 0.0], [0.0, 1.0]];
+    let v: Tensor<f64> = mat![[10.0, 20.0], [30.0, 40.0]];
+    let out = Tensor::scaled_dot_product_attention(&q, &k, &v, None);
+    assert_eq!(out.shape(), (2, 2));
+    // First query [1,0] attends more to first key → output[0,0] closer to 10
+    assert!(out.get(0, 0) < 20.0);
+}
+
+#[test]
+fn multi_head_attention_basic() {
+    let q: Tensor<f64> = Tensor::fill(4, 8, 1.0);
+    let k: Tensor<f64> = Tensor::fill(4, 8, 1.0);
+    let v: Tensor<f64> = Tensor::fill(4, 8, 1.0);
+    let out = Tensor::multi_head_attention(&q, &k, &v, 2, None);
+    assert_eq!(out.shape(), (4, 8));
+}
+
+#[test]
+fn conv_transpose2d_basic() {
+    let x: Tensor<f64> = mat![[1.0, 2.0, 3.0, 4.0]]; // 2x2
+    let w: Tensor<f64> = mat![[1.0, 0.0, 0.0, 1.0]]; // identity-like 2x2 kernel
+    let y = x.conv_transpose2d(&w, None, 1, 1, 2, 2, 1, 2, 2, (1,1), (0,0), (0,0));
+    assert_eq!(y.shape(), (1, 9)); // 3x3 output
+}
+
+#[test]
+fn empty_same_as_zeros() {
+    let x: Tensor<f64> = Tensor::empty(3, 4);
+    assert_eq!(x.shape(), (3, 4));
+    assert!((x.get(0, 0) - 0.0).abs() < 1e-10);
+}
+
+#[test]
+fn cosine_embedding_loss_same() {
+    let x: Tensor<f64> = mat![[1.0, 0.0]];
+    let y: Tensor<f64> = mat![[1.0, 0.0]];
+    let loss = Tensor::cosine_embedding_loss(&x, &y, 1.0, 0.0);
+    assert!((loss - 0.0).abs() < 1e-6);
+}

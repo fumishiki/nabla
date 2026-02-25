@@ -705,6 +705,76 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         })
     }
 
+    /// Element-wise SiLU (Swish): `x * sigmoid(x)`.
+    #[must_use]
+    pub fn silu(&self) -> Self {
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            let x = self.get(r, c);
+            x * (T::one() / (T::one() + (T::zero() - x).math_exp()))
+        })
+    }
+
+    /// Element-wise Mish: `x * tanh(softplus(x))` where softplus(x) = ln(1 + exp(x)).
+    #[must_use]
+    pub fn mish(&self) -> Self {
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            let x = self.get(r, c);
+            x * (T::one() + x.math_exp()).math_ln().math_tanh()
+        })
+    }
+
+    /// Element-wise Leaky ReLU: `max(alpha * x, x)`.
+    #[must_use]
+    pub fn leaky_relu(&self, alpha: T) -> Self {
+        let two = two::<T>();
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            let x = self.get(r, c);
+            let ax = alpha * x;
+            // max(ax, x) = (ax + x + |ax - x|) / 2
+            (ax + x + (ax - x).math_abs()) / two
+        })
+    }
+
+    /// Element-wise ELU: `x if x > 0, alpha * (exp(x) - 1) otherwise`.
+    #[must_use]
+    pub fn elu(&self, alpha: T) -> Self {
+        let two = two::<T>();
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            let x = self.get(r, c);
+            let neg_part = alpha * (x.math_exp() - T::one());
+            // Blend using sign: sign_pos ∈ {0, 1}
+            let abs_x = x.math_abs();
+            let eps = T::from_f64(1e-30);
+            let abs_safe = (abs_x + eps + (abs_x - eps).math_abs()) / two;
+            let sign_pos = (x + abs_x) / (two * abs_safe);
+            let one = T::one();
+            let sp = (sign_pos + one - (sign_pos - one).math_abs()) / two;
+            let sp = (sp + sp.math_abs()) / two;
+            sp * x + (one - sp) * neg_part
+        })
+    }
+
+    /// Element-wise HardSwish: `x * relu6(x + 3) / 6`.
+    #[must_use]
+    pub fn hardswish(&self) -> Self {
+        let two = two::<T>();
+        let three = T::from_f64(3.0);
+        let six = T::from_f64(6.0);
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            let x = self.get(r, c);
+            let xp3 = x + three;
+            // relu6(xp3) = min(max(xp3, 0), 6)
+            let clamped_lo = (xp3 + xp3.math_abs()) / two; // max(xp3, 0)
+            let clamped = (clamped_lo + six - (clamped_lo - six).math_abs()) / two; // min(_, 6)
+            x * clamped / six
+        })
+    }
+
     /// Softmax along given axis (0=columns, 1=rows).
     ///
     /// Uses the log-sum-exp trick for numerical stability: subtract max before exp.
@@ -1188,17 +1258,1081 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let neg_mean = -&mean;
         match axis {
             1 => {
-                // mean/std shape: (m, 1) — broadcast as column vectors
                 let centered = self.broadcast_add_cols(&neg_mean);
                 centered.broadcast_mul_cols(&inv_std)
             }
             0 => {
-                // mean/std shape: (1, n) — broadcast as row vectors
                 let centered = self.broadcast_add_rows(&neg_mean);
                 centered.broadcast_mul_rows(&inv_std)
             }
             _ => panic!("nabla: layer_norm axis must be 0 or 1, got {axis}"),
         }
+    }
+
+    // ── RMS normalization ───────────────────────────────────────────
+
+    /// RMS normalization along `axis`: `x / rms(x) * weight`.
+    ///
+    /// `weight` shape must match the normalized dimension (broadcast).
+    #[must_use]
+    pub fn rms_norm(&self, axis: usize, weight: &Self, eps: T) -> Self {
+        let (m, n) = self.shape();
+        match axis {
+            1 => {
+                let rms = Self::from_fn(m, 1, |r, _| {
+                    let sq_sum = (0..n).fold(T::zero(), |acc, c| {
+                        let v = self.get(r, c);
+                        acc + v * v
+                    });
+                    (sq_sum / T::from_f64(n as f64) + eps).math_sqrt()
+                });
+                let normed = self.broadcast_mul_cols(&Self::from_fn(m, 1, |r, c| {
+                    T::one() / rms.get(r, c)
+                }));
+                normed.broadcast_mul_rows(weight)
+            }
+            0 => {
+                let rms = Self::from_fn(1, n, |_, c| {
+                    let sq_sum = (0..m).fold(T::zero(), |acc, r| {
+                        let v = self.get(r, c);
+                        acc + v * v
+                    });
+                    (sq_sum / T::from_f64(m as f64) + eps).math_sqrt()
+                });
+                let normed = self.broadcast_mul_rows(&Self::from_fn(1, n, |r, c| {
+                    T::one() / rms.get(r, c)
+                }));
+                normed.broadcast_mul_cols(weight)
+            }
+            _ => panic!("nabla: rms_norm axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    /// Batch normalization: `(x - mean) / sqrt(var + eps) * weight + bias`.
+    ///
+    /// `x` is (N, C). `weight` and `bias` are (1, C). In eval mode, `running_mean`
+    /// and `running_var` are (1, C).
+    #[must_use]
+    pub fn batch_norm(
+        &self,
+        running_mean: &Self,
+        running_var: &Self,
+        weight: &Self,
+        bias: &Self,
+        eps: T,
+    ) -> Self {
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            let x = self.get(r, c);
+            let mu = running_mean.get(0, c);
+            let var = running_var.get(0, c);
+            let w = weight.get(0, c);
+            let b = bias.get(0, c);
+            (x - mu) / (var + eps).math_sqrt() * w + b
+        })
+    }
+
+    /// Group normalization: divide channels into groups, normalize each group.
+    ///
+    /// `x` is (N, C). `num_groups` divides C. `weight` and `bias` are (1, C).
+    #[must_use]
+    pub fn group_norm(
+        &self,
+        num_groups: usize,
+        weight: &Self,
+        bias: &Self,
+        eps: T,
+    ) -> Self {
+        let (m, n) = self.shape();
+        assert!(n % num_groups == 0, "nabla: group_norm C={n} not divisible by groups={num_groups}");
+        let g_size = n / num_groups;
+        Self::from_fn(m, n, |r, c| {
+            let g = c / g_size;
+            let g_start = g * g_size;
+            let mean = (0..g_size).fold(T::zero(), |acc, j| acc + self.get(r, g_start + j))
+                / T::from_f64(g_size as f64);
+            let var = (0..g_size).fold(T::zero(), |acc, j| {
+                let d = self.get(r, g_start + j) - mean;
+                acc + d * d
+            }) / T::from_f64(g_size as f64);
+            let x = self.get(r, c);
+            (x - mean) / (var + eps).math_sqrt() * weight.get(0, c) + bias.get(0, c)
+        })
+    }
+
+    // ── Loss functions ──────────────────────────────────────────────
+
+    /// MSE loss: `mean((pred - target)^2)`.
+    #[must_use]
+    pub fn mse_loss(&self, target: &Self) -> T {
+        let (m, n) = self.shape();
+        let total = T::from_f64((m * n) as f64);
+        let sum = (0..m).fold(T::zero(), |acc, r| {
+            (0..n).fold(acc, |acc2, c| {
+                let d = self.get(r, c) - target.get(r, c);
+                acc2 + d * d
+            })
+        });
+        sum / total
+    }
+
+    /// L1 loss: `mean(|pred - target|)`.
+    #[must_use]
+    pub fn l1_loss(&self, target: &Self) -> T {
+        let (m, n) = self.shape();
+        let total = T::from_f64((m * n) as f64);
+        let sum = (0..m).fold(T::zero(), |acc, r| {
+            (0..n).fold(acc, |acc2, c| {
+                acc2 + (self.get(r, c) - target.get(r, c)).math_abs()
+            })
+        });
+        sum / total
+    }
+
+    /// Smooth L1 (Huber) loss with transition point `beta`.
+    #[must_use]
+    pub fn smooth_l1_loss(&self, target: &Self, beta: T) -> T {
+        let (m, n) = self.shape();
+        let total = T::from_f64((m * n) as f64);
+        let half = T::from_f64(0.5);
+        let two = two::<T>();
+        let sum = (0..m).fold(T::zero(), |acc, r| {
+            (0..n).fold(acc, |acc2, c| {
+                let d = (self.get(r, c) - target.get(r, c)).math_abs();
+                // if d < beta: 0.5 * d^2 / beta, else: d - 0.5 * beta
+                // Use branchless: pick = min(d, beta)
+                let pick = (d + beta - (d - beta).math_abs()) / two; // min(d, beta)
+                // When d < beta: pick = d, cost = 0.5 * d * d / beta
+                // When d >= beta: pick = beta, cost = d - 0.5 * beta
+                // Blend: 0.5 * pick * pick / beta + (d - pick) (which is 0 when d<beta)
+                acc2 + half * pick * pick / beta + (d - pick)
+            })
+        });
+        sum / total
+    }
+
+    /// Binary cross-entropy with logits: `-[y * log(σ(x)) + (1-y) * log(1-σ(x))]`.
+    #[must_use]
+    pub fn bce_with_logits(&self, target: &Self) -> T {
+        let (m, n) = self.shape();
+        let total = T::from_f64((m * n) as f64);
+        let sum = (0..m).fold(T::zero(), |acc, r| {
+            (0..n).fold(acc, |acc2, c| {
+                let x = self.get(r, c);
+                let y = target.get(r, c);
+                // Numerically stable: max(x, 0) - x*y + log(1 + exp(-|x|))
+                let abs_x = x.math_abs();
+                let relu_x = (x + abs_x) / two::<T>();
+                acc2 + relu_x - x * y + (T::one() + (T::zero() - abs_x).math_exp()).math_ln()
+            })
+        });
+        sum / total
+    }
+
+    /// Negative log-likelihood loss. `self` is log-probabilities (N, C), `targets` is class indices as (N, 1).
+    #[must_use]
+    pub fn nll_loss(&self, targets: &Self) -> T {
+        let m = self.nrows();
+        let sum = (0..m).fold(T::zero(), |acc, r| {
+            let cls = targets.get(r, 0).to_f64() as usize;
+            acc - self.get(r, cls)
+        });
+        sum / T::from_f64(m as f64)
+    }
+
+    /// KL divergence: `sum(q * (log(q) - log_p))` (batchmean reduction).
+    ///
+    /// `self` is log_p (log-probabilities), `q` is target distribution.
+    #[must_use]
+    pub fn kl_div(&self, q: &Self) -> T {
+        let (m, n) = self.shape();
+        let total = T::from_f64(m as f64);
+        let sum = (0..m).fold(T::zero(), |acc, r| {
+            (0..n).fold(acc, |acc2, c| {
+                let qv = q.get(r, c);
+                let log_p = self.get(r, c);
+                acc2 + qv * (qv.math_ln() - log_p)
+            })
+        });
+        sum / total
+    }
+
+    /// Cosine embedding loss for pairs `(x1, x2)` with label `y` ∈ {1, -1}.
+    ///
+    /// When y=1: `1 - cos(x1, x2)`. When y=-1: `max(0, cos(x1, x2) - margin)`.
+    #[must_use]
+    pub fn cosine_embedding_loss(x1: &Self, x2: &Self, y: T, margin: T) -> T {
+        let (m, n) = x1.shape();
+        let dot = (0..m).fold(T::zero(), |acc, r| {
+            (0..n).fold(acc, |a, c| a + x1.get(r, c) * x2.get(r, c))
+        });
+        let n1 = x1.norm();
+        let n2 = x2.norm();
+        let eps = T::from_f64(1e-8);
+        let cos_sim = dot / (n1 * n2 + eps);
+        let two = two::<T>();
+        if y.to_f64() > 0.0 {
+            T::one() - cos_sim
+        } else {
+            let v = cos_sim - margin;
+            (v + v.math_abs()) / two // max(0, v)
+        }
+    }
+
+    // ── Reduction extensions ────────────────────────────────────────
+
+    /// Product of all elements.
+    #[must_use]
+    pub fn prod_all(&self) -> T {
+        let (m, n) = self.shape();
+        (0..m).fold(T::one(), |acc, r| {
+            (0..n).fold(acc, |a, c| a * self.get(r, c))
+        })
+    }
+
+    /// Count of non-zero elements.
+    #[must_use]
+    pub fn count_nonzero(&self) -> usize {
+        let (m, n) = self.shape();
+        (0..m).fold(0usize, |acc, r| {
+            (0..n).fold(acc, |a, c| {
+                if self.get(r, c).to_f64() != 0.0 { a + 1 } else { a }
+            })
+        })
+    }
+
+    /// Argmax along axis. Returns indices tensor.
+    #[must_use]
+    pub fn argmax_axis(&self, axis: usize) -> Self {
+        let two = two::<T>();
+        match axis {
+            0 => Self::from_fn(1, self.ncols(), |_, c| {
+                let mut best_idx = 0usize;
+                let mut best_val = self.get(0, c);
+                for r in 1..self.nrows() {
+                    let v = self.get(r, c);
+                    let diff = v - best_val;
+                    let is_gt = (diff + diff.math_abs()) / two; // > 0 when v > best
+                    if is_gt.to_f64() > 0.0 {
+                        best_val = v;
+                        best_idx = r;
+                    }
+                }
+                T::from_f64(best_idx as f64)
+            }),
+            1 => Self::from_fn(self.nrows(), 1, |r, _| {
+                let mut best_idx = 0usize;
+                let mut best_val = self.get(r, 0);
+                for c in 1..self.ncols() {
+                    let v = self.get(r, c);
+                    let diff = v - best_val;
+                    let is_gt = (diff + diff.math_abs()) / two;
+                    if is_gt.to_f64() > 0.0 {
+                        best_val = v;
+                        best_idx = c;
+                    }
+                }
+                T::from_f64(best_idx as f64)
+            }),
+            _ => panic!("nabla: argmax_axis axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    /// Argmin along axis. Returns indices tensor.
+    #[must_use]
+    pub fn argmin_axis(&self, axis: usize) -> Self {
+        let neg = -self;
+        neg.argmax_axis(axis)
+    }
+
+    /// Cumulative product along axis.
+    #[must_use]
+    pub fn cumprod(&self, axis: usize) -> Self {
+        match axis {
+            1 => Self::from_fn(self.nrows(), self.ncols(), |r, c| {
+                (0..=c).map(|j| self.get(r, j)).fold(T::one(), |a, b| a * b)
+            }),
+            0 => Self::from_fn(self.nrows(), self.ncols(), |r, c| {
+                (0..=r).map(|i| self.get(i, c)).fold(T::one(), |a, b| a * b)
+            }),
+            _ => panic!("nabla: cumprod axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    /// Lp-norm along axis.
+    #[must_use]
+    pub fn norm_axis(&self, p: T, axis: usize) -> Self {
+        let pf = p.to_f64();
+        let inv_p = T::from_f64(1.0 / pf);
+        match axis {
+            0 => Self::from_fn(1, self.ncols(), |_, c| {
+                let sum = (0..self.nrows()).fold(T::zero(), |acc, r| {
+                    acc + self.get(r, c).math_abs().math_powf(p)
+                });
+                sum.math_powf(inv_p)
+            }),
+            1 => Self::from_fn(self.nrows(), 1, |r, _| {
+                let sum = (0..self.ncols()).fold(T::zero(), |acc, c| {
+                    acc + self.get(r, c).math_abs().math_powf(p)
+                });
+                sum.math_powf(inv_p)
+            }),
+            _ => panic!("nabla: norm_axis axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    // ── Construction / utility ──────────────────────────────────────
+
+    /// Uninitialized tensor (actually zeroed — Rust safety).
+    #[must_use]
+    pub fn empty(nrows: usize, ncols: usize) -> Self {
+        Self::zeros(nrows, ncols)
+    }
+
+    /// Generate a 1-D tensor: `[start, start+step, start+2*step, ...]` with length `n`.
+    #[must_use]
+    pub fn arange(start: T, step: T, n: usize) -> Self {
+        Self::from_fn(1, n, |_, c| start + step * T::from_f64(c as f64))
+    }
+
+    /// Generate a 1-D tensor of `n` evenly spaced values from `start` to `end` (inclusive).
+    #[must_use]
+    pub fn linspace(start: T, end: T, n: usize) -> Self {
+        assert!(n >= 2, "nabla: linspace needs n >= 2");
+        let denom = T::from_f64((n - 1) as f64);
+        Self::from_fn(1, n, |_, c| {
+            let t = T::from_f64(c as f64) / denom;
+            start + (end - start) * t
+        })
+    }
+
+    /// Same-shape tensor filled with `val`.
+    #[must_use]
+    pub fn full_like(&self, val: T) -> Self {
+        Self::fill(self.nrows(), self.ncols(), val)
+    }
+
+    // ── Tensor manipulation ─────────────────────────────────────────
+
+    /// Split into chunks of given sizes along axis.
+    #[must_use]
+    pub fn split(&self, sizes: &[usize], axis: usize) -> Vec<Self> {
+        match axis {
+            0 => {
+                let mut offset = 0;
+                sizes.iter().map(|&s| {
+                    let part = self.submatrix(offset, offset + s, 0, self.ncols());
+                    offset += s;
+                    part
+                }).collect()
+            }
+            1 => {
+                let mut offset = 0;
+                sizes.iter().map(|&s| {
+                    let part = self.submatrix(0, self.nrows(), offset, offset + s);
+                    offset += s;
+                    part
+                }).collect()
+            }
+            _ => panic!("nabla: split axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    /// Repeat tensor along each axis. `reps = (row_repeats, col_repeats)`.
+    #[must_use]
+    pub fn repeat(&self, row_reps: usize, col_reps: usize) -> Self {
+        let (m, n) = self.shape();
+        Self::from_fn(m * row_reps, n * col_reps, |r, c| {
+            self.get(r % m, c % n)
+        })
+    }
+
+    /// Expand (broadcast view) — repeats without copying for broadcast dimensions.
+    /// For a 2-D tensor, if a dimension is 1 it can be expanded to `target_dim`.
+    #[must_use]
+    pub fn expand(&self, target_rows: usize, target_cols: usize) -> Self {
+        let (m, n) = self.shape();
+        assert!(
+            (m == 1 || m == target_rows) && (n == 1 || n == target_cols),
+            "nabla: expand ({m},{n}) → ({target_rows},{target_cols}) invalid"
+        );
+        Self::from_fn(target_rows, target_cols, |r, c| {
+            self.get(if m == 1 { 0 } else { r }, if n == 1 { 0 } else { c })
+        })
+    }
+
+    /// Pad tensor. `padding = [left, right, top, bottom]`. Fill with `value`.
+    #[must_use]
+    pub fn pad(&self, padding: [usize; 4], value: T) -> Self {
+        let [left, right, top, bottom] = padding;
+        let (m, n) = self.shape();
+        Self::from_fn(m + top + bottom, n + left + right, |r, c| {
+            if r >= top && r < m + top && c >= left && c < n + left {
+                self.get(r - top, c - left)
+            } else {
+                value
+            }
+        })
+    }
+
+    /// General gather along dimension.
+    ///
+    /// `index` shape determines output shape. For axis=1:
+    /// `out[i][j] = self[i][index[i][j]]`
+    #[must_use]
+    pub fn gather(&self, axis: usize, index: &Self) -> Self {
+        let (m, n) = index.shape();
+        match axis {
+            0 => Self::from_fn(m, n, |r, c| {
+                self.get(index.get(r, c).to_f64() as usize, c)
+            }),
+            1 => Self::from_fn(m, n, |r, c| {
+                self.get(r, index.get(r, c).to_f64() as usize)
+            }),
+            _ => panic!("nabla: gather axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    /// Scatter: write `src` values into self at positions given by `index` along `axis`.
+    ///
+    /// Returns a new tensor. For axis=1: `out[i][index[i][j]] = src[i][j]`.
+    #[must_use]
+    pub fn scatter(&self, axis: usize, index: &Self, src: &Self) -> Self {
+        let mut out = self.clone();
+        let (si, sj) = index.shape();
+        for r in 0..si {
+            for c in 0..sj {
+                let idx = index.get(r, c).to_f64() as usize;
+                let val = src.get(r, c);
+                match axis {
+                    0 => out.set(idx, c, val),
+                    1 => out.set(r, idx, val),
+                    _ => panic!("nabla: scatter axis must be 0 or 1"),
+                }
+            }
+        }
+        out
+    }
+
+    /// Select elements along axis by index vector. `index` is 1-D (1×K or K×1).
+    #[must_use]
+    pub fn index_select(&self, axis: usize, index: &Self) -> Self {
+        let k = index.nrows() * index.ncols();
+        let get_idx = |i: usize| -> usize {
+            if index.nrows() == 1 { index.get(0, i).to_f64() as usize }
+            else { index.get(i, 0).to_f64() as usize }
+        };
+        match axis {
+            0 => Self::from_fn(k, self.ncols(), |r, c| self.get(get_idx(r), c)),
+            1 => Self::from_fn(self.nrows(), k, |r, c| self.get(r, get_idx(c))),
+            _ => panic!("nabla: index_select axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    /// Replace elements where `mask` is non-zero with `value`.
+    #[must_use]
+    pub fn masked_fill(&self, mask: &Self, value: T) -> Self {
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            if mask.get(r, c).to_f64() != 0.0 { value } else { self.get(r, c) }
+        })
+    }
+
+    /// Element-wise conditional: `where cond != 0, pick self, else pick other`.
+    #[must_use]
+    pub fn where_cond(&self, cond: &Self, other: &Self) -> Self {
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            if cond.get(r, c).to_f64() != 0.0 { self.get(r, c) } else { other.get(r, c) }
+        })
+    }
+
+    /// Upper triangular matrix (zero below diagonal + offset).
+    #[must_use]
+    pub fn triu(&self, diagonal: isize) -> Self {
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            if (c as isize) >= (r as isize) + diagonal { self.get(r, c) } else { T::zero() }
+        })
+    }
+
+    /// Lower triangular matrix (zero above diagonal + offset).
+    #[must_use]
+    pub fn tril(&self, diagonal: isize) -> Self {
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            if (c as isize) <= (r as isize) + diagonal { self.get(r, c) } else { T::zero() }
+        })
+    }
+
+    /// Roll elements along axis by `shift` positions (circular shift).
+    #[must_use]
+    pub fn roll(&self, shift: isize, axis: usize) -> Self {
+        let (m, n) = self.shape();
+        match axis {
+            0 => Self::from_fn(m, n, |r, c| {
+                self.get(((r as isize - shift).rem_euclid(m as isize)) as usize, c)
+            }),
+            1 => Self::from_fn(m, n, |r, c| {
+                self.get(r, ((c as isize - shift).rem_euclid(n as isize)) as usize)
+            }),
+            _ => panic!("nabla: roll axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    /// Flip (reverse) along axis.
+    #[must_use]
+    pub fn flip(&self, axis: usize) -> Self {
+        let (m, n) = self.shape();
+        match axis {
+            0 => Self::from_fn(m, n, |r, c| self.get(m - 1 - r, c)),
+            1 => Self::from_fn(m, n, |r, c| self.get(r, n - 1 - c)),
+            _ => panic!("nabla: flip axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    /// Top-k values and indices along axis=1 (rows). Returns `(values, indices)`.
+    #[must_use]
+    pub fn topk(&self, k: usize, axis: usize) -> (Self, Self) {
+        assert!(axis == 1, "nabla: topk currently supports axis=1 only");
+        let (m, n) = self.shape();
+        assert!(k <= n, "nabla: topk k={k} > ncols={n}");
+        // For each row, find top-k by partial sort
+        let mut all_vals = vec![T::zero(); m * k];
+        let mut all_idxs = vec![T::zero(); m * k];
+        for r in 0..m {
+            let mut pairs: Vec<(T, usize)> = (0..n).map(|c| (self.get(r, c), c)).collect();
+            // Sort descending by value
+            pairs.sort_by(|a, b| b.0.to_f64().partial_cmp(&a.0.to_f64()).unwrap());
+            for j in 0..k {
+                all_vals[r * k + j] = pairs[j].0;
+                all_idxs[r * k + j] = T::from_f64(pairs[j].1 as f64);
+            }
+        }
+        let vals = Self::from_fn(m, k, |r, c| all_vals[r * k + c]);
+        let idxs = Self::from_fn(m, k, |r, c| all_idxs[r * k + c]);
+        (vals, idxs)
+    }
+
+    /// Sort along axis=1 (rows). Returns `(sorted_values, indices)`.
+    #[must_use]
+    pub fn sort(&self, axis: usize, descending: bool) -> (Self, Self) {
+        assert!(axis == 1, "nabla: sort currently supports axis=1 only");
+        let (m, n) = self.shape();
+        let mut all_vals = vec![T::zero(); m * n];
+        let mut all_idxs = vec![T::zero(); m * n];
+        for r in 0..m {
+            let mut pairs: Vec<(T, usize)> = (0..n).map(|c| (self.get(r, c), c)).collect();
+            if descending {
+                pairs.sort_by(|a, b| b.0.to_f64().partial_cmp(&a.0.to_f64()).unwrap());
+            } else {
+                pairs.sort_by(|a, b| a.0.to_f64().partial_cmp(&b.0.to_f64()).unwrap());
+            }
+            for c in 0..n {
+                all_vals[r * n + c] = pairs[c].0;
+                all_idxs[r * n + c] = T::from_f64(pairs[c].1 as f64);
+            }
+        }
+        let vals = Self::from_fn(m, n, |r, c| all_vals[r * n + c]);
+        let idxs = Self::from_fn(m, n, |r, c| all_idxs[r * n + c]);
+        (vals, idxs)
+    }
+
+    /// Create 2-D meshgrid from two 1-D tensors. Returns `(grid_x, grid_y)`.
+    #[must_use]
+    pub fn meshgrid(x: &Self, y: &Self) -> (Self, Self) {
+        let nx = x.nrows() * x.ncols();
+        let ny = y.nrows() * y.ncols();
+        let get_x = |i: usize| if x.nrows() == 1 { x.get(0, i) } else { x.get(i, 0) };
+        let get_y = |i: usize| if y.nrows() == 1 { y.get(0, i) } else { y.get(i, 0) };
+        let gx = Self::from_fn(ny, nx, |_, c| get_x(c));
+        let gy = Self::from_fn(ny, nx, |r, _| get_y(r));
+        (gx, gy)
+    }
+
+    // ── Batched operations ──────────────────────────────────────────
+    // 2-D Tensor treated as batch of row-vectors or reshaped to batch of matrices.
+
+    /// Batched matrix multiply: treat self as (B, M, K) and other as (B, K, N) packed row-major.
+    ///
+    /// Self is (B*M, K), other is (B*K, N). Output is (B*M, N).
+    #[must_use]
+    pub fn bmm(&self, other: &Self, batch: usize, m: usize, k: usize, n: usize) -> Self {
+        assert_eq!(self.nrows(), batch * m);
+        assert_eq!(self.ncols(), k);
+        assert_eq!(other.nrows(), batch * k);
+        assert_eq!(other.ncols(), n);
+        Self::from_fn(batch * m, n, |r, c| {
+            let b = r / m;
+            let i = r % m;
+            (0..k).fold(T::zero(), |acc, j| {
+                acc + self.get(b * m + i, j) * other.get(b * k + j, c)
+            })
+        })
+    }
+
+    /// `C = alpha * A @ B + beta * C` (addmm). Self is C, returns new tensor.
+    #[must_use]
+    pub fn addmm(&self, a: &Self, b: &Self, beta: T, alpha: T) -> Self {
+        let (m, n) = self.shape();
+        let k = a.ncols();
+        assert_eq!(a.nrows(), m);
+        assert_eq!(b.shape(), (k, n));
+        Self::from_fn(m, n, |r, c| {
+            let ab = (0..k).fold(T::zero(), |acc, j| acc + a.get(r, j) * b.get(j, c));
+            beta * self.get(r, c) + alpha * ab
+        })
+    }
+
+    /// Batched addmm: `C = beta * C + alpha * A @ B` for each batch.
+    #[must_use]
+    pub fn baddbmm(
+        &self,
+        a: &Self,
+        b: &Self,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+        beta: T,
+        alpha: T,
+    ) -> Self {
+        assert_eq!(self.nrows(), batch * m);
+        assert_eq!(self.ncols(), n);
+        Self::from_fn(batch * m, n, |r, c| {
+            let bi = r / m;
+            let i = r % m;
+            let ab = (0..k).fold(T::zero(), |acc, j| {
+                acc + a.get(bi * m + i, j) * b.get(bi * k + j, c)
+            });
+            beta * self.get(r, c) + alpha * ab
+        })
+    }
+
+    // ── Convolution ─────────────────────────────────────────────────
+
+    /// im2col: unfold input patches for convolution.
+    ///
+    /// Input `x` is (C_in, H*W) flattened. Returns (C_in*kH*kW, out_H*out_W).
+    #[allow(dead_code)]
+    fn im2col(
+        x: &Self,
+        c_in: usize,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+    ) -> Self {
+        let out_h = (h + 2 * padding.0 - dilation.0 * (kh - 1) - 1) / stride.0 + 1;
+        let out_w = (w + 2 * padding.1 - dilation.1 * (kw - 1) - 1) / stride.1 + 1;
+        let col_rows = c_in * kh * kw;
+        let col_cols = out_h * out_w;
+        Self::from_fn(col_rows, col_cols, |row, col| {
+            let ow = col % out_w;
+            let oh = col / out_w;
+            let kw_idx = row % kw;
+            let kh_idx = (row / kw) % kh;
+            let c = row / (kh * kw);
+            let ih = oh * stride.0 + kh_idx * dilation.0;
+            let iw = ow * stride.1 + kw_idx * dilation.1;
+            if ih >= padding.0 && ih < h + padding.0 && iw >= padding.1 && iw < w + padding.1 {
+                x.get(c, (ih - padding.0) * w + (iw - padding.1))
+            } else {
+                T::zero()
+            }
+        })
+    }
+
+    /// 2-D convolution: `conv2d(input, weight, bias, stride, padding, dilation, groups)`.
+    ///
+    /// Input: (N*C_in, H*W), Weight: (C_out, C_in/groups * kH * kW), Bias: (1, C_out) or empty.
+    /// Output: (N*C_out, out_H * out_W).
+    #[must_use]
+    pub fn conv2d(
+        &self,
+        weight: &Self,
+        bias: Option<&Self>,
+        n_batch: usize,
+        c_in: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+    ) -> Self {
+        assert!(c_in % groups == 0 && c_out % groups == 0);
+        let c_in_g = c_in / groups;
+        let c_out_g = c_out / groups;
+        let out_h = (h + 2 * padding.0 - dilation.0 * (kh - 1) - 1) / stride.0 + 1;
+        let out_w = (w + 2 * padding.1 - dilation.1 * (kw - 1) - 1) / stride.1 + 1;
+        let out_spatial = out_h * out_w;
+
+        Self::from_fn(n_batch * c_out, out_spatial, |row, col| {
+            let b = row / c_out;
+            let oc = row % c_out;
+            let g = oc / c_out_g;
+            let oh = col / out_w;
+            let ow = col % out_w;
+
+            let mut acc = if let Some(bi) = bias { bi.get(0, oc) } else { T::zero() };
+            for ic in 0..c_in_g {
+                for khr in 0..kh {
+                    for kwc in 0..kw {
+                        let ih = oh * stride.0 + khr * dilation.0;
+                        let iw = ow * stride.1 + kwc * dilation.1;
+                        if ih >= padding.0 && ih < h + padding.0
+                            && iw >= padding.1 && iw < w + padding.1
+                        {
+                            let x_val = self.get(
+                                b * c_in + g * c_in_g + ic,
+                                (ih - padding.0) * w + (iw - padding.1),
+                            );
+                            let w_val = weight.get(oc, ic * kh * kw + khr * kw + kwc);
+                            acc = acc + x_val * w_val;
+                        }
+                    }
+                }
+            }
+            acc
+        })
+    }
+
+    /// 1-D convolution.
+    ///
+    /// Input: (N*C_in, L), Weight: (C_out, C_in/groups * K), Bias: (1, C_out).
+    #[must_use]
+    pub fn conv1d(
+        &self,
+        weight: &Self,
+        bias: Option<&Self>,
+        n_batch: usize,
+        c_in: usize,
+        length: usize,
+        c_out: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+        dilation: usize,
+        groups: usize,
+    ) -> Self {
+        assert!(c_in % groups == 0 && c_out % groups == 0);
+        let c_in_g = c_in / groups;
+        let out_len = (length + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1;
+
+        Self::from_fn(n_batch * c_out, out_len, |row, col| {
+            let b = row / c_out;
+            let oc = row % c_out;
+            let g = oc / (c_out / groups);
+            let mut acc = if let Some(bi) = bias { bi.get(0, oc) } else { T::zero() };
+            for ic in 0..c_in_g {
+                for k in 0..kernel_size {
+                    let il = col * stride + k * dilation;
+                    if il >= padding && il < length + padding {
+                        let x_val = self.get(b * c_in + g * c_in_g + ic, il - padding);
+                        let w_val = weight.get(oc, ic * kernel_size + k);
+                        acc = acc + x_val * w_val;
+                    }
+                }
+            }
+            acc
+        })
+    }
+
+    /// Transposed 2-D convolution (deconvolution / fractionally-strided convolution).
+    #[must_use]
+    pub fn conv_transpose2d(
+        &self,
+        weight: &Self,
+        bias: Option<&Self>,
+        n_batch: usize,
+        c_in: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
+    ) -> Self {
+        let out_h = (h - 1) * stride.0 - 2 * padding.0 + kh + output_padding.0;
+        let out_w = (w - 1) * stride.1 - 2 * padding.1 + kw + output_padding.1;
+
+        Self::from_fn(n_batch * c_out, out_h * out_w, |row, col| {
+            let b = row / c_out;
+            let oc = row % c_out;
+            let oh = col / out_w;
+            let ow = col % out_w;
+            let mut acc = if let Some(bi) = bias { bi.get(0, oc) } else { T::zero() };
+            for ic in 0..c_in {
+                for khr in 0..kh {
+                    for kwc in 0..kw {
+                        let ih_pad = oh + padding.0;
+                        let iw_pad = ow + padding.1;
+                        if ih_pad >= khr && iw_pad >= kwc
+                            && (ih_pad - khr) % stride.0 == 0
+                            && (iw_pad - kwc) % stride.1 == 0
+                        {
+                            let ih = (ih_pad - khr) / stride.0;
+                            let iw = (iw_pad - kwc) / stride.1;
+                            if ih < h && iw < w {
+                                let x_val = self.get(b * c_in + ic, ih * w + iw);
+                                // Weight layout: (C_in, C_out * kH * kW)
+                                let w_val = weight.get(ic, oc * kh * kw + khr * kw + kwc);
+                                acc = acc + x_val * w_val;
+                            }
+                        }
+                    }
+                }
+            }
+            acc
+        })
+    }
+
+    // ── Pooling ─────────────────────────────────────────────────────
+
+    /// 2-D max pooling.
+    ///
+    /// Input: (N*C, H*W). Output: (N*C, out_H*out_W).
+    #[must_use]
+    pub fn max_pool2d(
+        &self,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+    ) -> Self {
+        let out_h = (h + 2 * padding.0 - kh) / stride.0 + 1;
+        let out_w = (w + 2 * padding.1 - kw) / stride.1 + 1;
+        let nc = self.nrows();
+        let two = two::<T>();
+        Self::from_fn(nc, out_h * out_w, |ch, col| {
+            let oh = col / out_w;
+            let ow = col % out_w;
+            let mut best = T::zero();
+            let mut first = true;
+            for khr in 0..kh {
+                for kwc in 0..kw {
+                    let ih = oh * stride.0 + khr;
+                    let iw = ow * stride.1 + kwc;
+                    if ih >= padding.0 && ih < h + padding.0
+                        && iw >= padding.1 && iw < w + padding.1
+                    {
+                        let v = self.get(ch, (ih - padding.0) * w + (iw - padding.1));
+                        if first {
+                            best = v;
+                            first = false;
+                        } else {
+                            best = (best + v + (best - v).math_abs()) / two;
+                        }
+                    }
+                }
+            }
+            best
+        })
+    }
+
+    /// 2-D average pooling.
+    ///
+    /// Input: (N*C, H*W). Output: (N*C, out_H*out_W).
+    #[must_use]
+    pub fn avg_pool2d(
+        &self,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+    ) -> Self {
+        let out_h = (h + 2 * padding.0 - kh) / stride.0 + 1;
+        let out_w = (w + 2 * padding.1 - kw) / stride.1 + 1;
+        let nc = self.nrows();
+        let pool_size = T::from_f64((kh * kw) as f64);
+        Self::from_fn(nc, out_h * out_w, |ch, col| {
+            let oh = col / out_w;
+            let ow = col % out_w;
+            let mut sum = T::zero();
+            for khr in 0..kh {
+                for kwc in 0..kw {
+                    let ih = oh * stride.0 + khr;
+                    let iw = ow * stride.1 + kwc;
+                    if ih >= padding.0 && ih < h + padding.0
+                        && iw >= padding.1 && iw < w + padding.1
+                    {
+                        sum = sum + self.get(ch, (ih - padding.0) * w + (iw - padding.1));
+                    }
+                }
+            }
+            sum / pool_size
+        })
+    }
+
+    /// Adaptive average pool 2-D: output fixed size regardless of input.
+    ///
+    /// Input: (N*C, H*W). Output: (N*C, out_H*out_W).
+    #[must_use]
+    pub fn adaptive_avg_pool2d(
+        &self,
+        h: usize,
+        w: usize,
+        out_h: usize,
+        out_w: usize,
+    ) -> Self {
+        let nc = self.nrows();
+        Self::from_fn(nc, out_h * out_w, |ch, col| {
+            let oh = col / out_w;
+            let ow = col % out_w;
+            let ih_start = oh * h / out_h;
+            let ih_end = (oh + 1) * h / out_h;
+            let iw_start = ow * w / out_w;
+            let iw_end = (ow + 1) * w / out_w;
+            let count = (ih_end - ih_start) * (iw_end - iw_start);
+            let mut sum = T::zero();
+            for ih in ih_start..ih_end {
+                for iw in iw_start..iw_end {
+                    sum = sum + self.get(ch, ih * w + iw);
+                }
+            }
+            sum / T::from_f64(count as f64)
+        })
+    }
+
+    /// 1-D max pooling. Input: (N*C, L). Output: (N*C, out_L).
+    #[must_use]
+    pub fn max_pool1d(&self, length: usize, kernel_size: usize, stride: usize, padding: usize) -> Self {
+        let out_len = (length + 2 * padding - kernel_size) / stride + 1;
+        let nc = self.nrows();
+        let two = two::<T>();
+        Self::from_fn(nc, out_len, |ch, col| {
+            let mut best = T::zero();
+            let mut first = true;
+            for k in 0..kernel_size {
+                let il = col * stride + k;
+                if il >= padding && il < length + padding {
+                    let v = self.get(ch, il - padding);
+                    if first {
+                        best = v;
+                        first = false;
+                    } else {
+                        best = (best + v + (best - v).math_abs()) / two;
+                    }
+                }
+            }
+            best
+        })
+    }
+
+    /// 1-D average pooling. Input: (N*C, L). Output: (N*C, out_L).
+    #[must_use]
+    pub fn avg_pool1d(&self, length: usize, kernel_size: usize, stride: usize, padding: usize) -> Self {
+        let out_len = (length + 2 * padding - kernel_size) / stride + 1;
+        let nc = self.nrows();
+        let ks = T::from_f64(kernel_size as f64);
+        Self::from_fn(nc, out_len, |ch, col| {
+            let mut sum = T::zero();
+            for k in 0..kernel_size {
+                let il = col * stride + k;
+                if il >= padding && il < length + padding {
+                    sum = sum + self.get(ch, il - padding);
+                }
+            }
+            sum / ks
+        })
+    }
+
+    // ── Attention / Transformer ─────────────────────────────────────
+
+    /// Embedding lookup: select rows from weight matrix by indices.
+    ///
+    /// `indices` is (N, seq_len) containing integer indices.
+    /// `weight` is (vocab_size, embed_dim).
+    /// Output: (N * seq_len, embed_dim).
+    #[must_use]
+    pub fn embedding(indices: &Self, weight: &Self) -> Self {
+        let total = indices.nrows() * indices.ncols();
+        let dim = weight.ncols();
+        Self::from_fn(total, dim, |r, c| {
+            let idx = if indices.ncols() > 1 {
+                indices.get(r / indices.ncols(), r % indices.ncols())
+            } else {
+                indices.get(r, 0)
+            };
+            weight.get(idx.to_f64() as usize, c)
+        })
+    }
+
+    /// Scaled dot-product attention: `softmax(Q @ K^T / sqrt(d_k)) @ V`.
+    ///
+    /// Q: (seq_q, d_k), K: (seq_k, d_k), V: (seq_k, d_v).
+    /// Optional `mask`: (seq_q, seq_k) — positions with non-zero values are masked (set to -inf).
+    /// Returns: (seq_q, d_v).
+    #[must_use]
+    pub fn scaled_dot_product_attention(
+        q: &Self,
+        k: &Self,
+        v: &Self,
+        mask: Option<&Self>,
+    ) -> Self {
+        let d_k = q.ncols();
+        let scale = T::from_f64(1.0 / (d_k as f64).sqrt());
+
+        // scores = Q @ K^T * scale
+        let kt = k.t();
+        let mut scores = &(&q.clone() * &kt) * scale;
+
+        // Apply mask: set masked positions to -inf
+        if let Some(m) = mask {
+            let neg_inf = T::from_f64(f64::NEG_INFINITY);
+            scores = scores.masked_fill(m, neg_inf);
+        }
+
+        // softmax along axis=1 (each row)
+        let attn = scores.softmax(1);
+
+        // output = attn @ V
+        &attn * v
+    }
+
+    /// Multi-head attention.
+    ///
+    /// Q, K, V: (seq, d_model). Splits into `num_heads` heads, applies SDPA, concatenates.
+    /// Returns: (seq, d_model).
+    #[must_use]
+    pub fn multi_head_attention(
+        q: &Self,
+        k: &Self,
+        v: &Self,
+        num_heads: usize,
+        mask: Option<&Self>,
+    ) -> Self {
+        let d_model = q.ncols();
+        assert!(d_model % num_heads == 0, "nabla: d_model must be divisible by num_heads");
+        let d_head = d_model / num_heads;
+        let seq_q = q.nrows();
+        let seq_k = k.nrows();
+
+        // Split into heads and compute attention for each
+        let mut head_outputs: Vec<Self> = Vec::with_capacity(num_heads);
+        for h in 0..num_heads {
+            let q_h = q.submatrix(0, seq_q, h * d_head, (h + 1) * d_head);
+            let k_h = k.submatrix(0, seq_k, h * d_head, (h + 1) * d_head);
+            let v_h = v.submatrix(0, seq_k, h * d_head, (h + 1) * d_head);
+            head_outputs.push(Self::scaled_dot_product_attention(&q_h, &k_h, &v_h, mask));
+        }
+
+        // Concatenate heads along columns
+        let refs: Vec<&Self> = head_outputs.iter().collect();
+        Self::hcat(&refs)
     }
 }
 

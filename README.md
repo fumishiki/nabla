@@ -103,7 +103,7 @@ nabla's scope is limited to **mathematically invariant rules** — operations wh
 
 | Category | What you get |
 |---|---|
-| **70+ tensor ops** | matmul, conv2d (planned), element-wise (exp/sin/cos/tanh/sqrt/…), reductions (sum/max/min/var/std/…), activations (relu/gelu/sigmoid/softmax/…), normalization (layer\_norm/rms\_norm/…), loss (cross\_entropy/mse/…), manipulation (reshape/permute/cat/pad/gather/scatter/…) |
+| **180+ tensor ops** | matmul, conv1d/conv2d/conv\_transpose2d, element-wise (exp/sin/cos/tanh/sqrt/…), reductions (sum/max/min/var/std/argmax/argmin/…), activations (relu/gelu/silu/mish/elu/…), normalization (layer\_norm/rms\_norm/batch\_norm/group\_norm), loss (cross\_entropy/mse/bce/kl\_div/…), pooling (max/avg/adaptive), attention (SDPA/MHA/embedding), manipulation (reshape/permute/cat/pad/gather/scatter/topk/sort/…) |
 | **13 macros** | `mat!` `einsum!` `fuse!` `map!` `map_!` `par_map!` `stencil!` `named!` `generated!` `splat!` `pipe!` `between!` `frange!` |
 | **9 dense factorizations** | LU, QR, Cholesky (LLT), LDL, SVD, Eigendecomposition + structural views (Diagonal, Symmetric, Triangular) |
 | **Sparse LA** | CSC (CPU) + `BcsrMatrix` BCSR (GPU WGSL SpMM) + mixed-precision refinement |
