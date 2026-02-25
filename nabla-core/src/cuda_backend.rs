@@ -899,6 +899,17 @@ fn reduce_func_idx<T: Scalar>(base: usize) -> usize {
     if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() { base } else { base + 3 }
 }
 
+/// Launch a reduction kernel directly via cuLaunchKernel (bypasses cudarc overhead).
+#[inline]
+unsafe fn launch_reduce(func: CUfunction, grid: u32, block: u32,
+                        stream: cudarc::driver::sys::CUstream,
+                        args: &mut [*mut c_void]) {
+    cudarc::driver::sys::cuLaunchKernel(
+        func, grid, 1, 1, block, 1, 1, 0, stream,
+        args.as_mut_ptr(), std::ptr::null_mut(),
+    );
+}
+
 /// Read back a scalar from pinned host memory after stream sync.
 #[inline]
 unsafe fn reduce_readback<T: Scalar>(ctx: &CudaCtx) -> T {
@@ -917,18 +928,14 @@ pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
 
     let n_u32 = n as u32;
     unsafe {
-        result::launch_kernel(
-            func, (grid1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
-            &mut [
-                &a.buf.ptr as *const CUdeviceptr as *mut c_void,
-                &scratch as *const CUdeviceptr as *mut c_void,
-                &n_u32 as *const u32 as *mut c_void,
-                &out_dptr as *const CUdeviceptr as *mut c_void,
-            ],
-        ).unwrap_or_else(|e| panic!("CUDA launch reduce: {e}"));
+        launch_reduce(func, grid1, REDUCE_BLOCK, ctx.stream.cu_stream(), &mut [
+            &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+            &scratch as *const CUdeviceptr as *mut c_void,
+            &n_u32 as *const u32 as *mut c_void,
+            &out_dptr as *const CUdeviceptr as *mut c_void,
+        ]);
+        reduce_readback::<T>(ctx)
     }
-
-    unsafe { reduce_readback::<T>(ctx) }
 }
 
 pub(crate) fn cuda_max_all<T: Scalar>(a: &CudaStorage<T>) -> T {
@@ -949,18 +956,14 @@ fn cuda_reduce_minmax<T: Scalar>(a: &CudaStorage<T>, func_base: usize) -> T {
 
     let n_u32 = n as u32;
     unsafe {
-        result::launch_kernel(
-            func, (grid1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
-            &mut [
-                &a.buf.ptr as *const CUdeviceptr as *mut c_void,
-                &scratch as *const CUdeviceptr as *mut c_void,
-                &n_u32 as *const u32 as *mut c_void,
-                &out_dptr as *const CUdeviceptr as *mut c_void,
-            ],
-        ).unwrap_or_else(|e| panic!("CUDA launch reduce: {e}"));
+        launch_reduce(func, grid1, REDUCE_BLOCK, ctx.stream.cu_stream(), &mut [
+            &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+            &scratch as *const CUdeviceptr as *mut c_void,
+            &n_u32 as *const u32 as *mut c_void,
+            &out_dptr as *const CUdeviceptr as *mut c_void,
+        ]);
+        reduce_readback::<T>(ctx)
     }
-
-    unsafe { reduce_readback::<T>(ctx) }
 }
 pub(crate) fn cuda_argmax_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmax_all(a) }
 pub(crate) fn cuda_argmin_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmin_all(a) }
