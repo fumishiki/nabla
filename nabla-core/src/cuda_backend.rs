@@ -15,7 +15,7 @@ use cudarc::driver::sys::{CUdeviceptr, CUfunction, CUmodule, CUstreamCaptureMode
 use cudarc::driver::{result, CudaContext as CudarcContext, CudaGraph as CudarcCudaGraph, CudaStream};
 use cudarc::nvrtc;
 
-use crate::gpu_common::{self, EnsureCache, RtcStorage, lock_or_recover, type_suffix};
+use crate::gpu_common::{self, EnsureCache, RtcStorage, grid_1d, lock_or_recover, type_suffix};
 use crate::kernels_cu::{self, BLOCK_SIZE};
 use crate::scalar::Scalar;
 
@@ -385,7 +385,6 @@ impl<T: Scalar> EnsureCache for CudaStorage<T> {
 struct KernelEntry {
     func: CUfunction,
     _module: CUmodule,
-    optimal_block: u32, // occupancy-based block size
 }
 
 // SAFETY: CUfunction/*mut CUfunc_st and CUmodule/*mut CUmod_st are opaque CUDA handles.
@@ -401,30 +400,6 @@ struct CublasHandle(cublas_sys::cublasHandle_t);
 unsafe impl Send for CublasHandle {}
 unsafe impl Sync for CublasHandle {}
 
-/// Query optimal block size for a kernel using CUDA occupancy API.
-/// Falls back to BLOCK_SIZE (256) if query fails.
-fn optimal_block_size(func: CUfunction) -> u32 {
-    let mut min_grid_size: i32 = 0;
-    let mut block_size: i32 = 0;
-    // SAFETY: querying occupancy for a valid CUfunction handle.
-    let status = unsafe {
-        cudarc::driver::sys::cuOccupancyMaxPotentialBlockSize(
-            &mut min_grid_size,
-            &mut block_size,
-            func,
-            None,  // no dynamic shared mem callback
-            0,     // dynamic shared mem per block
-            0,     // block size limit (0 = no limit)
-        )
-    };
-    if status == cudarc::driver::sys::CUresult::CUDA_SUCCESS && block_size > 0 {
-        let _ = min_grid_size; // suppress unused warning
-        block_size as u32
-    } else {
-        BLOCK_SIZE
-    }
-}
-
 // ── CudaCtx singleton ────────────────────────────────────────────────────────
 
 struct CudaCtx {
@@ -435,8 +410,6 @@ struct CudaCtx {
     blas: CublasHandle,
     /// Cached CUDA graphs keyed by user-provided name for deduplication.
     graphs: Mutex<HashMap<String, Arc<NablaCudaGraph>>>,
-    /// SM count for persistent grid-stride kernel launches.
-    sm_count: u32,
 }
 
 // Returns (major, minor) compute capability of device 0.
@@ -455,17 +428,6 @@ fn query_compute_capability() -> (i32, i32) {
         )
     }.unwrap_or(0);
     (major, minor)
-}
-
-// Query SM (multiprocessor) count for persistent grid-stride launches.
-fn query_sm_count() -> u32 {
-    let sm = unsafe {
-        result::device::get_attribute(
-            0,
-            cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT,
-        )
-    }.unwrap_or(80);
-    sm as u32
 }
 
 // Volta+ (compute >= 7.0) supports WMMA tensor cores
@@ -509,7 +471,6 @@ fn get_ctx() -> &'static CudaCtx {
             has_wmma,
             blas: CublasHandle(blas_raw),
             graphs: Mutex::new(HashMap::new()),
-            sm_count: query_sm_count(),
         };
         // Pre-compile all kernels from the combined source
         if let Err(e) = compile_all_kernels(&cuda_ctx, &arch) {
@@ -569,8 +530,7 @@ fn compile_all_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResult<()> {
         let c_fn = CString::new(name).map_err(|_| CudaError::NullPtr)?;
         // SAFETY: getting function handle from loaded module.
         let func = unsafe { result::module::get_function(module, c_fn)? };
-        let ob = optimal_block_size(func);
-        map.insert(name.to_owned(), KernelEntry { func, _module: module, optimal_block: ob });
+        map.insert(name.to_owned(), KernelEntry { func, _module: module });
     }
     Ok(())
 }
@@ -601,26 +561,19 @@ fn compile_wmma_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResult<()> {
         let c_fn = CString::new(name).map_err(|_| CudaError::NullPtr)?;
         // SAFETY: getting function handle from loaded WMMA module.
         let func = unsafe { result::module::get_function(module, c_fn)? };
-        let ob = optimal_block_size(func);
-        map.insert(name.to_owned(), KernelEntry { func, _module: module, optimal_block: ob });
+        map.insert(name.to_owned(), KernelEntry { func, _module: module });
     }
     Ok(())
 }
 
-fn get_kernel(ctx: &CudaCtx, name: &str) -> CudaResult<(CUfunction, u32)> {
+fn get_kernel(ctx: &CudaCtx, name: &str) -> CudaResult<CUfunction> {
     let map = ctx.kernels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     map.get(name)
-        .map(|e| (e.func, e.optimal_block))
+        .map(|e| e.func)
         .ok_or_else(|| CudaError::KernelNotFound(name.to_owned()))
 }
 
 // ── Launch helpers ───────────────────────────────────────────────────────────
-
-/// Persistent grid for f32 float4 kernels: cap to SM_COUNT * 4 blocks.
-fn persistent_grid_f32(ctx: &CudaCtx, n: usize, block: u32) -> u32 {
-    let full = ((n + 3) / 4).div_ceil(block as usize) as u32;
-    core::cmp::min(ctx.sm_count * 4, full)
-}
 
 // SAFETY for all launch_* functions: kernel arguments are raw pointers to GPU
 // memory or scalar values. Caller guarantees buffers are valid and sized correctly.
@@ -629,22 +582,22 @@ fn launch_unary<T: Scalar>(a: &CudaStorage<T>, op: &str) -> CudaStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
     let name = format!("k_{op}_{}", type_suffix::<T>());
-    let (func, ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = CuBuffer::alloc_async(&ctx.stream, n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let n_u32 = n as u32;
-    // f32 kernels use persistent grid-stride with float4
+    // f32 kernels use float4: 4 elements per thread
     let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        persistent_grid_f32(ctx, n, ob)
+        grid_1d((n + 3) / 4)
     } else {
-        n.div_ceil(ob as usize) as u32
+        grid_1d(n)
     };
     // SAFETY: launching CUDA kernel with correct argument pointers.
     unsafe {
         result::launch_kernel(
             func,
             (grid, 1, 1),
-            (ob, 1, 1),
+            (BLOCK_SIZE, 1, 1),
             0,
             ctx.stream.cu_stream(),
             &mut [
@@ -661,20 +614,20 @@ fn launch_binary<T: Scalar>(a: &CudaStorage<T>, b: &CudaStorage<T>, op: &str) ->
     let ctx = get_ctx();
     let n = a.n();
     let name = format!("k_{op}_{}", type_suffix::<T>());
-    let (func, ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = CuBuffer::alloc_async(&ctx.stream, n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let n_u32 = n as u32;
     let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        persistent_grid_f32(ctx, n, ob)
+        grid_1d((n + 3) / 4)
     } else {
-        n.div_ceil(ob as usize) as u32
+        grid_1d(n)
     };
     unsafe {
         result::launch_kernel(
             func,
             (grid, 1, 1),
-            (ob, 1, 1),
+            (BLOCK_SIZE, 1, 1),
             0,
             ctx.stream.cu_stream(),
             &mut [
@@ -772,7 +725,7 @@ pub(crate) fn cuda_transpose<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
     let name = format!("k_transpose_{}", type_suffix::<T>());
-    let (func, ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = CuBuffer::alloc_async(&ctx.stream, n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let rows = a.nrows as u32;
@@ -780,8 +733,8 @@ pub(crate) fn cuda_transpose<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> {
     unsafe {
         result::launch_kernel(
             func,
-            (n.div_ceil(ob as usize) as u32, 1, 1),
-            (ob, 1, 1),
+            (grid_1d(n), 1, 1),
+            (BLOCK_SIZE, 1, 1),
             0,
             ctx.stream.cu_stream(),
             &mut [
@@ -799,20 +752,20 @@ pub(crate) fn cuda_scale<T: Scalar>(a: &CudaStorage<T>, s: T) -> CudaStorage<T> 
     let ctx = get_ctx();
     let n = a.n();
     let name = format!("k_scale_{}", type_suffix::<T>());
-    let (func, ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = CuBuffer::alloc_async(&ctx.stream, n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let n_u32 = n as u32;
     let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        persistent_grid_f32(ctx, n, ob)
+        grid_1d((n + 3) / 4)
     } else {
-        n.div_ceil(ob as usize) as u32
+        grid_1d(n)
     };
     unsafe {
         result::launch_kernel(
             func,
             (grid, 1, 1),
-            (ob, 1, 1),
+            (BLOCK_SIZE, 1, 1),
             0,
             ctx.stream.cu_stream(),
             &mut [
@@ -830,20 +783,20 @@ pub(crate) fn cuda_powf<T: Scalar>(a: &CudaStorage<T>, p: T) -> CudaStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
     let name = format!("k_powf_{}", type_suffix::<T>());
-    let (func, ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = CuBuffer::alloc_async(&ctx.stream, n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let n_u32 = n as u32;
     let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        persistent_grid_f32(ctx, n, ob)
+        grid_1d((n + 3) / 4)
     } else {
-        n.div_ceil(ob as usize) as u32
+        grid_1d(n)
     };
     unsafe {
         result::launch_kernel(
             func,
             (grid, 1, 1),
-            (ob, 1, 1),
+            (BLOCK_SIZE, 1, 1),
             0,
             ctx.stream.cu_stream(),
             &mut [
@@ -868,7 +821,7 @@ fn cuda_matmul_tiled<T: Scalar>(
     b: &CudaStorage<T>,
 ) {
     let name = format!("k_matmul_{}", type_suffix::<T>());
-    let (func, _ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let m = a.nrows as u32;
     let k = a.ncols as u32;
     let n = b.ncols as u32;
@@ -1080,7 +1033,8 @@ fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_n
     src.push_str(&format!("// estimated registers: {reg_estimate}\n"));
 
     if is_f32 {
-        // float4-vectorized kernel with persistent grid-stride loop
+        // float4-vectorized kernel: each thread processes 4 elements
+        // Replace `inN[i]` with scalar variable `v_inN` in the expression
         let scalar_expr = gpu_expr.to_string(); // uses inN[i] pattern
 
         src.push_str("extern \"C\" __global__ void ");
@@ -1092,9 +1046,9 @@ fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_n
             src.push_str(", ");
         }
         src.push_str("float* out, unsigned n) {\n");
-        src.push_str("    unsigned stride = gridDim.x * blockDim.x;\n");
-        src.push_str("    unsigned n4 = n >> 2;\n");
-        src.push_str("    for (unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x; i4 < n4; i4 += stride) {\n");
+        src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
+        src.push_str("    unsigned i = i4 * 4;\n");
+        src.push_str("    if (i + 3 < n) {\n");
         // Load float4 for each input
         for j in 0..n_inputs {
             src.push_str(&format!(
@@ -1115,9 +1069,9 @@ fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_n
             src.push_str(&format!("        r.{comp} = {comp_expr};\n"));
         }
         src.push_str("        reinterpret_cast<float4*>(out)[i4] = r;\n");
-        src.push_str("    }\n");
-        // Scalar tail with grid-stride
-        src.push_str("    for (unsigned j = n4 * 4 + threadIdx.x + blockIdx.x * blockDim.x; j < n; j += stride) {\n");
+        src.push_str("    } else {\n");
+        src.push_str("        for (unsigned j = i; j < n && j < i + 4; j++) {\n");
+        // Scalar tail: replace inN[i] with inN[j]
         let mut tail_expr = scalar_expr;
         for j in (0..n_inputs).rev() {
             tail_expr = tail_expr.replace(
@@ -1125,9 +1079,9 @@ fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_n
                 &format!("__ldg(&in{j}[j])"),
             );
         }
-        src.push_str(&format!("        out[j] = {tail_expr};\n"));
-        src.push_str("    }\n");
-        src.push_str("}\n");
+        src.push_str(&format!("            out[j] = {tail_expr};\n"));
+        src.push_str("        }\n");
+        src.push_str("    }\n}\n");
     } else {
         // f64 scalar kernel with __ldg prefetch
         src.push_str("extern \"C\" __global__ void ");
@@ -1200,21 +1154,20 @@ fn cuda_fuse_launch<T: Scalar>(
             let func = unsafe {
                 result::module::get_function(module, c_fn)
             }.unwrap_or_else(|e| panic!("CUDA get_function: {e}"));
-            let ob = optimal_block_size(func);
             let mut map = ctx.kernels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            map.insert(kernel_name.clone(), KernelEntry { func, _module: module, optimal_block: ob });
+            map.insert(kernel_name.clone(), KernelEntry { func, _module: module });
         }
     }
 
-    let (func, ob) = get_kernel(ctx, &kernel_name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &kernel_name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = CuBuffer::alloc_async(&ctx.stream, n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let n_u32 = n as u32;
-    // f32 fused kernels use persistent grid-stride with float4
+    // f32 fused kernels use float4: 4 elements per thread
     let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        persistent_grid_f32(ctx, n, ob)
+        grid_1d((n + 3) / 4)
     } else {
-        n.div_ceil(ob as usize) as u32
+        grid_1d(n)
     };
 
     // Build kernel argument array: in0_ptr, in1_ptr, ..., out_ptr, n
@@ -1236,7 +1189,7 @@ fn cuda_fuse_launch<T: Scalar>(
         result::launch_kernel(
             func,
             (grid, 1, 1),
-            (ob, 1, 1),
+            (BLOCK_SIZE, 1, 1),
             0,
             ctx.stream.cu_stream(),
             &mut args,

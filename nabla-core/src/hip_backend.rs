@@ -11,7 +11,7 @@ use std::sync::{Mutex, OnceLock};
 
 use hip_runtime_sys as hip;
 
-use crate::gpu_common::{self, EnsureCache, RtcStorage, lock_or_recover, type_suffix};
+use crate::gpu_common::{self, EnsureCache, RtcStorage, grid_1d, lock_or_recover, type_suffix};
 use crate::kernels_cu::{self, BLOCK_SIZE};
 use crate::scalar::Scalar;
 
@@ -340,7 +340,6 @@ impl<T: Scalar> EnsureCache for HipStorage<T> {
 struct KernelEntry {
     func: hip::hipFunction_t,
     _module: hip::hipModule_t,
-    optimal_block: u32, // occupancy-based block size
 }
 
 // SAFETY: hipFunction_t and hipModule_t are opaque handles (pointers) to
@@ -349,37 +348,11 @@ struct KernelEntry {
 unsafe impl Send for KernelEntry {}
 unsafe impl Sync for KernelEntry {}
 
-/// Query optimal block size for a kernel using HIP occupancy API.
-/// Falls back to BLOCK_SIZE (256) if query fails.
-fn optimal_block_size(func: hip::hipFunction_t) -> u32 {
-    let mut min_grid_size: i32 = 0;
-    let mut block_size: i32 = 0;
-    // SAFETY: querying occupancy for a valid hipFunction_t handle.
-    // i32 and libc::c_int are the same type on all supported platforms.
-    let err = unsafe {
-        hip::hipOccupancyMaxPotentialBlockSize(
-            &mut min_grid_size as *mut i32 as *mut _,
-            &mut block_size as *mut i32 as *mut _,
-            func.cast_const().cast(),
-            0,    // dynamic shared mem per block
-            0,    // block size limit (0 = no limit)
-        )
-    };
-    if err == hip::hipError_t::hipSuccess && block_size > 0 {
-        let _ = min_grid_size;
-        block_size as u32
-    } else {
-        BLOCK_SIZE
-    }
-}
-
 // ── HipCtx singleton ─────────────────────────────────────────────────────────
 
 struct HipCtx {
     kernels: Mutex<HashMap<String, KernelEntry>>,
     pool: Mutex<HipMemoryPool>,
-    /// SM (CU) count for persistent grid-stride kernel launches.
-    sm_count: u32,
 }
 
 fn get_ctx() -> &'static HipCtx {
@@ -390,24 +363,9 @@ fn get_ctx() -> &'static HipCtx {
         if err != hip::hipError_t::hipSuccess {
             panic!("HIP device 0 init failed: {err:?}");
         }
-        // Query SM (CU) count for persistent grid-stride launches
-        let mut sm_count: i32 = 0;
-        let err = unsafe {
-            hip::hipDeviceGetAttribute(
-                &mut sm_count,
-                hip::hipDeviceAttribute_t::hipDeviceAttributeMultiprocessorCount,
-                0,
-            )
-        };
-        let sm_count = if err == hip::hipError_t::hipSuccess && sm_count > 0 {
-            sm_count as u32
-        } else {
-            60 // sensible default for AMD GPUs
-        };
         let hip_ctx = HipCtx {
             kernels: Mutex::new(HashMap::new()),
             pool: Mutex::new(HipMemoryPool::new()),
-            sm_count,
         };
         if let Err(e) = compile_all_kernels(&hip_ctx) {
             panic!("HIP kernel compilation failed: {e}");
@@ -486,16 +444,15 @@ fn compile_all_kernels(ctx: &HipCtx) -> HipResult<()> {
         let mut func: hip::hipFunction_t = core::ptr::null_mut();
         // SAFETY: getting function handle from loaded module.
         check(unsafe { hip::hipModuleGetFunction(&mut func, module, c_fn.as_ptr()) })?;
-        let ob = optimal_block_size(func);
-        map.insert(kname.to_owned(), KernelEntry { func, _module: module, optimal_block: ob });
+        map.insert(kname.to_owned(), KernelEntry { func, _module: module });
     }
     Ok(())
 }
 
-fn get_kernel(ctx: &HipCtx, name: &str) -> HipResult<(hip::hipFunction_t, u32)> {
+fn get_kernel(ctx: &HipCtx, name: &str) -> HipResult<hip::hipFunction_t> {
     let map = ctx.kernels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     map.get(name)
-        .map(|e| (e.func, e.optimal_block))
+        .map(|e| e.func)
         .ok_or_else(|| HipError::KernelNotFound(name.to_owned()))
 }
 
@@ -529,29 +486,18 @@ fn hip_launch(
 
 // ── Launch helpers ───────────────────────────────────────────────────────────
 
-/// Persistent grid for f32 float4 kernels: cap to SM_COUNT * 4 blocks.
-fn persistent_grid_f32(ctx: &HipCtx, n: usize, block: u32) -> u32 {
-    let full = ((n + 3) / 4).div_ceil(block as usize) as u32;
-    core::cmp::min(ctx.sm_count * 4, full)
-}
-
 fn launch_unary<T: Scalar>(a: &HipStorage<T>, op: &str) -> HipStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
     let name = format!("k_{op}_{}", type_suffix::<T>());
-    let (func, ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let n_u32 = n as u32;
-    let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        persistent_grid_f32(ctx, n, ob)
-    } else {
-        n.div_ceil(ob as usize) as u32
-    };
     hip_launch(
         func,
-        [grid, 1, 1],
-        [ob, 1, 1],
+        [grid_1d(n), 1, 1],
+        [BLOCK_SIZE, 1, 1],
         &mut [
             (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
             (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
@@ -565,19 +511,14 @@ fn launch_binary<T: Scalar>(a: &HipStorage<T>, b: &HipStorage<T>, op: &str) -> H
     let ctx = get_ctx();
     let n = a.n();
     let name = format!("k_{op}_{}", type_suffix::<T>());
-    let (func, ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let n_u32 = n as u32;
-    let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        persistent_grid_f32(ctx, n, ob)
-    } else {
-        n.div_ceil(ob as usize) as u32
-    };
     hip_launch(
         func,
-        [grid, 1, 1],
-        [ob, 1, 1],
+        [grid_1d(n), 1, 1],
+        [BLOCK_SIZE, 1, 1],
         &mut [
             (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
             (&b.buf.ptr as *const *mut c_void).cast_mut().cast(),
@@ -677,15 +618,15 @@ pub(crate) fn hip_transpose<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
     let name = format!("k_transpose_{}", type_suffix::<T>());
-    let (func, ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let rows = a.nrows as u32;
     let cols = a.ncols as u32;
     hip_launch(
         func,
-        [n.div_ceil(ob as usize) as u32, 1, 1],
-        [ob, 1, 1],
+        [grid_1d(n), 1, 1],
+        [BLOCK_SIZE, 1, 1],
         &mut [
             (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
             (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
@@ -700,19 +641,14 @@ pub(crate) fn hip_scale<T: Scalar>(a: &HipStorage<T>, s: T) -> HipStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
     let name = format!("k_scale_{}", type_suffix::<T>());
-    let (func, ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let n_u32 = n as u32;
-    let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        persistent_grid_f32(ctx, n, ob)
-    } else {
-        n.div_ceil(ob as usize) as u32
-    };
     hip_launch(
         func,
-        [grid, 1, 1],
-        [ob, 1, 1],
+        [grid_1d(n), 1, 1],
+        [BLOCK_SIZE, 1, 1],
         &mut [
             (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
             (&s as *const T).cast_mut().cast(),
@@ -727,19 +663,14 @@ pub(crate) fn hip_powf<T: Scalar>(a: &HipStorage<T>, p: T) -> HipStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
     let name = format!("k_powf_{}", type_suffix::<T>());
-    let (func, ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let n_u32 = n as u32;
-    let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        persistent_grid_f32(ctx, n, ob)
-    } else {
-        n.div_ceil(ob as usize) as u32
-    };
     hip_launch(
         func,
-        [grid, 1, 1],
-        [ob, 1, 1],
+        [grid_1d(n), 1, 1],
+        [BLOCK_SIZE, 1, 1],
         &mut [
             (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
             (&p as *const T).cast_mut().cast(),
@@ -758,7 +689,7 @@ pub(crate) fn hip_matmul<T: Scalar>(
     let ctx = get_ctx();
     out.invalidate_cache();
     let name = format!("k_matmul_{}", type_suffix::<T>());
-    let (func, _ob) = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let m = a.nrows as u32;
     let k = a.ncols as u32;
     let n = b.ncols as u32;
@@ -812,9 +743,9 @@ fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_n
             src.push_str(", ");
         }
         src.push_str("float* out, unsigned n) {\n");
-        src.push_str("    unsigned stride = gridDim.x * blockDim.x;\n");
-        src.push_str("    unsigned n4 = n >> 2;\n");
-        src.push_str("    for (unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x; i4 < n4; i4 += stride) {\n");
+        src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
+        src.push_str("    unsigned i = i4 * 4;\n");
+        src.push_str("    if (i + 3 < n) {\n");
         for j in 0..n_inputs {
             src.push_str(&format!(
                 "        float4 v{j} = reinterpret_cast<const float4*>(in{j})[i4];\n"
@@ -832,8 +763,8 @@ fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_n
             src.push_str(&format!("        r.{comp} = {comp_expr};\n"));
         }
         src.push_str("        reinterpret_cast<float4*>(out)[i4] = r;\n");
-        src.push_str("    }\n");
-        src.push_str("    for (unsigned j = n4 * 4 + threadIdx.x + blockIdx.x * blockDim.x; j < n; j += stride) {\n");
+        src.push_str("    } else {\n");
+        src.push_str("        for (unsigned j = i; j < n && j < i + 4; j++) {\n");
         let mut tail_expr = scalar_expr;
         for j in (0..n_inputs).rev() {
             tail_expr = tail_expr.replace(
@@ -841,9 +772,9 @@ fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_n
                 &format!("in{j}[j]"),
             );
         }
-        src.push_str(&format!("        out[j] = {tail_expr};\n"));
-        src.push_str("    }\n");
-        src.push_str("}\n");
+        src.push_str(&format!("            out[j] = {tail_expr};\n"));
+        src.push_str("        }\n");
+        src.push_str("    }\n}\n");
     } else {
         src.push_str("extern \"C\" __global__ void ");
         src.push_str(kernel_name);
@@ -925,21 +856,19 @@ fn hip_fuse_launch<T: Scalar>(
             check(unsafe { hip::hipModuleGetFunction(&mut func, module, c_fn.as_ptr()) })
                 .unwrap_or_else(|e| panic!("HIP get_function: {e}"));
 
-            let ob = optimal_block_size(func);
-
             let mut map = ctx.kernels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            map.insert(kernel_name.clone(), KernelEntry { func, _module: module, optimal_block: ob });
+            map.insert(kernel_name.clone(), KernelEntry { func, _module: module });
         }
     }
 
-    let (func, ob) = get_kernel(ctx, &kernel_name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel(ctx, &kernel_name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let n_u32 = n as u32;
     let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        persistent_grid_f32(ctx, n, ob)
+        grid_1d((n + 3) / 4)
     } else {
-        n.div_ceil(ob as usize) as u32
+        grid_1d(n)
     };
 
     // SAFETY: input pointers are valid HipStorage<T>
@@ -955,7 +884,7 @@ fn hip_fuse_launch<T: Scalar>(
     args.push((&out_buf.ptr as *const *mut c_void).cast_mut().cast());
     args.push((&n_u32 as *const u32).cast_mut().cast());
 
-    hip_launch(func, [grid, 1, 1], [ob, 1, 1], &mut args);
+    hip_launch(func, [grid, 1, 1], [BLOCK_SIZE, 1, 1], &mut args);
     HipStorage::new(nrows, ncols, out_buf)
 }
 
