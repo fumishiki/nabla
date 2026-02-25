@@ -39,17 +39,38 @@ let (val, deriv) = energy_grad(2.0);    // → (sin(4), 4·cos(4))
 
 ---
 
-## What nabla DOES / DOES NOT
+## Design philosophy
 
-| ✅ nabla provides | ❌ User implements |
-|---|---|
-| Tensor ops (matmul, exp, sin, reduction…) | Optimizer (SGD, Adam…) |
-| Autodiff (reverse + forward + GPU-resident) | Loss function (MSE, cross-entropy…) |
-| Symbolic CAS (diff / simplify / eval) | Model architecture (layers, forward pass) |
-| ODE solvers (Euler → Dormand-Prince, stiff, parallel) | Training loop (epoch, batch, logging) |
-| GPU sparse (BCSR + WGSL SpMM) | — |
+### Fixed-rule principle
 
-**Fixed-rule principle** — only mathematically invariant rules are provided. User-customizable domains are explicitly excluded.
+nabla's scope is limited to **mathematically invariant rules** — operations whose correct behavior is fully determined by mathematics and will never need user customization.
+
+> **Criterion**: "Will users need to customize this in the future?"
+> - **Yes** → not provided (optimizer, loss, architecture, training loop)
+> - **No** (mathematically fixed) → provided with CPU/GPU support
+
+| ✅ nabla provides | ❌ User implements | Why the boundary |
+|---|---|---|
+| Tensor ops (matmul, exp, sin, reduction…) | — | Mathematically fixed |
+| Autodiff (reverse + forward + GPU-resident) | — | Chain rule is fixed |
+| Symbolic CAS (diff / simplify / eval) | — | Differentiation rules are fixed |
+| ODE solvers (Euler, RK4, Dormand-Prince, BDF-1…) | — | Butcher tableaux are fixed |
+| GPU sparse (BCSR + WGSL SpMM) | — | SpMM algorithm is fixed |
+| — | Optimizer (SGD, Adam, LAMB…) | Update rule is user-defined |
+| — | Loss function (MSE, cross-entropy…) | Task-specific |
+| — | Model architecture (layers, forward pass) | Domain-specific |
+| — | Training loop (epoch, batch, logging) | Workflow-specific |
+
+### Design principles
+
+1. **Zero-GC, zero-copy** — `Drop` = deterministic deallocation. `&` = zero-copy borrow. `_into(out: &mut)` = zero-allocation in-place. No reference counting in the hot path.
+2. **Python's ease, C's speed** — PyTorch-familiar API (`loss.backward()`, `.exp()`, `.sum()`) at native Rust speed. Macro layer absorbs the syntax gap vs Julia.
+3. **Macros = notation layer** — proc macros (`einsum!`, `fuse!`, `stencil!`) provide concise math notation; type-safe Rust underneath. No runtime overhead.
+4. **Build-time exclusive backend** — exactly one of `cpu`/`wgpu`/`cuda`/`hip`. `compile_error!` on multi-select. CPU fallback on GPU builds is a silent performance bug source — nabla makes it impossible.
+5. **Self-contained LA** — zero external LA deps (no LAPACK, no BLAS, no C++ wrappers). Row-major `CpuStorage`, 9 dense factorizations, CSC sparse — all pure Rust.
+6. **Two kernel codebases, not one abstraction** — WGSL (wgpu) + CUDA/HIP shared C source. 32 fixed ops → dual maintenance is manageable and avoids abstraction overhead (no CubeCL/Triton).
+7. **Errors read like math** — shape mismatch says `nabla: matmul 3×2 · 4×2` not `type parameter mismatch`. `einsum!` compile errors point to the exact index character.
+8. **Adjoint ≠ Transpose** — `.t()` = transpose, `.adjoint()` = conjugate transpose. Correct complex LA semantics enforced by distinct methods.
 
 ---
 
