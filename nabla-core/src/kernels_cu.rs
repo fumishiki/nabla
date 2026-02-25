@@ -189,25 +189,23 @@ __device__ float warp_reduce_min_f32(float val) {
     return val;
 }
 
-// ── Reduction f32 (grid-stride + vectorized float4 + two-pass) ────────────
+// ── Reduction f32 (grid-stride + vectorized float4) ──────────────────────
 
+// Single-pass sum: grid-stride + float4 + atomicAdd (256 blocks → low contention)
 extern "C" __global__ void k_sum_f32(const float* __restrict__ in,
                                       float* __restrict__ out, unsigned n) {
     float acc = 0.0f;
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
-    // Vectorized float4 loads (16-byte aligned)
     unsigned n4 = n / 4;
     const float4* in4 = (const float4*)in;
     for (unsigned i = blockIdx.x * blockDim.x + tid; i < n4; i += grid_stride) {
         float4 v = in4[i];
         acc += v.x + v.y + v.z + v.w;
     }
-    // Tail elements
     for (unsigned i = n4 * 4 + blockIdx.x * blockDim.x + tid; i < n; i += grid_stride)
         acc += in[i];
 
-    // Warp reduce
     acc = warp_reduce_sum_f32(acc);
 
     __shared__ float sdata[32];
@@ -218,9 +216,10 @@ extern "C" __global__ void k_sum_f32(const float* __restrict__ in,
         acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0f;
         acc = warp_reduce_sum_f32(acc);
     }
-    if (tid == 0) out[blockIdx.x] = acc;
+    if (tid == 0) atomicAdd(&out[0], acc);
 }
 
+// Two-pass max/min: grid-stride + float4, per-block output
 extern "C" __global__ void k_max_f32(const float* __restrict__ in,
                                       float* __restrict__ out,
                                       unsigned n, const float* init) {
@@ -365,8 +364,9 @@ __device__ double warp_reduce_min_f64(double val) {
     return val;
 }
 
-// ── Reduction f64 (grid-stride + vectorized double2 + two-pass) ───────────
+// ── Reduction f64 (grid-stride + vectorized double2) ─────────────────────
 
+// Single-pass sum with atomicAdd
 extern "C" __global__ void k_sum_f64(const double* __restrict__ in,
                                       double* __restrict__ out, unsigned n) {
     double acc = 0.0;
@@ -391,9 +391,10 @@ extern "C" __global__ void k_sum_f64(const double* __restrict__ in,
         acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0;
         acc = warp_reduce_sum_f64(acc);
     }
-    if (tid == 0) out[blockIdx.x] = acc;
+    if (tid == 0) atomicAdd(&out[0], acc);
 }
 
+// Two-pass max/min
 extern "C" __global__ void k_max_f64(const double* __restrict__ in,
                                       double* __restrict__ out,
                                       unsigned n, const double* init) {

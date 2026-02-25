@@ -856,40 +856,26 @@ pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
     let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let elem = core::mem::size_of::<T>();
     let grid1 = REDUCE_GRID_CAP.min(((n as u32) + REDUCE_BLOCK - 1) / REDUCE_BLOCK);
-    let scratch = ctx.reduce_scratch;
+    let out_ptr = ctx.reduce_scratch;
+
+    // Zero the single output scalar
+    unsafe { let _ = result::memset_d8_async(out_ptr, 0, elem, ctx.stream.cu_stream()); }
+
+    // Single-pass: all blocks atomicAdd to out_ptr[0]
     let n_u32 = n as u32;
-
-    // Zero scratch for pass-1 output
-    unsafe { let _ = result::memset_d8_async(scratch, 0, (grid1 as usize) * elem, ctx.stream.cu_stream()); }
-
-    // Pass 1: n → grid1 partial sums
     unsafe {
         result::launch_kernel(
             func, (grid1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
             &mut [
                 &a.buf.ptr as *const CUdeviceptr as *mut c_void,
-                &scratch as *const CUdeviceptr as *mut c_void,
+                &out_ptr as *const CUdeviceptr as *mut c_void,
                 &n_u32 as *const u32 as *mut c_void,
             ],
-        ).unwrap_or_else(|e| panic!("CUDA launch {name} pass1: {e}"));
-    }
-
-    // Pass 2: grid1 → 1 (reuse scratch offset for final result)
-    let final_ptr = scratch + (REDUCE_GRID_CAP as u64) * 8; // after scratch area
-    unsafe { let _ = result::memset_d8_async(final_ptr, 0, elem, ctx.stream.cu_stream()); }
-    unsafe {
-        result::launch_kernel(
-            func, (1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
-            &mut [
-                &scratch as *const CUdeviceptr as *mut c_void,
-                &final_ptr as *const CUdeviceptr as *mut c_void,
-                &grid1 as *const u32 as *mut c_void,
-            ],
-        ).unwrap_or_else(|e| panic!("CUDA launch {name} pass2: {e}"));
+        ).unwrap_or_else(|e| panic!("CUDA launch {name}: {e}"));
     }
 
     let mut out = [T::zero()];
-    unsafe { result::memcpy_dtoh_sync(&mut out, final_ptr).unwrap_or_else(|e| panic!("CUDA D2H: {e}")); }
+    unsafe { result::memcpy_dtoh_sync(&mut out, out_ptr).unwrap_or_else(|e| panic!("CUDA D2H: {e}")); }
     out[0]
 }
 
