@@ -659,12 +659,14 @@ compile_error!("nabla: cpu and wgpu are mutually exclusive");
 |---|---|---|---|
 | `cpu` (default) | `Cpu` | `CpuStorage<f32>` (row-major `Vec<T>`) | ✅ |
 | `wgpu` | `Gpu` | `GpuStorage<f32>` (`wgpu::Buffer`) | ❌ compile error |
-| `cuda` | `Gpu` | `GpuStorage<f32>` (CUDA `CUdeviceptr`) | ✅ |
-| `hip` | `Gpu` | `GpuStorage<f32>` (HIP `hipDeviceptr_t`) | ✅ |
+| `cuda` | `Cuda` | `GpuStorage<f32>` (CUDA `CUdeviceptr`) | ✅ |
+| `hip` | `Hip` | `GpuStorage<f32>` (HIP `hipDeviceptr_t`) | ✅ |
 
 All tensors use `Tensor<T>` = `Tensor<T, DefaultBackend>`.
 
-### 4.2 GPU fallback prohibition
+### 4.2 Strict CPU/GPU separation
+
+**Backend trait**: all computation methods are **required** (no default body). Each backend (`Cpu`, `Gpu`, `Cuda`, `Hip`) must provide its own implementation. There is no implicit CPU fallback — attempting to call GPU-only ops on a CPU tensor (or vice versa) is a compile error.
 
 | Prohibited pattern | wgpu | cuda | hip |
 |---|---|---|---|
@@ -782,15 +784,19 @@ host_cache (cached on first access)
 
 ### 5.4 Kernel sources — two codebases
 
-**32 ops, same semantics, two shader languages:**
+**74 CUDA/HIP ops + 43 WGSL ops, same semantics, two shader languages:**
 
 | Category | Ops | WGSL (wgpu) | CUDA/HIP C (shared) |
 |---|---|---|---|
 | Binary | add, sub, mul_elem, div_elem, scale | `elementwise_binary` | `elementwise_binary` (float4) |
 | Unary | exp, ln, log1p, sin, cos, tanh, sqrt, abs, recip, erf, ceil, floor, round, powf, neg | `elementwise_unary` | `elementwise_unary` (float4 + fast math) |
+| Activation | sigmoid, silu, mish, leaky_relu, elu, hardswish | ✅ WGSL kernel | ✅ float4 vectorized |
 | Matmul | tiled matmul (shared memory) | `matmul_tiled` TILE=16 | `matmul_tiled` TILE=16/32 |
 | Reduction | sum, max, min | `reduction` | `reduction` (warp shuffle) |
 | Arg reduction | argmax, argmin | `reduction_arg` | `reduction_arg` (warp shuffle) |
+| Row-wise | softmax, layer_norm, rms_norm | ✅ WGSL workgroup reduce | ✅ warp shuffle (3-pass) |
+| Axis reduction | sum_axis1, max_axis1 | ✅ WGSL workgroup reduce | ✅ warp shuffle |
+| Gather | embedding | ✅ WGSL thread-per-element | ✅ thread-per-element |
 | Construction | zeros, fill, identity | `fill`, `identity` | `fill`, `identity` (float4) |
 | Copy | clone, transpose | `copy`, `transpose` | `copy`, `transpose` |
 
@@ -1501,6 +1507,7 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 **目的**: 汎用性の極限。ユーザーは任意のアーキテクチャを nabla のプリミティブの組み合わせだけで構築できる。エッジケースでも、プリミティブの組み合わせか最小限の拡張で対応可能。
 
 **現状のカバレッジ**: ✅ 190+ ops (element-wise, matmul, reduction, activations, loss, normalization, conv, pooling, attention, manipulation, construction, regularization)
+**GPU kernels**: 74 CUDA/HIP + 11 WGSL (activations, softmax, normalization, axis reductions, embedding)
 **目標**: CNN / Transformer / GAN / Diffusion — あらゆるアーキテクチャに必要な計算プリミティブを網羅
 
 #### A. Convolution（畳み込み）— ✅ CPU実装済
@@ -1543,11 +1550,11 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 | `sigmoid(x)` | $\frac{1}{1+e^{-x}}$ | ✅ | ✅ `fuse!` |
 | `softmax(x, dim)` | $\frac{e^{x_i}}{\sum e^{x_j}}$ | ✅ CPU | ✅ GPU kernel |
 | `log_softmax(x, dim)` | $x_i - \log \sum e^{x_j}$ | ✅ CPU | ✅ GPU kernel |
-| `silu(x)` / swish | $x \cdot \sigma(x)$ | ✅ CPU | ✅ `fuse!` 可 |
-| `mish(x)` | $x \cdot \tanh(\text{softplus}(x))$ | ✅ CPU | ✅ `fuse!` 可 |
-| `leaky_relu(x, α)` | $\max(\alpha x, x)$ | ✅ CPU | ✅ `fuse!` 可 |
-| `elu(x, α)` | $\begin{cases} x & x>0 \\ \alpha(e^x-1) & x \le 0 \end{cases}$ | ✅ CPU | ✅ `fuse!` 可 |
-| `hardswish(x)` | $x \cdot \frac{\text{ReLU6}(x+3)}{6}$ | ✅ CPU | ✅ `fuse!` 可 |
+| `silu(x)` / swish | $x \cdot \sigma(x)$ | ✅ CPU+GPU kernel | ✅ `fuse!` 可 |
+| `mish(x)` | $x \cdot \tanh(\text{softplus}(x))$ | ✅ CPU+GPU kernel | ✅ `fuse!` 可 |
+| `leaky_relu(x, α)` | $\max(\alpha x, x)$ | ✅ CPU+GPU kernel | ✅ `fuse!` 可 |
+| `elu(x, α)` | $\begin{cases} x & x>0 \\ \alpha(e^x-1) & x \le 0 \end{cases}$ | ✅ CPU+GPU kernel | ✅ `fuse!` 可 |
+| `hardswish(x)` | $x \cdot \frac{\text{ReLU6}(x+3)}{6}$ | ✅ CPU+GPU kernel | ✅ `fuse!` 可 |
 
 **実装方針**: element-wise activations は `fuse!` マクロで合成可能。専用メソッドは利便性のため提供。online softmax は GPU reduction kernel (3-pass → 1-pass with Kahan)。
 
@@ -1572,7 +1579,7 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 |---|---|---|---|
 | `scaled_dot_product_attention(Q, K, V, mask, dropout_p)` | $\text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right) V$ | 🔲 FlashAttention-2 tiled | ✅ |
 | `multi_head_attention(Q, K, V, num_heads)` | Reshape → SDPA → concat | 🔲 Batched GEMM + SDPA | ✅ |
-| `embedding(indices, weight)` | $y_i = W[\text{idx}_i]$ | 🔲 Gather kernel | ✅ |
+| `embedding(indices, weight)` | $y_i = W[\text{idx}_i]$ | ✅ GPU kernel | ✅ |
 
 **実装方針**: FlashAttention-2 は SRAM tiling (Tri Dao 2023)。Online softmax + 分割QKV matmul。O(N) メモリ (中間attention行列を保存しない)。backward は recomputation pattern。
 
@@ -1584,7 +1591,7 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 | `permute` / `transpose` | ✅ | — | — |
 | `cat` / `stack` | ✅ | — | — |
 | `squeeze` / `unsqueeze` | ✅ | — | — |
-| `flatten` / `unflatten` | ✅ / 🔲 | 🟡 | Multi-dim unflatten |
+| `flatten` / `unflatten` | ✅ / ✅ | — | reshape-based unflatten |
 | `chunk` / `split` | ✅ / ✅ | — | Arbitrary split sizes |
 | `repeat` / `expand` | ✅ | — | Broadcasting without copy |
 | `pad(x, pad, mode, value)` | ✅ | — | Conv padding, sequence padding |
@@ -1623,8 +1630,8 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 | `rand` / `randn` | ✅ CPU (xorshift64 + Box-Muller) | Weight init, dropout, stochastic |
 | `from_numpy` / `to_numpy` | N/A | Rust has no NumPy; use `from_slice` / `to_vec` |
 | `empty` (uninitialized) | ✅ | Performance (skip zeroing) |
-| `contiguous` | 🔲 | Force contiguous layout after permute |
-| `clone` / `detach` | ✅ / 🔲 | AD graph detachment |
+| `contiguous` | ✅ | Force contiguous layout after permute |
+| `clone` / `detach` | ✅ / ✅ | Clone / AD graph detachment |
 
 #### J. Reduction extensions — ✅ CPU実装済
 
@@ -1692,23 +1699,30 @@ GPU kernels for conv2d (im2col+GEMM), FlashAttention-2, online softmax, fused la
 
 **Phase 3 実装済 GPU kernels:**
 
-| Kernel | Type | Approach | Status |
-|---|---|---|---|
-| `k_silu_f32/f64` | Activation | float4 vectorized unary | ✅ |
-| `k_mish_f32/f64` | Activation | float4 vectorized unary | ✅ |
-| `k_leaky_relu_f32/f64` | Activation | float4 vectorized unary | ✅ |
-| `k_elu_f32/f64` | Activation | float4 vectorized unary | ✅ |
-| `k_hardswish_f32/f64` | Activation | float4 vectorized unary | ✅ |
-| `k_softmax_f32/f64` | Row-wise softmax | 3-pass (max, sum, normalize), warp shuffle | ✅ |
-| `k_layer_norm_f32/f64` | Fused normalization | Mean+var+normalize in single kernel | ✅ |
-| `k_rms_norm_f32/f64` | Fused normalization | RMS+normalize in single kernel | ✅ |
-| `k_sum_axis1_f32/f64` | Axis reduction | One block per row, warp shuffle | ✅ |
-| `k_max_axis1_f32/f64` | Axis reduction | One block per row, warp shuffle | ✅ |
-| `k_embedding_f32/f64` | Gather | One thread per output element | ✅ |
+| Kernel | Type | CUDA/HIP | wgpu (WGSL) | Status |
+|---|---|---|---|---|
+| `k_sigmoid_f32/f64` | Activation | float4 vectorized | — (via unary op) | ✅ |
+| `k_silu_f32/f64` | Activation | float4 vectorized | ✅ dedicated shader | ✅ |
+| `k_mish_f32/f64` | Activation | float4 vectorized | ✅ dedicated shader | ✅ |
+| `k_leaky_relu_f32/f64` | Activation | float4 vectorized | ✅ parameterized shader | ✅ |
+| `k_elu_f32/f64` | Activation | float4 vectorized | ✅ parameterized shader | ✅ |
+| `k_hardswish_f32/f64` | Activation | float4 vectorized | ✅ dedicated shader | ✅ |
+| `k_softmax_f32/f64` | Row-wise softmax | 3-pass warp shuffle | ✅ workgroup reduce | ✅ |
+| `k_layer_norm_f32/f64` | Fused normalization | fused mean+var+norm | ✅ workgroup reduce | ✅ |
+| `k_rms_norm_f32/f64` | Fused normalization | fused RMS+normalize | ✅ workgroup reduce | ✅ |
+| `k_sum_axis1_f32/f64` | Axis reduction | one block/row warp shuffle | ✅ workgroup reduce | ✅ |
+| `k_max_axis1_f32/f64` | Axis reduction | one block/row warp shuffle | ✅ workgroup reduce | ✅ |
+| `k_embedding_f32/f64` | Gather | thread-per-element | ✅ thread-per-element | ✅ |
 
-Total: 62 CUDA/HIP kernels (up from 42).
+**Backend coverage:**
 
-### 14.2 Performance remaining
+| Backend | Kernel count | Approach |
+|---|---|---|
+| CUDA (nvrtc) | 74 kernels (f32+f64) | float4 vectorized + warp shuffle + WMMA tensor cores |
+| HIP (hiprtc) | 74 kernels (f32+f64) | Source-compatible with CUDA C |
+| wgpu (WGSL) | 43 kernels (f32 only) | Workgroup-level reduction, register-tile MMA |
+
+### 14.2 Performance
 
 | Item | Priority | Status | Rationale |
 |---|---|---|---|
@@ -1725,7 +1739,7 @@ Total: 62 CUDA/HIP kernels (up from 42).
 - ✗ Auto-tune BLOCK_SIZE → `cuOccupancyMaxPotentialBlockSize` が 2–3× 性能悪化。固定256が最適
 - ✗ Persistent grid-stride → Grid capping が 2–3× 性能悪化。if/else パターンが n≥4096² で最適
 
-### 14.2 Implemented
+### 14.3 Implementation History
 
 | Wave | Items |
 |---|---|
@@ -1746,6 +1760,7 @@ Total: 62 CUDA/HIP kernels (up from 42).
 | W18 | `PararealConfig` + `parareal_solve` CPU parallel-in-time (rayon fine propagator), `#[nabla_grad]` source-transform AD (Dual<T> lifting, forward-mode), `Dual` convenience methods (exp/ln/sin/cos/tanh/sqrt/abs/recip + mixed arithmetic), wgpu 2D register-tile software MMA (`gen_matmul_register_tile`, `select_register_tile_params`, `MatmulRegTile` dispatch ≥64³) |
 | W19 | GPU kernel fusion L1 JIT (`cuda_expr()` compile-time codegen → NVRTC/hiprtc runtime JIT → hash-based cache), `Backend::fuse_launch` trait method + `Tensor::__fuse_elementwise`, f32 float4 vectorized memory access in pre-compiled kernels (128-bit `LDG.E.128`, fast math `__expf`/`__logf`/`__sinf`/`__cosf`), GH200 benchmarks (3.8× fusion speedup, 30× gap vs PyTorch identified) |
 | W20 | GPU caching memory allocator (best-fit dual-pool, 512B-aligned, block splitting, over-alloc 2/20MB, GC 0.9), float4 vectorized fuse codegen (`fuse_kernel_source()` emits `float4` + `__ldg` prefetch + scalar tail), async execution (removed all unnecessary syncs), single-element D2H readback (`copy_element()` — 4 bytes instead of full tensor), fusion cost model (`estimate_register_pressure()` proc macro + `maxrregcount=120`), CUDA Graph capture/replay (`NablaCudaGraph` API). **Results: sin/tanh/add match PyTorch (0.040ms), fuse exp+sin 2× faster than PyTorch eager, exp+readback 0.053ms ≈ PyTorch 0.053ms, gap reduced from 46× to ≈ parity** |
+| W21 | Strict CPU/GPU separation (Backend trait: 全メソッド required, default body 廃止), `unflatten`/`contiguous`/`detach` 追加, 全 GPU スタブ実装完了 — wgpu: 11 WGSL shaders (activations, softmax, layer_norm, rms_norm, sum/max_axis1, embedding), HIP: 8 launch functions + KERNEL_NAMES 24 追加, CUDA KERNEL_NAMES 24 追加. Backend coverage: CUDA 74, HIP 74, wgpu 43 kernels. `unimplemented!()` ゼロ |
 
 ---
 
