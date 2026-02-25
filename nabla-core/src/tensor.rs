@@ -354,6 +354,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self { storage, _axes: PhantomData }
     }
 
+    /// Consume this tensor and return its backing storage.
+    pub fn into_storage(self) -> B::Storage<T> {
+        self.storage
+    }
+
+    /// Borrow the backing storage.
+    pub fn storage(&self) -> &B::Storage<T> {
+        &self.storage
+    }
+
     /// Allocate a zero-filled matrix of shape `(nrows, ncols)`.
     #[must_use]
     pub fn zeros(nrows: usize, ncols: usize) -> Self {
