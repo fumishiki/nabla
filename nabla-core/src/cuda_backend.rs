@@ -327,8 +327,10 @@ struct CudaCtx {
     blas: CublasHandle,
     /// Cached CUDA graphs keyed by user-provided name for deduplication.
     graphs: Mutex<HashMap<String, Arc<NablaCudaGraph>>>,
-    /// Pre-allocated scratch for reductions (REDUCE_GRID_CAP * 8 bytes for f64).
+    /// Pre-allocated scratch for reductions (REDUCE_GRID_CAP * 8 + 16 bytes).
     reduce_scratch: CUdeviceptr,
+    /// Cached reduction kernel function pointers [sum_f32, max_f32, min_f32, sum_f64, max_f64, min_f64]
+    reduce_funcs: [CUfunction; 6],
 }
 
 // Returns (major, minor) compute capability of device 0.
@@ -390,6 +392,7 @@ fn get_ctx() -> &'static CudaCtx {
             result::malloc_async(stream.cu_stream(), reduce_scratch_size)
                 .expect("CUDA reduce scratch alloc failed")
         };
+        // Use a null placeholder for reduce_funcs; we'll fill them after compilation.
         let cuda_ctx = CudaCtx {
             stream,
             copy_stream,
@@ -399,6 +402,7 @@ fn get_ctx() -> &'static CudaCtx {
             blas: CublasHandle(blas_raw),
             graphs: Mutex::new(HashMap::new()),
             reduce_scratch,
+            reduce_funcs: [std::ptr::null_mut(); 6],
         };
         // Pre-compile all kernels from the combined source
         if let Err(e) = compile_all_kernels(&cuda_ctx, &arch) {
@@ -410,6 +414,16 @@ fn get_ctx() -> &'static CudaCtx {
                 // Non-fatal: fall back to tiled matmul
                 eprintln!("WMMA kernel compilation failed (falling back to tiled): {e}");
             }
+        }
+        // Cache reduction kernel function pointers for zero-overhead access
+        let rf = |name: &str| get_kernel(&cuda_ctx, name).expect("reduce kernel missing");
+        // SAFETY: we're still constructing the OnceLock value, so mutating is fine.
+        let ctx_ptr = &cuda_ctx as *const CudaCtx as *mut CudaCtx;
+        unsafe {
+            (*ctx_ptr).reduce_funcs = [
+                rf("k_sum_f32"), rf("k_max_f32"), rf("k_min_f32"),
+                rf("k_sum_f64"), rf("k_max_f64"), rf("k_min_f64"),
+            ];
         }
         cuda_ctx
     })
@@ -848,21 +862,24 @@ pub(crate) fn cuda_matmul<T: Scalar>(
 
 use crate::kernels_cu::{REDUCE_BLOCK, REDUCE_GRID_CAP};
 
+// Index into reduce_funcs: [sum_f32=0, max_f32=1, min_f32=2, sum_f64=3, max_f64=4, min_f64=5]
+fn reduce_func_idx<T: Scalar>(base: usize) -> usize {
+    if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() { base } else { base + 3 }
+}
+
 pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
     let ctx = get_ctx();
     let n = a.n();
     if n == 0 { return T::zero(); }
-    let name = format!("k_sum_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = ctx.reduce_funcs[reduce_func_idx::<T>(0)];
     let elem = core::mem::size_of::<T>();
     let grid1 = REDUCE_GRID_CAP.min(((n as u32) + REDUCE_BLOCK - 1) / REDUCE_BLOCK);
     let scratch = ctx.reduce_scratch;
 
-    // Zero the counter at partial[gridDim.x] (4 bytes for unsigned int)
+    // Zero the counter at partial[gridDim.x]
     let counter_offset = (grid1 as usize) * elem;
     unsafe { let _ = result::memset_d8_async(scratch + counter_offset as u64, 0, 4, ctx.stream.cu_stream()); }
 
-    // Single kernel: all blocks write partials, last block aggregates to partial[0]
     let n_u32 = n as u32;
     unsafe {
         result::launch_kernel(
@@ -872,7 +889,7 @@ pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
                 &scratch as *const CUdeviceptr as *mut c_void,
                 &n_u32 as *const u32 as *mut c_void,
             ],
-        ).unwrap_or_else(|e| panic!("CUDA launch {name}: {e}"));
+        ).unwrap_or_else(|e| panic!("CUDA launch reduce: {e}"));
     }
 
     let mut out = [T::zero()];
@@ -881,32 +898,30 @@ pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
 }
 
 pub(crate) fn cuda_max_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    cuda_reduce_minmax(a, "max")
+    cuda_reduce_minmax(a, 1) // func_base=1 → max
 }
 pub(crate) fn cuda_min_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    cuda_reduce_minmax(a, "min")
+    cuda_reduce_minmax(a, 2) // func_base=2 → min
 }
 
-fn cuda_reduce_minmax<T: Scalar>(a: &CudaStorage<T>, op: &str) -> T {
+fn cuda_reduce_minmax<T: Scalar>(a: &CudaStorage<T>, func_base: usize) -> T {
     let ctx = get_ctx();
     let n = a.n();
     assert!(n > 0, "reduction on empty");
-    let name = format!("k_{op}_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = ctx.reduce_funcs[reduce_func_idx::<T>(func_base)];
     let elem = core::mem::size_of::<T>();
     let grid1 = REDUCE_GRID_CAP.min(((n as u32) + REDUCE_BLOCK - 1) / REDUCE_BLOCK);
     let scratch = ctx.reduce_scratch;
 
-    // Init value at scratch end (copy first element of input)
+    // Init value at scratch end
     let init_offset = (REDUCE_GRID_CAP as usize) * 8;
     let init_ptr = scratch + init_offset as u64;
     unsafe { let _ = result::memcpy_dtod_async(init_ptr, a.buf.ptr, elem, ctx.stream.cu_stream()); }
 
-    // Zero the counter at partial[gridDim.x] (4 bytes)
+    // Zero counter
     let counter_offset = (grid1 as usize) * elem;
     unsafe { let _ = result::memset_d8_async(scratch + counter_offset as u64, 0, 4, ctx.stream.cu_stream()); }
 
-    // Single kernel: all blocks write partials + last block aggregates to partial[0]
     let n_u32 = n as u32;
     unsafe {
         result::launch_kernel(
@@ -917,7 +932,7 @@ fn cuda_reduce_minmax<T: Scalar>(a: &CudaStorage<T>, op: &str) -> T {
                 &n_u32 as *const u32 as *mut c_void,
                 &init_ptr as *const CUdeviceptr as *mut c_void,
             ],
-        ).unwrap_or_else(|e| panic!("CUDA launch {name}: {e}"));
+        ).unwrap_or_else(|e| panic!("CUDA launch reduce: {e}"));
     }
 
     let mut out = [T::zero()];
