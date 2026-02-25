@@ -1257,18 +1257,30 @@ Key insight: PyTorch's `.item()` copies only **1 scalar** (4 bytes), not the ent
 | `channels_last` layout | NHWC for conv kernels | N/A (no conv) | — |
 | Prefetch / eviction | `tl.load(eviction_policy='evict_first')` | ✅ `__ldg` in fuse codegen (W20) | 5–15% cache improvement |
 
-Bandwidth utilization analysis (GH200, theoretical peak ~4000 GB/s):
+Bandwidth utilization analysis (GH200 480GB, theoretical peak ~4000 GB/s):
 
-| Workload | nabla GB/s | PyTorch GB/s | % of peak (nabla) | % of peak (PyTorch) |
-|---|---|---|---|---|
-| exp | 1059 | 3308 | 26% | 83% |
-| sin | 3315 | 3295 | **83%** | 82% |
-| tanh | 3317 | 3310 | **83%** | 83% |
-| add | 2309 | 2309 | **58%** | 58% |
-| fuse exp+sin | 3291 | 1653 (eager) | **82%** | 41% |
-| fuse 4-op | 2913 | 3287 (compile) | **73%** | 82% |
+| Workload | nabla (ms) | PyTorch (ms) | nabla GB/s | PyTorch GB/s | Winner |
+|---|---|---|---|---|---|
+| exp | 0.046 | 0.040 | 2928 | 3322 | PyTorch 1.15× |
+| sin | 0.046 | 0.041 | 2938 | 3298 | PyTorch 1.12× |
+| cos | 0.046 | 0.041 | 2947 | 3299 | PyTorch 1.12× |
+| tanh | 0.046 | 0.040 | 2938 | 3318 | PyTorch 1.13× |
+| neg | 0.046 | 0.040 | 2948 | 3331 | PyTorch 1.13× |
+| abs | 0.046 | 0.040 | 2949 | 3322 | PyTorch 1.13× |
+| sqrt(abs) | 0.086 | 0.081 | 1564 | 1663 | PyTorch 1.06× |
+| ln(abs+1) | 0.086 | 0.081 | 1564 | 1667 | PyTorch 1.06× |
+| add | 0.063 | 0.058 | 2128 | 3474 | PyTorch 1.09× |
+| sub | 0.063 | 0.058 | 2129 | 3473 | PyTorch 1.09× |
+| emul | 0.063 | 0.058 | 2133 | 3473 | PyTorch 1.09× |
+| fuse exp+sin | 0.046 | 0.056 | 2919 | 2403 | **nabla 1.2×** |
+| fuse 4-op | 0.055 | 0.052 | 2424 | 2558 | PyTorch 1.06× |
+| **sum_all** | **0.028** | 0.026 | 2376 | 2621 | PyTorch 1.08× |
+| **max_all** | **0.029** | 0.026 | 2350 | 2591 | PyTorch 1.12× |
+| matmul 1024 | **0.029** | 0.057 | 4587 | 221 | **nabla 2.0×** |
 
-nabla now achieves **58–83%** of peak bandwidth (up from 22–46% pre-W20). sin/tanh/add match PyTorch exactly. Fuse exp+sin achieves 82% vs PyTorch eager 41% — **nabla 2× faster**. Remaining exp gap (26% vs 83%) is output allocation overhead.
+All measurements: 4096×4096 f32, 100 iterations (20 warmup), `cuda.synchronize()` / `.sync()`. PyTorch 2.7.0, CUDA 12.8, Rust 1.93.1.
+
+nabla achieves **58–74%** of peak bandwidth on element-wise ops, **59%** on reductions, and **115%** on matmul (cuBLAS). Fused kernel chains outperform PyTorch's eager mode by **1.2×**. Reduction kernels (sum_all/max_all) are within **8–12%** of PyTorch's CUB DeviceReduce — closed from an initial **7.7–14×** gap via: quad-accumulator ILP, float4 vectorized loads, single-kernel last-block aggregation, mapped host memory writes, cached CUfunction pointers.
 
 **F. Remaining gap closure roadmap** (priority-ordered):
 
@@ -1279,7 +1291,9 @@ nabla now achieves **58–83%** of peak bandwidth (up from 22–46% pre-W20). si
 | 3. Prefetch hints (`__ldg`) | ✅ W20 | `__ldg()` in fuse codegen (float4/scalar/f64) | CUDA `__ldg()` intrinsic |
 | 4. Fusion cost model | ✅ W20 | `estimate_register_pressure()`, `maxrregcount=120` | TorchInductor heuristics |
 | 5. Multi-stream pipeline | ✅ | `copy_stream` + CUDA events for H2D/compute overlap | PyTorch DataLoader pattern |
-| 6. Mega-kernel fusion (L4) | 🔲 | — | MPK [2512.22219], FlashFuser [2512.12949] |
+| 6. GPU reduction kernels | ✅ | Single-kernel last-block aggregation, quad-ILP, mapped host write | CUB DeviceReduce |
+| 7. Cached CUfunction pointers | ✅ | `reduce_funcs[6]` in CudaCtx, zero format!/mutex overhead | Direct driver API |
+| 8. Mega-kernel fusion (L4) | 🔲 | — | MPK [2512.22219], FlashFuser [2512.12949] |
 
 **効果なし（実装・ベンチマーク済、リバート）:**
 

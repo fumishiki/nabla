@@ -115,6 +115,24 @@ nabla's scope is limited to **mathematically invariant rules** — operations wh
 
 ---
 
+## Benchmark — nabla vs PyTorch (GH200 480GB)
+
+4096×4096 f32, 100 iterations, CUDA 12.8, PyTorch 2.7.0.
+
+| Operation | nabla | PyTorch | Winner |
+|---|---|---|---|
+| matmul 1024² | **0.029 ms** | 0.057 ms | **nabla 2.0×** |
+| fuse exp+sin | **0.046 ms** | 0.056 ms | **nabla 1.2×** |
+| exp | 0.046 ms | 0.040 ms | PyTorch 1.15× |
+| sin / cos / tanh | 0.046 ms | 0.041 ms | PyTorch 1.12× |
+| add / sub / emul | 0.063 ms | 0.058 ms | PyTorch 1.09× |
+| sum\_all | 0.028 ms | 0.026 ms | PyTorch 1.08× |
+| max\_all | 0.029 ms | 0.026 ms | PyTorch 1.12× |
+
+**Key results**: matmul 2× faster (cuBLAS TF32), fused kernels 1.2× faster (zero intermediates), reductions within 8–12% of CUB DeviceReduce. Element-wise ops within 9–15% of PyTorch.
+
+---
+
 ## Install
 
 ```toml
