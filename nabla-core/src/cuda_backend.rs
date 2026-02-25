@@ -70,6 +70,35 @@ pub struct CuBuffer {
 }
 
 impl CuBuffer {
+    /// Wrap an externally-owned `CUdeviceptr` as a non-owning `CuBuffer`.
+    ///
+    /// # Safety
+    /// - `ptr` must be a valid device pointer with at least `size_bytes` allocated.
+    /// - The caller must ensure the pointer outlives this `CuBuffer`.
+    /// - The returned buffer is **non-pooled** and its `Drop` will call `cuMemFree`.
+    ///   To create a truly borrowed (non-freeing) buffer, use [`Self::borrow_ptr`].
+    pub unsafe fn from_raw_parts(ptr: CUdeviceptr, size_bytes: usize) -> Self {
+        Self { ptr, size: size_bytes, alloc_size: size_bytes, pooled: false }
+    }
+
+    /// Wrap an externally-owned `CUdeviceptr` as a **borrowed** (non-freeing) `CuBuffer`.
+    ///
+    /// Unlike [`from_raw_parts`], `Drop` will **NOT** free the pointer.
+    /// Use this when the GPU memory is managed by an external allocator (e.g. `GpuTensor`).
+    ///
+    /// # Safety
+    /// - `ptr` must be valid for at least `size_bytes` and must outlive this buffer.
+    pub unsafe fn borrow_ptr(ptr: CUdeviceptr, size_bytes: usize) -> Self {
+        // pooled=false + ptr=0 trick won't work because ptr != 0.
+        // Instead we use a sentinel: alloc_size = 0 means "borrowed, don't free".
+        Self { ptr, size: size_bytes, alloc_size: 0, pooled: false }
+    }
+
+    /// Returns the raw `CUdeviceptr`.
+    pub fn as_ptr(&self) -> CUdeviceptr {
+        self.ptr
+    }
+
     fn alloc_zeros(stream: &Arc<CudaStream>, size_bytes: usize) -> CudaResult<Self> {
         if size_bytes == 0 {
             return Ok(Self { ptr: 0, size: 0, alloc_size: 0, pooled: false });
@@ -227,7 +256,7 @@ impl CuBuffer {
 
 impl Drop for CuBuffer {
     fn drop(&mut self) {
-        if self.ptr != 0 {
+        if self.ptr != 0 && self.alloc_size > 0 {
             if self.pooled {
                 let ctx = get_ctx();
                 let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -238,6 +267,7 @@ impl Drop for CuBuffer {
                 unsafe { let _ = result::free_sync(self.ptr); }
             }
         }
+        // alloc_size == 0 → borrowed pointer, do NOT free
     }
 }
 
