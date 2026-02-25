@@ -101,6 +101,7 @@ nabla's scope is limited to **mathematically invariant rules** — operations wh
 
 | Category | What you get |
 |---|---|
+| **70+ tensor ops** | matmul, conv2d (planned), element-wise (exp/sin/cos/tanh/sqrt/…), reductions (sum/max/min/var/std/…), activations (relu/gelu/sigmoid/softmax/…), normalization (layer\_norm/rms\_norm/…), loss (cross\_entropy/mse/…), manipulation (reshape/permute/cat/pad/gather/scatter/…) |
 | **13 macros** | `mat!` `einsum!` `fuse!` `map!` `map_!` `par_map!` `stencil!` `named!` `generated!` `splat!` `pipe!` `between!` `frange!` |
 | **9 dense factorizations** | LU, QR, Cholesky (LLT), LDL, SVD, Eigendecomposition + structural views (Diagonal, Symmetric, Triangular) |
 | **Sparse LA** | CSC (CPU) + `BcsrMatrix` BCSR (GPU WGSL SpMM) + mixed-precision refinement |

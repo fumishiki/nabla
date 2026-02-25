@@ -18,16 +18,21 @@ nabla's scope is limited to **mathematically invariant rules**. User-customizabl
 
 | Category | nabla provides (CPU/GPU) | User implements |
 |---|---|---|
-| Tensor ops | matmul, exp, sin, reduction, etc. | — |
+| Tensor ops | matmul, conv, exp, sin, reduction, etc. | — |
+| Tensor manipulation | reshape, permute, cat, pad, gather, scatter, etc. | — |
+| Activations | relu, gelu, silu, sigmoid, softmax, log_softmax, etc. | — |
+| Normalization | layer_norm, rms_norm, batch_norm, group_norm | — |
+| Loss functions | cross_entropy, mse, l1, huber, nll, kl_div, etc. | — |
 | Autodiff | reverse-mode AD (chain rule) | — |
 | CAS | diff, simplify, eval | — |
 | ODE | euler, rk4, dormand_prince (Butcher tableau) | — |
-| Optimizer | — | SGD, Adam, etc. |
-| Loss function | — | MSE, cross-entropy, etc. |
-| Model architecture | — | layers, forward pass |
-| Training loop | — | epoch, batch, logging |
+| Optimizer | — | SGD, Adam, LAMB, schedule, etc. |
+| Model architecture | — | layers, forward pass, modules |
+| Training loop | — | epoch, batch, logging, checkpointing |
 
 **Criterion**: "Will users need to customize this in the future?" → Yes: not provided. No (mathematically fixed): provided with CPU/GPU support.
+
+> **Scope expansion rationale**: Loss functions (cross-entropy, MSE, etc.) are mathematically fixed — the formula is $-\sum y \log p$ regardless of the model or task. The *choice* of which loss to use is user-decided, but each individual loss function's computation is invariant. Same for normalization layers (batch norm formula is fixed), convolutions (definition is fixed), and activations (ReLU = max(0,x) is fixed). nabla provides the *computation*; users choose *which* computation to compose.
 
 ### Design principles
 
@@ -1470,7 +1475,186 @@ let normed = &x / &x.sum_axis_keepdim(1);   // softmax denominator pattern
 
 ## 14. Roadmap
 
-### 14.1 Remaining
+### 14.1 PyTorch computational parity — 必須計算オペレーション
+
+PyTorchエコシステムの中で「計算」部分だけをピュアRustで高速化する。Fixed Rule Principleに基づき、数学的に不変な計算はすべてnablaが提供する。
+
+**現状のカバレッジ**: ✅ 70+ ops (element-wise, matmul, reduction, activations, basic manipulation)
+**目標**: PyTorch `torch.*` / `torch.nn.functional.*` の必須計算を網羅
+
+#### A. Convolution（畳み込み）— 🔴 必須・未実装
+
+| Op | 数式 | GPU kernel | AD backward | 優先度 |
+|---|---|---|---|---|
+| `conv1d(x, w, bias, stride, padding, dilation, groups)` | $(x * w)[n,c_o,l] = \sum_{c_i,k} x[n,c_i,l \cdot s+k \cdot d] \cdot w[c_o,c_i,k]$ | im2col + GEMM or direct | ✅ 必要 | 🔴 P0 |
+| `conv2d(x, w, bias, stride, padding, dilation, groups)` | $(x * w)[n,c_o,h,w] = \sum_{c_i,kh,kw} x \cdot w$ | im2col + GEMM (Winograd for 3×3) | ✅ 必要 | 🔴 P0 |
+| `conv_transpose2d(x, w, ...)` | Fractionally-strided convolution | col2im + GEMM | ✅ 必要 | 🟡 P1 |
+| `conv3d` | 3D convolution | im2col + GEMM | ✅ 必要 | 🟡 P1 |
+
+**実装方針**: im2col → 既存matmul (cuBLAS TF32) パイプライン。Winograd F(2×2, 3×3) は conv2d 3×3 stride=1 の高速パス。`groups=C` で depthwise convolution。
+
+#### B. Pooling — 🔴 必須・未実装
+
+| Op | 数式 | GPU kernel | AD backward |
+|---|---|---|---|
+| `max_pool2d(x, kernel_size, stride, padding)` | $y[n,c,h,w] = \max_{kh,kw} x[n,c,h \cdot s+kh, w \cdot s+kw]$ | 2D grid, smem for max tracking | argmax indices for backward |
+| `avg_pool2d(x, kernel_size, stride, padding)` | $y = \frac{1}{k^2} \sum x$ | 2D grid, accumulate | Uniform gradient distribution |
+| `adaptive_avg_pool2d(x, output_size)` | Auto-stride pooling | Dynamic stride calculation | Same as avg_pool |
+| `max_pool1d` / `avg_pool1d` | 1D variants | — | — |
+
+#### C. Normalization — 🟠 一部実装
+
+| Op | 数式 | 現状 | AD backward |
+|---|---|---|---|
+| `layer_norm(x, shape, weight, bias, eps)` | $\frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} \cdot \gamma + \beta$ | ✅ CPU | 🔲 GPU kernel |
+| `rms_norm(x, weight, eps)` | $\frac{x}{\text{RMS}(x)} \cdot \gamma$ | 🔲 | 🔲 GPU kernel |
+| `batch_norm(x, mean, var, weight, bias, training, momentum, eps)` | Running mean/var + affine | 🔲 | 🔲 GPU kernel (running stats) |
+| `group_norm(x, num_groups, weight, bias, eps)` | Group-wise layer norm | 🔲 | 🔲 GPU kernel |
+
+**実装方針**: layer_norm/rms_norm は fused kernel (mean+var+normalize を1カーネルで)。batch_norm は training/eval モードで異なるパス。
+
+#### D. Activation functions — 🟠 一部実装
+
+| Op | 数式 | 現状 | fusable |
+|---|---|---|---|
+| `relu(x)` | $\max(0, x)$ | ✅ | ✅ `fuse!` |
+| `gelu(x)` | $x \cdot \Phi(x)$ | ✅ | ✅ `fuse!` |
+| `sigmoid(x)` | $\frac{1}{1+e^{-x}}$ | ✅ | ✅ `fuse!` |
+| `softmax(x, dim)` | $\frac{e^{x_i}}{\sum e^{x_j}}$ | ✅ CPU | 🔲 GPU (online softmax) |
+| `log_softmax(x, dim)` | $x_i - \log \sum e^{x_j}$ | ✅ CPU | 🔲 GPU |
+| `silu(x)` / swish | $x \cdot \sigma(x)$ | 🔲 | ✅ `fuse!` 可 |
+| `mish(x)` | $x \cdot \tanh(\text{softplus}(x))$ | 🔲 | ✅ `fuse!` 可 |
+| `leaky_relu(x, α)` | $\max(\alpha x, x)$ | 🔲 | ✅ `fuse!` 可 |
+| `elu(x, α)` | $\begin{cases} x & x>0 \\ \alpha(e^x-1) & x \le 0 \end{cases}$ | 🔲 | ✅ `fuse!` 可 |
+| `hardswish(x)` | $x \cdot \frac{\text{ReLU6}(x+3)}{6}$ | 🔲 | ✅ `fuse!` 可 |
+
+**実装方針**: element-wise activations は `fuse!` マクロで合成可能。専用メソッドは利便性のため提供。online softmax は GPU reduction kernel (3-pass → 1-pass with Kahan)。
+
+#### E. Loss functions — 🟠 一部実装
+
+| Op | 数式 | 現状 | AD backward |
+|---|---|---|---|
+| `cross_entropy_loss(logits, targets)` | $-\sum y_i \log \text{softmax}(x)_i$ | ✅ CPU | 🔲 GPU fused |
+| `mse_loss(pred, target)` | $\frac{1}{n}\sum(y - \hat{y})^2$ | 🔲 | ✅ trivial |
+| `l1_loss(pred, target)` | $\frac{1}{n}\sum|y - \hat{y}|$ | 🔲 | ✅ trivial |
+| `smooth_l1_loss(pred, target, beta)` | Huber loss | 🔲 | ✅ |
+| `binary_cross_entropy_with_logits` | $-[y \log \sigma(x) + (1-y) \log(1-\sigma(x))]$ | 🔲 | ✅ |
+| `nll_loss(log_probs, targets)` | $-\log p_{y_i}$ | 🔲 | ✅ |
+| `kl_div(log_p, q)` | $\sum q (\log q - \log p)$ | 🔲 | ✅ |
+| `cosine_embedding_loss` | $1 - \cos(x_1, x_2)$ | 🔲 | ✅ |
+
+**実装方針**: cross_entropy は log_softmax + nll_loss の fused kernel (数値安定性)。mse/l1/huber は `fuse!` で合成可能だが、reduction込みの専用APIを提供。
+
+#### F. Attention / Transformer primitives — 🔴 必須・未実装
+
+| Op | 数式 | GPU kernel | 優先度 |
+|---|---|---|---|
+| `scaled_dot_product_attention(Q, K, V, mask, dropout_p)` | $\text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right) V$ | FlashAttention-2 tiled | 🔴 P0 |
+| `multi_head_attention(Q, K, V, num_heads)` | Reshape → SDPA → concat | Batched GEMM + SDPA | 🔴 P0 |
+| `embedding(indices, weight)` | $y_i = W[\text{idx}_i]$ | Gather kernel | 🔴 P0 |
+
+**実装方針**: FlashAttention-2 は SRAM tiling (Tri Dao 2023)。Online softmax + 分割QKV matmul。O(N) メモリ (中間attention行列を保存しない)。backward は recomputation pattern。
+
+#### G. Tensor manipulation — 🟠 一部実装
+
+| Op | 現状 | 優先度 | 用途 |
+|---|---|---|---|
+| `reshape` / `view` | ✅ | — | — |
+| `permute` / `transpose` | ✅ | — | — |
+| `cat` / `stack` | ✅ | — | — |
+| `squeeze` / `unsqueeze` | ✅ | — | — |
+| `flatten` / `unflatten` | ✅ / 🔲 | 🟡 | Multi-dim unflatten |
+| `chunk` / `split` | ✅ / 🔲 | 🟡 | Arbitrary split sizes |
+| `repeat` / `expand` | 🔲 | 🔴 P0 | Broadcasting without copy |
+| `pad(x, pad, mode, value)` | 🔲 | 🔴 P0 | Conv padding, sequence padding |
+| `gather(x, dim, index)` | ✅ (rows only) | 🔴 P0 | General dim gather |
+| `scatter(x, dim, index, src)` | 🔲 | 🔴 P0 | Embedding backward, sparse update |
+| `index_select(x, dim, index)` | 🔲 | 🔴 P0 | Batch indexing |
+| `masked_fill(x, mask, value)` | 🔲 | 🔴 P0 | Attention mask |
+| `where_(cond, x, y)` | 🔲 | 🟡 P1 | Conditional select |
+| `triu` / `tril` | 🔲 | 🟡 P1 | Causal mask generation |
+| `roll` / `flip` | 🔲 | 🟡 P1 | Shift equivariance |
+| `meshgrid` | 🔲 | 🟡 P1 | Positional encoding |
+| `arange` / `linspace` | 🔲 | 🔴 P0 | Index generation |
+| `topk(x, k, dim)` | 🔲 | 🟡 P1 | Top-k sampling |
+| `sort(x, dim)` | 🔲 | 🟡 P1 | Ranking |
+
+#### H. Batched operations — 🔴 必須・未実装
+
+| Op | 数式 | GPU kernel | 用途 |
+|---|---|---|---|
+| `bmm(A, B)` | Batched matmul: $C_b = A_b B_b$ | cuBLAS `cublasSgemmStridedBatched` | Attention, batched linear |
+| `baddbmm(C, A, B, β, α)` | $C = \beta C + \alpha A B$ | cuBLAS fused | Efficient attention |
+| `addmm(C, A, B, β, α)` | $C = \beta C + \alpha A B$ | cuBLAS fused | Linear layer |
+| Batched reductions | `sum/max/min` along batch dim | Existing kernels + stride | DataParallel |
+
+**実装方針**: cuBLAS の StridedBatched API を直接使用。3D tensor → batch of 2D matrices。
+
+#### I. Construction / utility — 🟠 一部実装
+
+| Op | 現状 | 用途 |
+|---|---|---|
+| `zeros` / `ones` / `full` | ✅ | — |
+| `zeros_like` / `ones_like` / `full_like` | ✅ / ✅ / 🔲 | — |
+| `eye` / `identity` | ✅ | — |
+| `arange(start, end, step)` | 🔲 | Index tensors, positional encoding |
+| `linspace(start, end, steps)` | 🔲 | Uniform sampling |
+| `rand` / `randn` | 🔲 | Weight init, dropout, stochastic |
+| `from_numpy` / `to_numpy` | N/A | Rust has no NumPy; use `from_slice` / `to_vec` |
+| `empty` (uninitialized) | 🔲 | Performance (skip zeroing) |
+| `contiguous` | 🔲 | Force contiguous layout after permute |
+| `clone` / `detach` | ✅ / 🔲 | AD graph detachment |
+
+#### J. Reduction extensions — 🟠 一部実装
+
+| Op | 数式 | 現状 | GPU |
+|---|---|---|---|
+| `sum_all` / `max_all` / `min_all` | ✅ | ✅ | ✅ (quad-ILP, mapped host) |
+| `sum_axis(d)` / `mean_axis(d)` | ✅ | ✅ CPU | 🔲 GPU kernel |
+| `var_axis(d)` / `std_axis(d)` | ✅ | ✅ CPU | 🔲 GPU kernel |
+| `max_axis(d)` / `min_axis(d)` | ✅ | ✅ CPU | 🔲 GPU kernel |
+| `argmax_axis(d)` / `argmin_axis(d)` | 🔲 | — | 🔲 GPU kernel |
+| `cumsum(x, dim)` | ✅ CPU | — | 🔲 GPU (parallel prefix sum) |
+| `cumprod(x, dim)` | 🔲 | — | 🔲 GPU (parallel prefix) |
+| `prod_all` | 🔲 | — | 🔲 GPU reduction |
+| `norm(x, p, dim)` | ✅ (L2/Linf) | — | 🔲 GPU Lp-norm |
+| `count_nonzero` | 🔲 | — | 🔲 GPU reduction |
+
+---
+
+#### 実装優先度まとめ
+
+**Phase 1 (P0 — Transformer/CNN必須):**
+
+| # | Op | 理由 |
+|---|---|---|
+| 1 | `conv2d` + backward | CNN基盤。im2col + 既存matmul |
+| 2 | `scaled_dot_product_attention` | Transformer基盤。FlashAttention-2 |
+| 3 | `bmm` / `addmm` | Batched GEMM。cuBLAS StridedBatched |
+| 4 | `embedding` + backward | NLP/LLM基盤。gather + scatter kernel |
+| 5 | `softmax` / `log_softmax` GPU | Online softmax kernel |
+| 6 | `layer_norm` / `rms_norm` GPU | Fused mean+var+normalize kernel |
+| 7 | `pad` / `repeat` / `expand` | Conv/attention の前処理 |
+| 8 | `gather` / `scatter` / `index_select` / `masked_fill` | Attention mask, embedding |
+| 9 | `arange` / `linspace` | Positional encoding |
+| 10 | `cross_entropy_loss` GPU | Fused log_softmax + nll |
+| 11 | `mse_loss` / `l1_loss` | 基本 loss |
+| 12 | `silu` / `leaky_relu` / `elu` | 追加 activations |
+| 13 | `batch_norm` / `group_norm` | Vision model 必須 |
+
+**Phase 2 (P1 — 利便性・高度な用途):**
+
+| # | Op | 理由 |
+|---|---|---|
+| 14 | `conv1d` / `conv3d` / `conv_transpose2d` | Audio, 3D vision, generative |
+| 15 | `rand` / `randn` (GPU) | Weight init, dropout, sampling |
+| 16 | `dropout` (training mask) | Regularization |
+| 17 | `where_` / `triu` / `tril` | Conditional, causal mask |
+| 18 | `topk` / `sort` | Sampling, beam search |
+| 19 | `cumsum` / `cumprod` GPU | Parallel prefix sum |
+| 20 | `interpolate` (upsample) | U-Net, super-resolution |
+
+### 14.2 Performance remaining
 
 | Item | Priority | Status | Rationale |
 |---|---|---|---|
