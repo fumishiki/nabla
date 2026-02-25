@@ -152,16 +152,43 @@ impl<P: GpuPtr> MemoryPool<P> {
         }
     }
 
-    /// Return a block to the pool, inserting sorted by size.
+    /// Return a block to the pool, coalescing adjacent free blocks.
     pub fn release(&mut self, ptr: P, size: usize) {
-        let pool = if size < SMALL_LARGE_BOUNDARY {
+        let (mut merged_ptr, mut merged_size) = (ptr, size);
+
+        // Try coalescing with adjacent blocks in BOTH pools.
+        for pool in [&mut self.small_free as &mut Vec<FreeBlock<P>>, &mut self.large_free] {
+            let mut i = 0;
+            while i < pool.len() {
+                let bp = pool[i].ptr;
+                let bs = pool[i].size;
+                // Check if pool[i] is immediately before or after our block.
+                if bp.offset(bs) == merged_ptr {
+                    // pool[i] directly precedes us → extend left.
+                    merged_ptr = bp;
+                    merged_size += bs;
+                    self.cached_bytes -= bs;
+                    pool.remove(i);
+                } else if merged_ptr.offset(merged_size) == bp {
+                    // pool[i] directly follows us → extend right.
+                    merged_size += bs;
+                    self.cached_bytes -= bs;
+                    pool.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        // Insert merged block into the appropriate pool, sorted by size.
+        let pool = if merged_size < SMALL_LARGE_BOUNDARY {
             &mut self.small_free
         } else {
             &mut self.large_free
         };
-        let pos = pool.partition_point(|b| b.size < size);
-        pool.insert(pos, FreeBlock { ptr, size });
-        self.cached_bytes += size;
+        let pos = pool.partition_point(|b| b.size < merged_size);
+        pool.insert(pos, FreeBlock { ptr: merged_ptr, size: merged_size });
+        self.cached_bytes += merged_size;
     }
 
     /// GC: free cached blocks if allocated exceeds threshold.

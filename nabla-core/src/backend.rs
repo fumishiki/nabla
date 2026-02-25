@@ -6,6 +6,7 @@
 // matmul_into uses a tiled i-k-j loop (TILE=64) for cache-friendly access.
 
 use crate::scalar::Scalar;
+use rayon::prelude::*;
 
 // Tiled matmul tile size — chosen to fit in L1 cache for f64.
 const TILE: usize = 64;
@@ -48,21 +49,21 @@ impl<T: Scalar> CpuStorage<T> {
     }
 
     #[inline]
-    fn map_elem(&self, f: impl Fn(T) -> T) -> Self {
+    fn map_elem(&self, f: impl Fn(T) -> T + Send + Sync) -> Self {
         Self {
-            data: self.data.iter().map(|&x| f(x)).collect(),
+            data: self.data.par_iter().map(|&x| f(x)).collect(),
             nrows: self.nrows,
             ncols: self.ncols,
         }
     }
 
     #[inline]
-    fn zip_map(&self, other: &Self, f: impl Fn(T, T) -> T) -> Self {
+    fn zip_map(&self, other: &Self, f: impl Fn(T, T) -> T + Send + Sync) -> Self {
         Self {
             data: self
                 .data
-                .iter()
-                .zip(other.data.iter())
+                .par_iter()
+                .zip(other.data.par_iter())
                 .map(|(&x, &y)| f(x, y))
                 .collect(),
             nrows: self.nrows,
@@ -385,39 +386,41 @@ impl Backend for Cpu {
     #[allow(clippy::many_single_char_names)]
     fn matmul_into<T: Scalar>(out: &mut CpuStorage<T>, a: &CpuStorage<T>, b: &CpuStorage<T>) {
         let (m, k, n) = (a.nrows, a.ncols, b.ncols);
-        // Zero the output buffer first.
-        for x in &mut out.data {
-            *x = T::zero();
-        }
-        // Tiled i-k-j loop: inner loop over j is contiguous in B (row-major), friendly for cache.
-        let mut ii = 0;
-        while ii < m {
-            let i_end = (ii + TILE).min(m);
-            let mut kk = 0;
-            while kk < k {
-                let k_end = (kk + TILE).min(k);
-                let mut jj = 0;
-                while jj < n {
-                    let j_end = (jj + TILE).min(n);
-                    for i in ii..i_end {
-                        let a_row = &a.data[i * k..(i + 1) * k];
-                        let out_row = &mut out.data[i * n..(i + 1) * n];
-                        #[allow(clippy::needless_range_loop)]
-                        for p in kk..k_end {
-                            let a_ip = a_row[p];
-                            let b_row = &b.data[p * n..(p + 1) * n];
-                            for j in jj..j_end {
-                                // out[i,j] += a[i,p] * b[p,j]
-                                out_row[j] = out_row[j] + a_ip * b_row[j];
+        // Zero + parallel tiled i-k-j loop.
+        out.data.fill(T::zero());
+        let a_data = &a.data;
+        let b_data = &b.data;
+        out.data
+            .par_chunks_mut(TILE * n)
+            .enumerate()
+            .for_each(|(tile_idx, out_chunk)| {
+                let ii = tile_idx * TILE;
+                let i_end = (ii + TILE).min(m);
+                let rows = i_end - ii;
+                let chunk = &mut out_chunk[..rows * n];
+                let mut kk = 0;
+                while kk < k {
+                    let k_end = (kk + TILE).min(k);
+                    let mut jj = 0;
+                    while jj < n {
+                        let j_end = (jj + TILE).min(n);
+                        for i in 0..rows {
+                            let a_row = &a_data[(ii + i) * k..(ii + i + 1) * k];
+                            let out_row = &mut chunk[i * n..(i + 1) * n];
+                            #[allow(clippy::needless_range_loop)]
+                            for p in kk..k_end {
+                                let a_ip = a_row[p];
+                                let b_row = &b_data[p * n..(p + 1) * n];
+                                for j in jj..j_end {
+                                    out_row[j] = out_row[j] + a_ip * b_row[j];
+                                }
                             }
                         }
+                        jj += TILE;
                     }
-                    jj += TILE;
+                    kk += TILE;
                 }
-                kk += TILE;
-            }
-            ii += TILE;
-        }
+            });
     }
 
     cpu_binary_op!(add, |x, y| x + y);
@@ -491,8 +494,9 @@ impl Backend for Cpu {
     #[inline]
     fn sum_all<T: Scalar>(a: &CpuStorage<T>) -> T {
         a.data
-            .iter()
-            .fold(T::zero(), |acc, &x| acc.reduction_add(x))
+            .par_iter()
+            .fold(|| T::zero(), |acc, &x| acc.reduction_add(x))
+            .reduce(|| T::zero(), |a, b| a.reduction_add(b))
     }
 
     #[inline]

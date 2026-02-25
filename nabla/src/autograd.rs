@@ -366,10 +366,9 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     pub fn tanh(&self) -> Self {
         let out = self.data.tanh();
         let lr = self.input_refs();
-        let one = T::one_impl();
-        let two = one + one;
         let (nrows, ncols) = out.shape();
-        let sech2 = Tensor::from_fn(nrows, ncols, |i, j| one - out.get(i, j).math_powf(two));
+        let ones = Tensor::fill(nrows, ncols, T::one_impl());
+        let sech2 = &ones - &out.emul(&out); // 1 - tanh²(x)
         let entry = TapeEntry::new(move |g| {
             Self::prop(&lr, &g.emul(&sech2));
         });
@@ -399,9 +398,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let out = self.data.powf(p);
         let lr = self.input_refs();
         let one = T::one_impl();
-        let a_pm1 = self.data.powf(p - one);
-        let (nrows, ncols) = a_pm1.shape();
-        let coeff = Tensor::from_fn(nrows, ncols, |i, j| a_pm1.get(i, j).math_mul(p));
+        let coeff = &self.data.powf(p - one) * p; // p * a^(p-1)
         let entry = TapeEntry::new(move |g| {
             Self::prop(&lr, &g.emul(&coeff));
         });
