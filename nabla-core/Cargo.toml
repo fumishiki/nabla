@@ -1,0 +1,23 @@
+[package]
+name = "nabla-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+license = "Apache-2.0 OR MIT"
+description = "Core tensor and backend types for nabla linear algebra DSL"
+
+[features]
+default = ["cpu"]
+cpu = ["dep:half"]
+gpu = ["dep:wgpu", "dep:pollster"]
+cuda = ["dep:cudarc"]
+hip = ["dep:hip-runtime-sys"]
+
+[dependencies]
+rayon = "1"
+half = { version = "2", features = ["num-traits"], optional = true }
+wgpu = { version = "24", optional = true }
+pollster = { version = "0.4", optional = true }
+cudarc = { version = "0.19", optional = true, features = ["driver", "nvrtc"] }
+hip-runtime-sys = { version = "0.1", optional = true }
+

@@ -4,251 +4,93 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
-**Type-safe linear algebra DSL for Rust** — proc-macro notation, pure-Rust kernels, wgpu GPU backend, reverse-mode autodiff. Zero external LA dependencies.
+**Zero-GC, zero-copy linear algebra DSL for Rust** — proc-macro notation, four GPU backends (cpu / wgpu / cuda / hip), reverse-mode + forward-mode autodiff, symbolic CAS, ODE solvers. Zero external LA dependencies.
 
 ```rust
 use nabla::prelude::*;
 
-let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
-let b: Tensor<f64> = mat![[5.0_f64, 6.0], [7.0, 8.0]];
+// Construction
+let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+let z = zeros::<f64>(3, 3);
 
-let c = &a * &b;                                         // matmul
-let x = a.solve(&b).unwrap();                             // linear solve
-let e: Tensor<f64> = einsum!(e[i,j] = a[i,k] * b[k,j]);  // Einstein notation
+// Arithmetic — same syntax as Julia
+let c = &a * &b;               // matmul
+let h = a.emul(&b);            // Hadamard (A .* B)
+let x = a.solve(&b)?;          // Ax = b, Result — no silent NaN
 
+// Einstein summation (compile-time, spanned errors)
+let c: Tensor<f64> = einsum!(c[i,j] = a[i,k] * b[k,j]);
+
+// GPU kernel fusion — 1 kernel, 0 intermediates
+let y = fuse!(x.sin().powf(2.0); x);   // Julia: @. sin(x)^2
+
+// Reverse-mode autodiff (PyTorch-familiar)
 let tape = Tape::new();
-let va = tape.variable(a);
-let loss = va.exp().sum_all_var();
-let grads = loss.backward();                              // reverse-mode AD
+let xv = tape.var(&x);
+let loss = (&xv * &xv).exp().sum();
+loss.backward();
+let dx = xv.grad();
+
+// Forward-mode via proc macro
+#[nabla_grad]
+fn energy(x: f64) -> f64 { (x * x).sin() }
+let (val, deriv) = energy_grad(2.0);    // → (sin(4), 4·cos(4))
 ```
 
 ---
 
-## Why nabla?
+## What nabla DOES / DOES NOT
 
-Rust's LA ecosystem is powerful but verbose. nabla fixes that with a DSL layer:
-
-<table>
-<tr><th>Operation</th><th>Raw Rust / nalgebra</th><th>nabla</th></tr>
-<tr>
-<td>Matrix literal</td>
-<td>
-
-```rust
-let a = DMatrix::from_row_slice(2, 2,
-    &[1.0, 2.0, 3.0, 4.0]);
-```
-
-</td>
-<td>
-
-```rust
-let a: Tensor<f64> = mat![
-    [1.0_f64, 2.0],
-    [3.0, 4.0]
-];
-```
-
-</td>
-</tr>
-<tr>
-<td>Matmul</td>
-<td>
-
-```rust
-let c = &a * &b;  // same
-```
-
-</td>
-<td>
-
-```rust
-let c = &a * &b;  // same
-```
-
-</td>
-</tr>
-<tr>
-<td>Einsum contraction</td>
-<td>
-
-```rust
-// manual loop — no einsum in nalgebra
-let mut c = DMatrix::zeros(m, n);
-for i in 0..m {
-  for j in 0..n {
-    for k in 0..p {
-      c[(i,j)] += a[(i,k)] * b[(k,j)];
-    }
-  }
-}
-```
-
-</td>
-<td>
-
-```rust
-let c: Tensor<f64> = einsum!(
-    c[i,j] = a[i,k] * b[k,j]
-);
-```
-
-</td>
-</tr>
-<tr>
-<td>Batch matmul (N-D)</td>
-<td>
-
-```rust
-// manual batch loop over 3D array
-for batch in 0..b {
-    let a_slice = a.slice(..);
-    let m_slice = m.slice(..);
-    // manual matmul per batch...
-}
-```
-
-</td>
-<td>
-
-```rust
-let c: NdTensor<f64> = einsum!(
-    c[b,i,j] = a[b,i,k] * m[b,k,j]
-);
-```
-
-</td>
-</tr>
-<tr>
-<td>Element-wise broadcast</td>
-<td>
-
-```rust
-let y = a.map(|x| x.sin().powi(2));
-```
-
-</td>
-<td>
-
-```rust
-let y = bcast!(|x| x.sin().powi(2), &a);
-// or GPU-aware:
-let y = bcast_all!(x.sin().powf(2.0); x);
-```
-
-</td>
-</tr>
-<tr>
-<td>In-place broadcast</td>
-<td>
-
-```rust
-for i in 0..m {
-  for j in 0..n {
-    out[(i,j)] = a[(i,j)] * b[(i,j)];
-  }
-}
-```
-
-</td>
-<td>
-
-```rust
-zip_map!(out, |x, y| x * y, &a, &b);
-```
-
-</td>
-</tr>
-<tr>
-<td>Stencil (Laplacian)</td>
-<td>
-
-```rust
-for i in 1..m-1 {
-  for j in 1..n-1 {
-    out[(i,j)] = -4.0 * a[(i,j)]
-      + a[(i-1,j)] + a[(i+1,j)]
-      + a[(i,j-1)] + a[(i,j+1)];
-  }
-}
-```
-
-</td>
-<td>
-
-```rust
-let out = stencil!(out[i,j] =
-    -4.0 * a[i,j]
-    + a[i-1,j] + a[i+1,j]
-    + a[i,j-1] + a[i,j+1]
-);
-```
-
-</td>
-</tr>
-<tr>
-<td>Autodiff</td>
-<td>
-
-```rust
-// not available in nalgebra
-```
-
-</td>
-<td>
-
-```rust
-let tape = Tape::new();
-let x = tape.variable(tensor);
-let loss = x.exp().sum_all_var();
-let grads = loss.backward();
-let dx = grads.wrt(&x);
-```
-
-</td>
-</tr>
-</table>
-
-### vs Python (NumPy)
-
-| NumPy | nabla |
+| ✅ nabla provides | ❌ User implements |
 |---|---|
-| `np.array([[1,2],[3,4]])` | `mat![[1.0_f64, 2.0], [3.0, 4.0]]` |
-| `np.einsum('ik,kj->ij', a, b)` | `einsum!(c[i,j] = a[i,k] * b[k,j])` |
-| `np.sin(x)**2` | `bcast_all!(x.sin().powf(2.0); x)` |
-| `np.linalg.solve(a, b)` | `a.solve(&b)?` |
-| `np.linalg.svd(a)` | `a.factorize_svd()?` |
+| Tensor ops (matmul, exp, sin, reduction…) | Optimizer (SGD, Adam…) |
+| Autodiff (reverse + forward + GPU-resident) | Loss function (MSE, cross-entropy…) |
+| Symbolic CAS (diff / simplify / eval) | Model architecture (layers, forward pass) |
+| ODE solvers (Euler → Dormand-Prince, stiff, parallel) | Training loop (epoch, batch, logging) |
+| GPU sparse (BCSR + WGSL SpMM) | — |
 
-### vs Julia
-
-| Julia | nabla |
-|---|---|
-| `[1 2; 3 4]` | `mat![[1.0_f64, 2.0], [3.0, 4.0]]` |
-| `@tullio C[i,j] := A[i,k]*B[k,j]` | `einsum!(c[i,j] = a[i,k] * b[k,j])` |
-| `@. y = sin(x)^2` | `bcast_all!(x.sin().powf(2.0); x)` |
-| `A \ b` | `a.solve(&b)?` |
-| `lu(A)` | `a.factorize_lu()?` |
-| `0.0:0.1:1.0` | `frange!(0.0_f64, 0.1, 1.0)` |
-| `0 < x < 1` | `between!(0.0, x, 1.0)` |
-| `(a=1, b=2)` | `named!(a: i32 = 1, b: i32 = 2)` |
+**Fixed-rule principle** — only mathematically invariant rules are provided. User-customizable domains are explicitly excluded.
 
 ---
 
-## Features at a glance
+## Why nabla vs Python / Julia
+
+| Operation | NumPy | Julia | nabla |
+|---|---|---|---|
+| Matrix literal | `np.array([[1,2],[3,4]])` | `[1 2; 3 4]` | `mat![[1.0, 2.0], [3.0, 4.0]]` |
+| Matmul | `A @ B` | `A * B` | `a * b` |
+| Element-wise | `A * B` | `A .* B` | `a.emul(&b)` |
+| Solve | `np.linalg.solve(A,b)` | `A \ b` | `a.solve(&b)?` |
+| LU factorize | `scipy.linalg.lu(A)` | `lu(A)` | `a.lu()?` |
+| Sin element-wise | `np.sin(A)` | `sin.(A)` | `a.sin()` |
+| Fused GPU chain | 2+ kernels | CPU only `@.` | `fuse!(x.sin(); x)` **1 kernel** |
+| Einsum | `np.einsum('ik,kj->ij',A,B)` _(runtime error)_ | `@einsum` _(runtime error)_ | `einsum!(c[i,j]=a[i,k]*b[k,j])` **compile error** |
+| Backward | `loss.backward()` | — | `loss.backward()` |
+| Forward AD | ForwardDiff.jl (separate pkg) | — | `Dual::new(x, 1.0)` / `#[nabla_grad]` |
+
+**nabla honest friction** (Rust language constraints, constant overhead):
+- `()` in indexing: `a[(i,j)]` vs `A[i,j]` — gains borrow-checked slice lifetimes
+- `&` for re-use: `&a * &b` vs `A * B` — gains explicit zero-copy semantics
+- `?` for fallibility: `a.solve(&b)?` — gains `Result`, no silent NaN/Inf
+- `.emul()` for Hadamard — `*` is occupied by matmul (statically distinguished)
+
+---
+
+## Features
 
 | Category | What you get |
 |---|---|
-| **13 macros** | `mat!` `einsum!` `bcast!` `bcast_all!` `zip_map!` `par_bcast!` `stencil!` `named!` `generated!` `splat!` `pipe!` `between!` `frange!` |
-| **9 dense factorizations** | LU, Full-Pivot LU, QR, Col-Pivot QR, Cholesky, LDL, Bunch-Kaufman, SVD, Eigen |
-| **Sparse LA** | CSC storage, sparse LU/QR/Cholesky solve, sparse × dense matmul |
-| **Symbolic CAS** | `Expr` tree — differentiation, simplification, evaluation |
-| **ODE solvers** | Euler, RK4, Dormand-Prince (adaptive step) |
-| **Reverse-mode AD** | 14 ops, tape-based `backward()`, chain rule |
-| **GPU (wgpu)** | 32 WGSL compute shaders, tiled matmul, zero host transfer |
-| **Complex** | `c32`/`c64`, proper adjoint ≠ transpose |
-| **Zero deps** | Pure Rust LA — no LAPACK, no BLAS, no external LA bindings |
+| **13 macros** | `mat!` `einsum!` `fuse!` `map!` `map_!` `par_map!` `stencil!` `named!` `generated!` `splat!` `pipe!` `between!` `frange!` |
+| **9 dense factorizations** | LU, QR, Cholesky (LLT), LDL, SVD, Eigendecomposition + structural views (Diagonal, Symmetric, Triangular) |
+| **Sparse LA** | CSC (CPU) + `BcsrMatrix` BCSR (GPU WGSL SpMM) + mixed-precision refinement |
+| **Symbolic CAS** | `Expr` tree — `diff` / `simplify` (E-graph 32 rules) / `eval` / `eval_tensor` |
+| **ODE solvers** | Euler, RK4, Dormand-Prince (adaptive), BDF-1 (stiff), IF-Euler (stiff explicit), METD (matrix exponential), Störmer-Verlet (symplectic), Parareal (parallel-in-time, rayon) |
+| **Autodiff** | Reverse-mode tape (`Tape::new`, `.backward()`, `.grad()`), Forward-mode `Dual<T>` + `MultiDual<T,N>`, `#[nabla_grad]` source transform, `GpuTape` GPU-resident AD |
+| **Named axes** | `Tensor<T,B,Axes>` — compile-time axis mismatch errors |
+| **4 backends** | `cpu` (faer + rayon) · `wgpu` (WGSL, cross-platform) · `cuda` (NVRTC JIT) · `hip` (hiprtc JIT) |
+| **No external LA deps** | Pure Rust — no LAPACK, no BLAS, no foreign bindings |
 
-~10,000 lines · 61 tests · MSRV 1.85 · Apache-2.0 OR MIT
+131 boundary tests · MSRV 1.85 (edition 2024) · Apache-2.0 OR MIT
 
 ---
 
@@ -256,11 +98,20 @@ let dx = grads.wrt(&x);
 
 ```toml
 [dependencies]
-nabla = { git = "https://github.com/fumishiki/nabla" }
+# CPU (default — faer + rayon, f32/f64/c32/c64)
+nabla = { git = "https://github.com/fumishiki/nabla", features = ["cpu"] }
 
-# GPU (exclusive with cpu):
-# nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["gpu"] }
+# wgpu GPU — Vulkan / Metal / DX12 (f32 only)
+nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["wgpu"] }
+
+# CUDA GPU — NVRTC JIT, no SDK at build time (f32 + f64)
+nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["cuda"] }
+
+# AMD HIP GPU — hiprtc JIT (f32 + f64)
+nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["hip"] }
 ```
+
+Exactly one backend must be enabled — `compile_error!` on multi-select. No implicit CPU fallback on GPU builds.
 
 ---
 
@@ -269,124 +120,62 @@ nabla = { git = "https://github.com/fumishiki/nabla" }
 ```rust
 use nabla::prelude::*;
 
-// Construction
-let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
-let eye: Tensor<f64> = Tensor::identity(3);
-let m: Tensor<f64> = Tensor::from_fn(3, 3, |r, c| (r * 3 + c) as f64);
+// --- Construction ---
+let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+let z  = zeros::<f64>(4, 4);
+let id = eye::<f64>(4);
+let r  = randn::<f32>(100, 100);
 
-// Arithmetic
-let sum  = &a + &a;          // element-wise add
-let prod = &a * &a;          // matmul
-let s    = &a * 2.0_f64;     // scalar multiply
+// --- Arithmetic ---
+let c = &a * &b;              // matmul (owned: a * b, borrowed: &a * &b)
+let h = a.emul(&b);           // Hadamard product (A .* B)
+let s = &a * 2.0_f64;         // scalar multiply
 
-// Einsum
-let b: Tensor<f64> = Tensor::from_fn(2, 3, |r, c| (r * 3 + c) as f64);
-let c: Tensor<f64> = einsum!(c[i,j] = a[i,k] * b[k,j]);
+// --- Indexing (zero-copy) ---
+let v  = a[(1, 2)];           // element read
+a[(1, 2)] = 5.0;              // element write
+let sub = a[(0..2, 1..3)];    // submatrix view
 
-// Solve
-let rhs: Tensor<f64> = mat![[5.0_f64], [6.0]];
-let x = a.solve(&rhs).unwrap();
+// --- Einstein summation ---
+let c: Tensor<f64> = einsum!(c[i,j] = a[i,k] * b[k,j]);       // GEMM
+let h: Tensor<f64> = einsum!(h[i,j] = a[i,j] * b[i,j]);       // Hadamard
+let t: f64         = einsum!(t = a[i,i]);                       // trace
+let batch: NdTensor<f64> = einsum!(c[b,i,j] = a[b,i,k] * m[b,k,j]); // batch GEMM
 
-// Autodiff
-let tape = Tape::new();
-let va = tape.variable(a);
-let loss = va.exp().sum_all_var();
-let grads = loss.backward();
+// --- Broadcasting ---
+let y = fuse!(x.sin().powf(2.0); x);     // GPU kernel fusion (Julia @.)
+let y = map!(|v| v.ln() + 1.0, &a);     // CPU closure broadcast
+map_!(out, |v| v.tanh(), &a);            // in-place, zero alloc
+let y = par_map!(|v| v.sqrt(), &a);      // parallel (rayon)
+
+// --- Stencil ---
+let lap = stencil!(lap[i,j] = -4.0*u[i,j] + u[i-1,j] + u[i+1,j] + u[i,j-1] + u[i,j+1]);
 ```
 
 ---
 
-## Macros
-
-### `mat!` — matrix literal
+## Linear algebra
 
 ```rust
-let m: Tensor<f64> = mat![[1.0_f64, 2.0, 3.0], [4.0, 5.0, 6.0]];
-assert_eq!(m.shape(), (2, 3));  // compile-time row/col validation
-```
+// --- Direct solve ---
+let x  = a.solve(&b)?;       // Ax = b
+let x  = a.lstsq(&b)?;       // least-squares
+let ai = a.inv()?;            // A⁻¹
 
-### `einsum!` — Einstein summation (7 patterns, auto-optimized)
+// --- Factorize once, solve many ---
+let lu = a.lu()?;
+let x1 = lu.solve(&b1);
+let x2 = lu.solve(&b2);      // faer zero-copy reuse
 
-```rust
-// GEMM — compiles to matmul_into
-let c: Tensor<f64> = einsum!(c[i,j] = a[i,k] * b[k,j]);
+// --- 9 factorizations ---
+a.lu()?;    a.qr();    a.chol()?;    a.ldl()?;
+a.svd()?;   a.svdvals()?;
+a.sym(Side::Lower)?.eigh()?;         // symmetric eigendecomposition
 
-// Hadamard — compiles to mul_elem
-let h: Tensor<f64> = einsum!(h[i,j] = a[i,j] * b[i,j]);
-
-// Trace — diagonal sum
-let tr: f64 = einsum!(tr = a[i,i]);
-
-// Outer product
-let o: Tensor<f64> = einsum!(o[i,j] = u[i] * v[j]);
-
-// Batch GEMM (N-D)
-let c3: NdTensor<f64> = einsum!(c[b,i,j] = a[b,i,k] * m[b,k,j]);
-```
-
-Spanned compile errors point to the exact token in your expression.
-
-### `bcast!` / `bcast_all!` / `zip_map!` — broadcasting
-
-```rust
-let y: Tensor<f64> = bcast!(|x| x.exp(), &a);              // allocating
-zip_map!(out, |x, y| x * y, &a, &b);                       // in-place
-let z: Tensor<f64> = bcast_all!(x.sin().powf(2.0); x);     // GPU-aware
-```
-
-### `stencil!` — offset indexing
-
-```rust
-let lap = stencil!(lap[i, j] =
-    -4.0 * a[i,j] + a[i-1,j] + a[i+1,j] + a[i,j-1] + a[i,j+1]
-);
-```
-
-### More macros
-
-```rust
-par_bcast!(|x| x.sqrt(), &a);                // parallel broadcast (rayon)
-let p = named!(x: f64 = 1.0, y: f64 = 2.0);  // named tuple
-pipe!(x, f, g, h);                            // h(g(f(x)))
-splat!(add3, (1.0, 2.0, 3.0));               // tuple splatting
-between!(0.0, x, 1.0);                        // chained comparison
-frange!(0.0_f64, 0.1, 1.0);                   // float range
-```
-
----
-
-## Dense linear algebra
-
-```rust
-// Direct solve
-let x = a.solve(&b)?;            // Ax = b  (LU)
-let x = a.solve_lstsq(&b)?;     // least-squares (SVD)
-let x = a.inv()?;                // inverse
-
-// Factorize once, solve many
-let lu = a.factorize_lu()?;
-let x1 = lu.solve(&b);
-let x2 = lu.solve(&c);
-
-// 9 factorizations available
-a.factorize_lu()?;               // PA = LU  (partial pivot)
-a.factorize_full_piv_lu()?;      // PAQ^T = LU
-a.factorize_qr();                // A = QR
-a.factorize_col_piv_qr();        // AP^T = QR
-a.factorize_llt()?;              // Cholesky LL^T
-a.factorize_ldlt()?;             // LDL^T
-a.factorize_lblt();              // Bunch-Kaufman
-a.factorize_svd()?;              // full USV^H
-a.self_adjoint_eigen()?;         // symmetric eigendecomposition
-```
-
-### Structural types
-
-```rust
-let d = Diagonal::new(vec![1.0, 2.0, 3.0]);
-let s = Symmetric::new(tensor, Side::Lower)?;
-let t = Triangular::new(tensor, TriKind::Lower)?;
-let eigenvalues = s.eigenvalues()?;
+// --- Structural views ---
+let d = Diagonal::new(v);
+let s = Symmetric::new(a, Side::Lower)?;
+let t = Triangular::new(a, TriKind::Lower)?;
 ```
 
 ---
@@ -394,19 +183,17 @@ let eigenvalues = s.eigenvalues()?;
 ## Sparse
 
 ```rust
-use nabla::sparse::{SparseMatrix, Triplet};
+// CSC — CPU
+let s = sparse(4, 4, &[(0,0,4.0), (0,1,-1.0), (1,0,-1.0), (1,1,4.0)])?;
+let x = s.solve(&b)?;
+let y = &s * &dense;          // SpMM via Mul trait
 
-let trips = vec![
-    Triplet { row: 0, col: 0, val: 4.0_f64 },
-    Triplet { row: 0, col: 1, val: -1.0 },
-    Triplet { row: 1, col: 0, val: -1.0 },
-    Triplet { row: 1, col: 1, val: 4.0 },
-];
-let s = SparseMatrix::try_new_from_triplets(2, 2, &trips)?;
+// BCSR — GPU (wgpu/cuda/hip)
+let bs = BcsrMatrix::from_sparse(&s, 16)?;
+let y  = bs.spmm(&x);
 
-let x = s.solve(&b)?;             // sparse LU
-let x = s.solve_lstsq(&b)?;       // sparse QR
-let y = s.matmul_dense(&dense)?;  // sparse × dense
+// Mixed-precision refinement (2–4x speedup)
+let y = mixed_spmm_f64(&bs, &x);
 ```
 
 ---
@@ -414,12 +201,15 @@ let y = s.matmul_dense(&dense)?;  // sparse × dense
 ## Symbolic CAS
 
 ```rust
-use nabla::cas::Expr;
+use nabla::cas::*;
 
 let x = Expr::var("x");
-let f = (&x * &x).sin();          // sin(x²)
-let df = f.diff("x").simplify();   // symbolic derivative
-let val = df.eval(&[("x", 1.0)]); // evaluate
+let f  = (x.clone() * x.clone()).sin();     // sin(x²)
+let df = f.diff("x").simplify();            // 2x·cos(x²)  — E-graph 32 rules
+let v  = df.eval(&[("x", 1.0)]);           // 2·cos(1)
+
+// Multi-variable
+let (fx, fy) = f.diff_multi(&["x", "y"]);
 ```
 
 ---
@@ -427,102 +217,182 @@ let val = df.eval(&[("x", 1.0)]); // evaluate
 ## ODE solvers
 
 ```rust
-use nabla::ode;
+use nabla::ode::*;
 
-let f = |_t: f64, y: &Tensor<f64>| -> Tensor<f64> { /* dy/dt */ };
-let y0: Tensor<f64> = mat![[1.0_f64], [0.0]];
+let f = |t: f64, y: f64| -y;   // dy/dt = -y
+let y0 = 1.0_f64;
 
-let y = ode::euler(f, &y0, 0.0, 1.0, 100);
-let y = ode::rk4(f, &y0, 0.0, 1.0, 100);
-let y = ode::dormand_prince(f, &y0, 0.0, 1.0, 1e-6, 1e-3);
+// Fixed-step
+let (ts, ys) = euler(f, y0, 0.0, 5.0, 0.01);
+let (ts, ys) = rk4(f, y0, 0.0, 5.0, 0.01);
+
+// Adaptive
+let (ts, ys) = dormand_prince(f, y0, 0.0, 5.0, 1e-6);
+
+// Stiff — implicit BDF-1
+let cfg = Bdf1Config { tol: 1e-8, max_iter: 50 };
+let (ts, ys) = bdf1(f, y0, 0.0, 5.0, 0.01, cfg);
+
+// Stiff — IF-Euler (explicit, no Newton)
+let (ts, ys) = if_euler_scalar(l, n, y0, 0.0, 5.0, 0.01, cfg);
+
+// Parallel-in-time (rayon)
+let cfg = PararealConfig { n_intervals: 8, max_iter: 5, tol: 1e-6 };
+let ys = parareal_solve(0.0, 5.0, y0, cfg, coarse_fn, fine_fn);
 ```
 
 ---
 
 ## Autodiff
 
-Reverse-mode automatic differentiation — tape-based, 14 ops.
+### Reverse-mode (PyTorch-familiar)
 
 ```rust
-let tape = Tape::<f64>::new();
-let w = tape.variable(weights);
-let x = tape.variable(input);
+let tape = Tape::new();
+let w = tape.var(&weights);
+let x = tape.var(&input);
 
-// Forward pass — builds computation graph
-let z = w.matmul(&x);
-let h = z.exp();
-let loss = h.sum_all_var();
-
-// Backward pass — chain rule (fixed mathematical rule)
-let grads = loss.backward();
-let dw = grads.wrt(&w);  // ∂loss/∂w
-let dx = grads.wrt(&x);  // ∂loss/∂x
+let h = fuse!(v.max(0.0); (&x * &w));   // ReLU, 1 GPU kernel
+let loss = fuse!(v.powf(2.0); h).sum();
+loss.backward();
+let dw = w.grad();          // ∂loss/∂w — owned Tensor, freed on drop
+// tape, grads, intermediates ALL freed when scope exits (no GC, no zero_grad())
 ```
 
-Supported ops: `add`, `sub`, `neg`, `mul_elem`, `matmul`, `scale`, `exp`, `ln`, `sin`, `cos`, `tanh`, `sqrt`, `powf`, `sum_all_var`.
+### Forward-mode
+
+```rust
+// Dual<T> — drop-in via impl Scalar for Dual<T>
+let x = Dual::new(2.0_f64, 1.0);   // value=2, seed=1
+let y = (x * x).sin();              // y.value = sin(4), y.deriv = 4·cos(4)
+
+// #[nabla_grad] — source transform, works on any scalar function
+#[nabla_grad]
+fn energy(x: f64) -> f64 { (x * x).sin() }
+let (val, deriv) = energy_grad(2.0);
+
+// MultiDual<T, N> — batch Jacobian (N lanes)
+let x = MultiDual::<f64, 4>::seed(2.0, 0);
+```
+
+### GPU-resident AD
+
+```rust
+// GpuTape — keeps computation graph on device, no GPU↔CPU roundtrip
+let tape = GpuTape::<f32>::new();
+let xv = tape.var(&gpu_tensor);
+let loss = (&xv * &xv).exp().sum();
+tape.backward(&loss);
+let dx = tape.grad(&xv);
+```
 
 ---
 
 ## Backend system
 
-Compile-time exclusive selection. One backend per binary — no runtime dispatch.
+Compile-time exclusive selection — exactly one backend per binary.
 
-| Feature | Backend | Types | Status |
+| Feature | Backend | Types | Notes |
 |---|---|---|---|
-| `cpu` (default) | Pure Rust + rayon | f32, f64, c32, c64 | ✅ |
-| `gpu` | wgpu + WGSL compute | f32 only | ✅ 32 ops |
+| `cpu` | faer + rayon | f32, f64, c32, c64 | Default |
+| `wgpu` | WGSL compute (Vulkan/Metal/DX12) | f32 | register-tile MMA |
+| `cuda` | NVRTC JIT (no SDK at build time) | f32, f64 | WMMA tensor cores + warp shuffle |
+| `hip` | hiprtc JIT | f32, f64 | WMMA intrinsics |
 
 ```bash
-cargo build                                           # CPU (default)
-cargo build --no-default-features --features gpu      # GPU
+cargo build                                              # CPU
+cargo build --no-default-features --features wgpu       # wgpu (cross-platform GPU)
+cargo build --no-default-features --features cuda        # NVIDIA
+cargo build --no-default-features --features hip         # AMD
 ```
 
-Both enabled → `compile_error!`. No implicit CPU fallback on GPU.
+**Prohibited**: two features enabled simultaneously → `compile_error!`. No implicit CPU fallback on GPU backends.
 
-### GPU architecture
+### Code is backend-agnostic
 
-```
-Host                              Device (GPU)
-────                              ──────────────
-upload / from_fn
-  └──── WGSL compute shader ──→ Buffer₁
-                                      │
-         chained ops (zero transfer)  │ add/sub/exp/matmul/...
-                                      ▼
-                                  Buffer₂
-                                      │
-  .get(r,c)                           │
-  ┌──── map_async + poll ◄────────────┘
-  ▼
-host_cache (lazy, cached on first access)
+```rust
+// Same source, three targets — switch only the feature flag
+let a: Tensor<f32> = zeros(1024, 1024);
+let b: Tensor<f32> = eye(1024);
+let c = &a * &b;     // CPU: faer BLAS | wgpu: WGSL tiled | cuda: WMMA | hip: WMMA
 ```
 
-32 WGSL shaders: binary (5) · unary (15) · tiled matmul · reduction (5) · construction (3) · copy/transpose (2) · arg-reduction (2).
+---
+
+## Named axes
+
+Eliminate transposition and broadcasting bugs at compile time:
+
+```rust
+let x = named_zeros!(batch: 32, seq: 128, dim: 512);
+let w = named_zeros!(dim: 512, heads: 8);
+
+// Compile error if axis names don't match
+let y = einsum!(y[batch, seq, heads] = x[batch, seq, dim] * w[dim, heads]);
+```
+
+`Tensor<T, B, Axes=()>` — `PhantomData<fn() -> Axes>`, zero runtime cost, erased at codegen.
 
 ---
 
 ## Project structure
 
 ```
-nabla/
-├── Cargo.toml           workspace: nabla + macros
-├── src/
-│   ├── lib.rs            crate root + prelude + error + util
-│   ├── tensor.rs         Tensor<T,B> + NdTensor<T> + StaticMatrix + DynTensor
-│   ├── backend.rs        Backend trait (sealed) + Cpu + CpuStorage
-│   ├── gpu.rs            GpuStorage + wgpu WGSL compute shaders
-│   ├── scalar.rs         Scalar trait + Complex<T>
-│   ├── linalg.rs         9 dense factorizations + structural types
-│   ├── sparse.rs         SparseMatrix<T> CSC
-│   ├── cas.rs            Symbolic CAS
-│   ├── ode.rs            ODE solvers
-│   └── autograd.rs       Reverse-mode AD
-├── macros/src/
-│   ├── lib.rs            proc macro entries
-│   ├── einsum.rs         einsum parser + 7-pattern codegen
-│   └── stencil.rs        stencil offset codegen
-├── tests/                61 tests (unit + boundary + doc + compile-fail)
-└── docs/spec.md          full specification
+nabla/                       [workspace root]
+├── Cargo.toml               members: nabla-core, nabla-macros, nabla
+├── nabla-core/              foundation — tensor + backend
+│   └── src/
+│       ├── tensor.rs        Tensor<T,B> + StaticMatrix<T,R,C> + NdTensor<T> + DynTensor
+│       ├── backend.rs       Backend trait (sealed) + Cpu impl
+│       ├── scalar.rs        Scalar + Complex<T> + Dual<T> + f16/bf16
+│       ├── gpu.rs           GpuStorage + dispatch (wgpu/cuda/hip)
+│       ├── layout.rs        LinearLayout<N> F₂ swizzle
+│       └── wgsl.rs          register-tile MMA codegen
+├── nabla-macros/            proc-macro crate
+│   └── src/
+│       ├── lib.rs           mat! fuse! einsum! stencil! named! generated! nabla_grad!
+│       ├── einsum.rs        7-pattern compile-time codegen
+│       └── stencil.rs       offset-index bounds detection
+├── nabla/                   facade — domain modules + macro_rules!
+│   ├── src/
+│   │   ├── linalg.rs        9 dense factorizations + structural views
+│   │   ├── sparse.rs        SparseMatrix CSC + BcsrMatrix GPU
+│   │   ├── autograd.rs      Tape (reverse) + GpuTape (GPU-resident)
+│   │   ├── cas.rs           Expr tree + E-graph 32 rules
+│   │   └── ode.rs           Euler/RK4/DP/BDF-1/IF-Euler/METD/Verlet/Parareal
+│   ├── scripts/             rust-script examples
+│   └── tests/               131 boundary + GPU + compile-fail tests
+└── docs/spec.md             full specification
+```
+
+---
+
+## rust-script examples
+
+Install: `cargo install rust-script`
+
+```bash
+rust-script nabla/scripts/ode_vanderpol.rs      # stiff Van der Pol ODE
+rust-script nabla/scripts/linear_regression.rs  # gradient descent
+rust-script nabla/scripts/sparse_solve.rs       # sparse Poisson
+rust-script nabla/scripts/cas_simplify.rs       # symbolic differentiation
+```
+
+Each script declares its dependency inline — no `Cargo.toml` needed:
+
+```rust
+#!/usr/bin/env rust-script
+//! ```cargo
+//! [dependencies]
+//! nabla = { path = "..", features = ["cpu"] }
+//! ```
+use nabla::prelude::*;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let a = mat![[2.0_f64, 1.0], [5.0, 7.0]];
+    let x = a.solve(&mat![[11.0_f64], [13.0]])?;
+    println!("x = [{:.4}, {:.4}]", x[(0,0)], x[(1,0)]);
+    Ok(())
+}
 ```
 
 ---
@@ -530,8 +400,8 @@ nabla/
 ## Building & testing
 
 ```bash
-cargo test                                             # all tests
-cargo clippy --workspace --all-targets -- -D warnings  # lint (0 warnings)
+cargo test --features cpu                              # all CPU tests
+cargo clippy --workspace --all-targets -- -D warnings  # lint
 cargo fmt --all -- --check                             # format
 cargo doc --workspace --no-deps                        # docs
 ```
@@ -543,7 +413,7 @@ MSRV: **1.85.0** (Rust edition 2024)
 ## Contributing
 
 1. Fork → feature branch
-2. `cargo test && cargo clippy -- -D warnings && cargo fmt --check`
+2. `cargo test --features cpu && cargo clippy -- -D warnings && cargo fmt --check`
 3. PR against `main`
 
 See [docs/spec.md](docs/spec.md) for the full specification.

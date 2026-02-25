@@ -1,5 +1,8 @@
 # Build
 /target/
+nabla-core/target/
+nabla-macros/target/
+nabla/target/
 
 # Docs (local only)
 /docs/
