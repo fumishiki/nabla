@@ -23,6 +23,40 @@ fn tensors_close_f32(gpu: &Tensor<f32, Gpu>, cpu: &Tensor<f32, Cpu>) {
     }
 }
 
+macro_rules! gpu_cpu_unary_test {
+    ($name:ident, $op:ident, $rows:expr, $cols:expr, $gen:expr) => {
+        #[test]
+        fn $name() {
+            let a_gpu = Tensor::<f32, Gpu>::from_fn($rows, $cols, $gen);
+            let a_cpu = Tensor::<f32, Cpu>::from_fn($rows, $cols, $gen);
+            tensors_close_f32(&a_gpu.$op(), &a_cpu.$op());
+        }
+    };
+    ($name:ident, $op:ident ($($arg:expr),*), $rows:expr, $cols:expr, $gen:expr) => {
+        #[test]
+        fn $name() {
+            let a_gpu = Tensor::<f32, Gpu>::from_fn($rows, $cols, $gen);
+            let a_cpu = Tensor::<f32, Cpu>::from_fn($rows, $cols, $gen);
+            tensors_close_f32(&a_gpu.$op($($arg),*), &a_cpu.$op($($arg),*));
+        }
+    };
+}
+
+gpu_cpu_unary_test!(exp_f32_matches_cpu, exp, 4, 4, |i, j| (i * 4 + j) as f32 * 0.1);
+gpu_cpu_unary_test!(ln_f32_matches_cpu, ln, 4, 4, |i, j| (i * 4 + j + 1) as f32 * 0.5);
+gpu_cpu_unary_test!(log1p_f32_matches_cpu, log1p, 4, 4, |i, j| (i * 4 + j) as f32 * 0.25);
+gpu_cpu_unary_test!(sin_f32_matches_cpu, sin, 4, 4, |i, j| (i * 4 + j) as f32 * 0.2);
+gpu_cpu_unary_test!(cos_f32_matches_cpu, cos, 4, 4, |i, j| (i * 4 + j) as f32 * 0.2);
+gpu_cpu_unary_test!(tanh_f32_matches_cpu, tanh, 4, 4, |i, j| (i as f32) - (j as f32) * 0.5);
+gpu_cpu_unary_test!(sqrt_f32_matches_cpu, sqrt, 4, 4, |i, j| (i * 4 + j + 1) as f32);
+gpu_cpu_unary_test!(abs_f32_matches_cpu, abs, 4, 4, |i, j| (i as f32) - (j as f32) * 1.5);
+gpu_cpu_unary_test!(recip_f32_matches_cpu, recip, 4, 4, |i, j| (i * 4 + j + 1) as f32);
+gpu_cpu_unary_test!(erf_f32_matches_cpu, erf, 4, 4, |i, j| (i as f32) * 0.5 - (j as f32) * 0.3);
+gpu_cpu_unary_test!(ceil_f32_matches_cpu, ceil, 4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
+gpu_cpu_unary_test!(floor_f32_matches_cpu, floor, 4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
+gpu_cpu_unary_test!(round_f32_matches_cpu, round, 4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
+gpu_cpu_unary_test!(powf_f32_matches_cpu, powf(2.5f32), 3, 3, |i, j| 1.0f32 + (i * 3 + j) as f32 * 0.1);
+
 #[test]
 fn zeros_f32_shape_and_elements() {
     let t = Tensor::<f32, Gpu>::zeros(3, 4);
@@ -124,104 +158,6 @@ fn chained_add_matmul_f32() {
     let c_gpu = &(&a_gpu + &b_gpu) * &d_gpu;
     let c_cpu = &(&a_cpu + &b_cpu) * &d_cpu;
     tensors_close_f32(&c_gpu, &c_cpu);
-}
-
-#[test]
-fn exp_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.1);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.1);
-    tensors_close_f32(&a_gpu.exp(), &a_cpu.exp());
-}
-
-#[test]
-fn ln_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32 * 0.5);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32 * 0.5);
-    tensors_close_f32(&a_gpu.ln(), &a_cpu.ln());
-}
-
-#[test]
-fn log1p_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.25);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.25);
-    tensors_close_f32(&a_gpu.log1p(), &a_cpu.log1p());
-}
-
-#[test]
-fn sin_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.2);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.2);
-    tensors_close_f32(&a_gpu.sin(), &a_cpu.sin());
-}
-
-#[test]
-fn cos_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.2);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.2);
-    tensors_close_f32(&a_gpu.cos(), &a_cpu.cos());
-}
-
-#[test]
-fn tanh_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i as f32) - (j as f32) * 0.5);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i as f32) - (j as f32) * 0.5);
-    tensors_close_f32(&a_gpu.tanh(), &a_cpu.tanh());
-}
-
-#[test]
-fn sqrt_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32);
-    tensors_close_f32(&a_gpu.sqrt(), &a_cpu.sqrt());
-}
-
-#[test]
-fn abs_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i as f32) - (j as f32) * 1.5);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i as f32) - (j as f32) * 1.5);
-    tensors_close_f32(&a_gpu.abs(), &a_cpu.abs());
-}
-
-#[test]
-fn recip_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32);
-    tensors_close_f32(&a_gpu.recip(), &a_cpu.recip());
-}
-
-#[test]
-fn erf_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i as f32) * 0.5 - (j as f32) * 0.3);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i as f32) * 0.5 - (j as f32) * 0.3);
-    tensors_close_f32(&a_gpu.erf(), &a_cpu.erf());
-}
-
-#[test]
-fn ceil_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
-    tensors_close_f32(&a_gpu.ceil(), &a_cpu.ceil());
-}
-
-#[test]
-fn floor_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
-    tensors_close_f32(&a_gpu.floor(), &a_cpu.floor());
-}
-
-#[test]
-fn round_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
-    tensors_close_f32(&a_gpu.round(), &a_cpu.round());
-}
-
-#[test]
-fn powf_f32_matches_cpu() {
-    let a_gpu = Tensor::<f32, Gpu>::from_fn(3, 3, |i, j| 1.0f32 + (i * 3 + j) as f32 * 0.1);
-    let a_cpu = Tensor::<f32, Cpu>::from_fn(3, 3, |i, j| 1.0f32 + (i * 3 + j) as f32 * 0.1);
-    tensors_close_f32(&a_gpu.powf(2.5f32), &a_cpu.powf(2.5f32));
 }
 
 #[test]

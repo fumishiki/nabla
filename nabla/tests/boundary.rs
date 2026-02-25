@@ -10,6 +10,25 @@ fn approx_eq(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-10
 }
 
+fn linear_f64(rows: usize, cols: usize) -> Tensor<f64> {
+    Tensor::from_fn(rows, cols, |i, j| (i * cols + j + 1) as f64)
+}
+
+fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
+    assert_eq!(got.shape(), expected.shape(), "shape mismatch");
+    let (r, c) = got.shape();
+    for i in 0..r {
+        for j in 0..c {
+            assert!(
+                (got.get(i, j) - expected.get(i, j)).abs() < tol,
+                "mismatch at ({i},{j}): got {}, expected {}",
+                got.get(i, j),
+                expected.get(i, j)
+            );
+        }
+    }
+}
+
 #[test]
 fn mat_macro_roundtrip() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
@@ -92,7 +111,7 @@ fn einsum_nd_fallback() {
 
 #[test]
 fn fuse_pipeline() {
-    let x: Tensor<f64> = Tensor::from_fn(4, 4, |r, c| (r * 4 + c + 1) as f64);
+    let x: Tensor<f64> = linear_f64(4, 4);
     let y: Tensor<f64> = fuse!(x.sin().powf(2.0); x);
     for r in 0..4 {
         for c in 0..4 {
@@ -156,7 +175,7 @@ fn generated_specialization() {
 
 #[test]
 fn map_and_map_() {
-    let a: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| (i * 2 + j + 1) as f64);
+    let a: Tensor<f64> = linear_f64(2, 2);
     let doubled: Tensor<f64> = nabla::map!(|x| x * 2.0, &a);
     assert!(approx_eq(doubled.get(0, 0), 2.0));
     assert!(approx_eq(doubled.get(1, 1), 8.0));
@@ -177,11 +196,7 @@ fn map_and_map_() {
 fn par_from_fn_matches_sequential() {
     let seq: Tensor<f64> = Tensor::from_fn(50, 50, |r, c| ((r * 50 + c) as f64).sin());
     let par: Tensor<f64> = Tensor::par_from_fn(50, 50, |r, c| ((r * 50 + c) as f64).sin());
-    for r in 0..50 {
-        for c in 0..50 {
-            assert!(approx_eq(seq.get(r, c), par.get(r, c)));
-        }
-    }
+    assert_approx_grid(&seq, &par, 1e-10);
 }
 
 #[test]
@@ -266,8 +281,8 @@ fn tensor_dim_out_of_range() {
 
 #[test]
 fn matmul_non_square() {
-    let a: Tensor<f64> = Tensor::from_fn(2, 3, |i, j| (i * 3 + j + 1) as f64);
-    let b: Tensor<f64> = Tensor::from_fn(3, 2, |i, j| (i * 2 + j + 1) as f64);
+    let a: Tensor<f64> = linear_f64(2, 3);
+    let b: Tensor<f64> = linear_f64(3, 2);
     let c = &a * &b;
     assert_eq!(c.shape(), (2, 2));
     assert!(approx_eq(c.get(0, 0), 22.0));
@@ -383,7 +398,7 @@ fn cas_eval_unbound_error() {
 fn cas_eval_tensor_roundtrip() {
     let x = Expr::var("x");
     let s = simplify(&(&x * &Expr::lit(2.0)));
-    let t: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| (i * 2 + j + 1) as f64);
+    let t: Tensor<f64> = linear_f64(2, 2);
     let mut vars: HashMap<&str, &Tensor<f64>> = HashMap::new();
     vars.insert("x", &t);
     let result = eval_tensor(&s, &vars).expect("eval_tensor failed");
@@ -440,7 +455,7 @@ fn ode_rk4_generic_type() {
 fn autograd_simple_backward() {
     use nabla::autograd::Tape;
     let tape = Tape::<f64, Cpu>::new();
-    let x = tape.variable(Tensor::from_fn(2, 2, |i, j| (i * 2 + j + 1) as f64));
+    let x = tape.variable(linear_f64(2, 2));
     let y = x.emul(&x);
     y.backward().expect("backward failed");
     let grad = x.grad().expect("grad failed");
@@ -518,13 +533,8 @@ fn einsum_canon_term_order_independent() {
 
     let c1: Tensor<f64> = einsum!(c1[i, j] = a[i, k] * b[k, j]);
     let c2: Tensor<f64> = einsum!(c2[i, j] = b[k, j] * a[i, k]);
-
-    for r in 0..2 {
-        for c in 0..2 {
-            assert!((c1.get(r, c) - expected.get(r, c)).abs() < 1e-10);
-            assert!((c2.get(r, c) - expected.get(r, c)).abs() < 1e-10);
-        }
-    }
+    assert_approx_grid(&c1, &expected, 1e-10);
+    assert_approx_grid(&c2, &expected, 1e-10);
 }
 
 #[test]
@@ -534,15 +544,7 @@ fn einsum_canon_index_rename() {
     let expected = &a * &b;
 
     let c: Tensor<f64> = einsum!(c[x, y] = a[x, z] * b[z, y]);
-
-    for r in 0..2 {
-        for col in 0..2 {
-            assert!(
-                (c.get(r, col) - expected.get(r, col)).abs() < 1e-10,
-                "mismatch at ({r},{col})"
-            );
-        }
-    }
+    assert_approx_grid(&c, &expected, 1e-10);
 }
 
 #[test]
@@ -683,10 +685,7 @@ fn einsum_three_tensor_chain() {
     let result: Tensor<f64> = einsum!(result[i, j] = a[i, k] * b[k, l] * d[l, j]);
     // a @ I @ 2I = 2a
     let expected = &a * 2.0_f64;
-    assert!(approx_eq(result.get(0, 0), expected.get(0, 0)));
-    assert!(approx_eq(result.get(0, 1), expected.get(0, 1)));
-    assert!(approx_eq(result.get(1, 0), expected.get(1, 0)));
-    assert!(approx_eq(result.get(1, 1), expected.get(1, 1)));
+    assert_approx_grid(&result, &expected, 1e-10);
 }
 
 #[test]
@@ -697,10 +696,7 @@ fn einsum_three_tensor_vs_manual() {
     let d: Tensor<f64> = mat![[1.0_f64, 0.0], [0.0, 1.0]]; // identity
     let result: Tensor<f64> = einsum!(result[i, j] = a[i, k] * b[k, l] * d[l, j]);
     let manual = &(&a * &b) * &d; // a @ b @ I = a @ b
-    assert!(approx_eq(result.get(0, 0), manual.get(0, 0)));
-    assert!(approx_eq(result.get(0, 1), manual.get(0, 1)));
-    assert!(approx_eq(result.get(1, 0), manual.get(1, 0)));
-    assert!(approx_eq(result.get(1, 1), manual.get(1, 1)));
+    assert_approx_grid(&result, &manual, 1e-10);
 }
 
 #[test]
@@ -1431,21 +1427,12 @@ fn einsum_nd_fallback_tiled_large() {
 #[test]
 fn einsum_three_tensor_non_square() {
     // 3-tensor contraction with non-square matrices exercises greedy path optimizer
-    let a: Tensor<f64> = Tensor::from_fn(3, 4, |r, c| ((r * 4 + c + 1) as f64));
-    let b: Tensor<f64> = Tensor::from_fn(4, 5, |r, c| ((r * 5 + c + 1) as f64));
-    let d: Tensor<f64> = Tensor::from_fn(5, 2, |r, c| ((r * 2 + c + 1) as f64));
+    let a: Tensor<f64> = linear_f64(3, 4);
+    let b: Tensor<f64> = linear_f64(4, 5);
+    let d: Tensor<f64> = linear_f64(5, 2);
     let result: Tensor<f64> = einsum!(result[i, j] = a[i, k] * b[k, l] * d[l, j]);
     let manual = &(&a * &b) * &d;
-    for r in 0..3 {
-        for c in 0..2 {
-            assert!(
-                (result.get(r, c) - manual.get(r, c)).abs() < 1e-6,
-                "mismatch at [{r},{c}]: got {}, expected {}",
-                result.get(r, c),
-                manual.get(r, c)
-            );
-        }
-    }
+    assert_approx_grid(&result, &manual, 1e-6);
 }
 
 #[test]
@@ -1478,7 +1465,7 @@ fn fuse_deep_chain() {
 
 #[test]
 fn fuse_neg_and_arithmetic() {
-    let x: Tensor<f64> = Tensor::from_fn(2, 2, |r, c| (r * 2 + c + 1) as f64);
+    let x: Tensor<f64> = linear_f64(2, 2);
     let y: Tensor<f64> = fuse!(-x + x * 2.0; x);
     for r in 0..2 {
         for c in 0..2 {
@@ -1529,20 +1516,10 @@ fn sparse_bcsr_roundtrip() {
     assert!(bcsr.nnz_blocks() > 0);
     assert!(bcsr.density() > 0.0 && bcsr.density() <= 1.0);
 
-    let x: Tensor<f64> = Tensor::from_fn(3, 2, |r, c| (r * 2 + c + 1) as f64);
+    let x: Tensor<f64> = linear_f64(3, 2);
     let bcsr_result = bcsr.spmm(&x);
     let dense_result = s.matmul_dense(&x).expect("matmul_dense");
-
-    for r in 0..3 {
-        for c in 0..2 {
-            assert!(
-                (bcsr_result.get(r, c) - dense_result.get(r, c)).abs() < 1e-10,
-                "mismatch at [{r},{c}]: bcsr={}, dense={}",
-                bcsr_result.get(r, c),
-                dense_result.get(r, c)
-            );
-        }
-    }
+    assert_approx_grid(&bcsr_result, &dense_result, 1e-10);
 }
 
 #[test]
@@ -1558,20 +1535,10 @@ fn sparse_bcsr_spmm_accuracy() {
     }
     let s = SparseMatrix::try_new_from_triplets(16, 16, &trips).expect("build sparse");
     let bcsr = BcsrMatrix::from_sparse(&s, 4);
-    let x: Tensor<f64> = Tensor::from_fn(16, 3, |r, c| (r * 3 + c + 1) as f64);
+    let x: Tensor<f64> = linear_f64(16, 3);
     let bcsr_result = bcsr.spmm(&x);
     let dense_result = s.matmul_dense(&x).expect("matmul_dense");
-
-    for r in 0..16 {
-        for c in 0..3 {
-            assert!(
-                (bcsr_result.get(r, c) - dense_result.get(r, c)).abs() < 1e-8,
-                "mismatch at [{r},{c}]: bcsr={}, dense={}",
-                bcsr_result.get(r, c),
-                dense_result.get(r, c)
-            );
-        }
-    }
+    assert_approx_grid(&bcsr_result, &dense_result, 1e-8);
 }
 
 #[test]
@@ -1646,16 +1613,7 @@ fn fuse_gemm_sigmoid() {
     let b: Tensor<f64> = mat![[0.5_f64, 0.1], [0.2, 0.3]];
     let fused: Tensor<f64> = fuse!((&a * &b).sigmoid(); a, b);
     let expected = (&a * &b).sigmoid();
-    let (m, n) = fused.shape();
-    assert_eq!((m, n), expected.shape());
-    for r in 0..m {
-        for c in 0..n {
-            assert!(
-                (fused.get(r, c) - expected.get(r, c)).abs() < 1e-12,
-                "fuse_gemm_sigmoid mismatch at [{r},{c}]"
-            );
-        }
-    }
+    assert_approx_grid(&fused, &expected, 1e-12);
 }
 
 #[test]
@@ -1664,16 +1622,7 @@ fn fuse_gemm_relu() {
     let b: Tensor<f64> = mat![[0.5_f64, -0.5], [1.0, 0.3]];
     let fused: Tensor<f64> = fuse!((&a * &b).relu(); a, b);
     let expected = (&a * &b).relu();
-    let (m, n) = fused.shape();
-    assert_eq!((m, n), expected.shape());
-    for r in 0..m {
-        for c in 0..n {
-            assert!(
-                (fused.get(r, c) - expected.get(r, c)).abs() < 1e-12,
-                "fuse_gemm_relu mismatch at [{r},{c}]"
-            );
-        }
-    }
+    assert_approx_grid(&fused, &expected, 1e-12);
 }
 
 // ---------------------------------------------------------------------------
@@ -1797,7 +1746,7 @@ fn wgpu_select_register_tile_params() {
 
 #[test]
 fn reshape_basic() {
-    let a: Tensor<f64> = Tensor::from_fn(2, 3, |i, j| (i * 3 + j + 1) as f64);
+    let a: Tensor<f64> = linear_f64(2, 3);
     let b = a.reshape(3, 2);
     assert_eq!(b.shape(), (3, 2));
     assert!(approx_eq(b.get(0, 0), 1.0));
@@ -1892,12 +1841,7 @@ fn cat_axis0_equals_vcat() {
     let b: Tensor<f64> = mat![[3.0_f64, 4.0]];
     let cat_result = Tensor::cat(&[&a, &b], 0);
     let vcat_result = Tensor::vcat(&[&a, &b]);
-    assert_eq!(cat_result.shape(), vcat_result.shape());
-    for r in 0..cat_result.nrows() {
-        for c in 0..cat_result.ncols() {
-            assert!(approx_eq(cat_result.get(r, c), vcat_result.get(r, c)));
-        }
-    }
+    assert_approx_grid(&cat_result, &vcat_result, 1e-10);
 }
 
 #[test]
@@ -1906,12 +1850,7 @@ fn cat_axis1_equals_hcat() {
     let b: Tensor<f64> = mat![[3.0_f64], [4.0]];
     let cat_result = Tensor::cat(&[&a, &b], 1);
     let hcat_result = Tensor::hcat(&[&a, &b]);
-    assert_eq!(cat_result.shape(), hcat_result.shape());
-    for r in 0..cat_result.nrows() {
-        for c in 0..cat_result.ncols() {
-            assert!(approx_eq(cat_result.get(r, c), hcat_result.get(r, c)));
-        }
-    }
+    assert_approx_grid(&cat_result, &hcat_result, 1e-10);
 }
 
 #[test]
@@ -1974,15 +1913,10 @@ fn squeeze_non_unit_dim_panics() {
 
 #[test]
 fn view_same_as_reshape() {
-    let a: Tensor<f64> = Tensor::from_fn(2, 6, |i, j| (i * 6 + j + 1) as f64);
+    let a: Tensor<f64> = linear_f64(2, 6);
     let v = a.view(3, 4);
     let r = a.reshape(3, 4);
-    assert_eq!(v.shape(), r.shape());
-    for i in 0..3 {
-        for j in 0..4 {
-            assert!(approx_eq(v.get(i, j), r.get(i, j)));
-        }
-    }
+    assert_approx_grid(&v, &r, 1e-10);
 }
 
 #[test]
@@ -2058,13 +1992,8 @@ fn einsum_canon_swapped_operands_with_renamed_indices() {
 
     let c1: Tensor<f64> = einsum!(c1[i, j] = a[i, k] * b[k, j]);
     let c2: Tensor<f64> = einsum!(c2[x, y] = b[z, y] * a[x, z]);
-
-    for r in 0..2 {
-        for c in 0..2 {
-            assert!(approx_eq(c1.get(r, c), expected.get(r, c)));
-            assert!(approx_eq(c2.get(r, c), expected.get(r, c)));
-        }
-    }
+    assert_approx_grid(&c1, &expected, 1e-10);
+    assert_approx_grid(&c2, &expected, 1e-10);
 }
 
 #[test]
@@ -2091,11 +2020,7 @@ fn einsum_canon_hadamard_renamed() {
 
     let h1: Tensor<f64> = einsum!(h1[i, j] = a[i, j] * b[i, j]);
     let h2: Tensor<f64> = einsum!(h2[p, q] = b[p, q] * a[p, q]);
-
-    for r in 0..2 {
-        for c in 0..2 {
-            assert!(approx_eq(h1.get(r, c), h2.get(r, c)));
-            assert!(approx_eq(h1.get(r, c), a.get(r, c) * b.get(r, c)));
-        }
-    }
+    assert_approx_grid(&h1, &h2, 1e-10);
+    let expected_h = a.emul(&b);
+    assert_approx_grid(&h1, &expected_h, 1e-10);
 }
