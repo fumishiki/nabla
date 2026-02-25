@@ -13,86 +13,196 @@ pub(crate) const KERNELS: &str = r#"
 #define THREAD_ID (blockIdx.x * blockDim.x + threadIdx.x)
 #define TILE 16
 
-// ── Unary f32 ──────────────────────────────────────────────────────────────
+// float4 is CUDA built-in with __attribute__((aligned(16))) → emits LDG.E.128
+#define LOAD_F4(ptr, i)  (((const float4*)(ptr))[i])
+#define STORE_F4(ptr, i, v) (((float4*)(ptr))[i] = (v))
+#define VEC4_IDX (blockIdx.x * blockDim.x + threadIdx.x)
+
+// ── Unary f32 (float4 + fast math) ──────────────────────────────────────
 
 extern "C" __global__ void k_neg_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = -in[i];
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = -v.x; v.y = -v.y; v.z = -v.z; v.w = -v.w;
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = -in[j]; }
 }
 extern "C" __global__ void k_recip_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = 1.0f / in[i];
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = 1.0f/v.x; v.y = 1.0f/v.y; v.z = 1.0f/v.z; v.w = 1.0f/v.w;
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = 1.0f/in[j]; }
 }
 extern "C" __global__ void k_exp_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = expf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = __expf(v.x); v.y = __expf(v.y); v.z = __expf(v.z); v.w = __expf(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = __expf(in[j]); }
 }
 extern "C" __global__ void k_ln_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = logf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = __logf(v.x); v.y = __logf(v.y); v.z = __logf(v.z); v.w = __logf(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = __logf(in[j]); }
 }
 extern "C" __global__ void k_log1p_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = log1pf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = __logf(1.0f+v.x); v.y = __logf(1.0f+v.y); v.z = __logf(1.0f+v.z); v.w = __logf(1.0f+v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = log1pf(in[j]); }
 }
 extern "C" __global__ void k_sin_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = sinf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = __sinf(v.x); v.y = __sinf(v.y); v.z = __sinf(v.z); v.w = __sinf(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = __sinf(in[j]); }
 }
 extern "C" __global__ void k_cos_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = cosf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = __cosf(v.x); v.y = __cosf(v.y); v.z = __cosf(v.z); v.w = __cosf(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = __cosf(in[j]); }
 }
 extern "C" __global__ void k_tanh_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = tanhf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = tanhf(v.x); v.y = tanhf(v.y); v.z = tanhf(v.z); v.w = tanhf(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = tanhf(in[j]); }
 }
 extern "C" __global__ void k_sqrt_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = sqrtf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = __fsqrt_rn(v.x); v.y = __fsqrt_rn(v.y); v.z = __fsqrt_rn(v.z); v.w = __fsqrt_rn(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = sqrtf(in[j]); }
 }
 extern "C" __global__ void k_abs_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = fabsf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = fabsf(v.x); v.y = fabsf(v.y); v.z = fabsf(v.z); v.w = fabsf(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = fabsf(in[j]); }
 }
 extern "C" __global__ void k_ceil_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = ceilf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = ceilf(v.x); v.y = ceilf(v.y); v.z = ceilf(v.z); v.w = ceilf(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = ceilf(in[j]); }
 }
 extern "C" __global__ void k_floor_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = floorf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = floorf(v.x); v.y = floorf(v.y); v.z = floorf(v.z); v.w = floorf(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = floorf(in[j]); }
 }
 extern "C" __global__ void k_round_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = roundf(in[i]);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = roundf(v.x); v.y = roundf(v.y); v.z = roundf(v.z); v.w = roundf(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = roundf(in[j]); }
 }
-// erf — Abramowitz & Stegun polynomial (max error ~1.5e-7)
+// erf — A&S polynomial (max error ~1.5e-7) with float4 + __expf
+__device__ float erf_approx_f32(float x) {
+    float ax = fabsf(x);
+    float t = 1.0f / (1.0f + 0.3275911f * ax);
+    float p = t * (0.254829592f + t * (-0.284496736f +
+              t * (1.421413741f + t * (-1.453152027f + t * 1.061405429f))));
+    float r = 1.0f - p * __expf(-x * x);
+    return (x >= 0.0f) ? r : -r;
+}
 extern "C" __global__ void k_erf_f32(const float* in, float* out, unsigned n) {
-    unsigned i = THREAD_ID;
-    if (i < n) {
-        float x = in[i];
-        float ax = fabsf(x);
-        float t = 1.0f / (1.0f + 0.3275911f * ax);
-        float p = t * (0.254829592f + t * (-0.284496736f +
-                  t * (1.421413741f + t * (-1.453152027f + t * 1.061405429f))));
-        float r = 1.0f - p * expf(-x * x);
-        out[i] = (x >= 0.0f) ? r : -r;
-    }
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = erf_approx_f32(v.x); v.y = erf_approx_f32(v.y);
+        v.z = erf_approx_f32(v.z); v.w = erf_approx_f32(v.w);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = erf_approx_f32(in[j]); }
 }
 
-// ── Binary f32 ─────────────────────────────────────────────────────────────
+// ── Binary f32 (float4) ─────────────────────────────────────────────────
 
 extern "C" __global__ void k_add_f32(const float* a, const float* b, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = a[i] + b[i];
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 va = LOAD_F4(a, i4), vb = LOAD_F4(b, i4);
+        float4 vo = make_float4(va.x+vb.x, va.y+vb.y, va.z+vb.z, va.w+vb.w);
+        STORE_F4(out, i4, vo);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = a[j]+b[j]; }
 }
 extern "C" __global__ void k_sub_f32(const float* a, const float* b, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = a[i] - b[i];
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 va = LOAD_F4(a, i4), vb = LOAD_F4(b, i4);
+        float4 vo = make_float4(va.x-vb.x, va.y-vb.y, va.z-vb.z, va.w-vb.w);
+        STORE_F4(out, i4, vo);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = a[j]-b[j]; }
 }
 extern "C" __global__ void k_emul_f32(const float* a, const float* b, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = a[i] * b[i];
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 va = LOAD_F4(a, i4), vb = LOAD_F4(b, i4);
+        float4 vo = make_float4(va.x*vb.x, va.y*vb.y, va.z*vb.z, va.w*vb.w);
+        STORE_F4(out, i4, vo);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = a[j]*b[j]; }
 }
 extern "C" __global__ void k_ediv_f32(const float* a, const float* b, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = a[i] / b[i];
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 va = LOAD_F4(a, i4), vb = LOAD_F4(b, i4);
+        float4 vo = make_float4(va.x/vb.x, va.y/vb.y, va.z/vb.z, va.w/vb.w);
+        STORE_F4(out, i4, vo);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = a[j]/b[j]; }
 }
 
-// ── Scalar ops f32 ─────────────────────────────────────────────────────────
+// ── Scalar ops f32 (float4 + fast math) ─────────────────────────────────
 
 extern "C" __global__ void k_scale_f32(const float* in, float s, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = in[i] * s;
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x *= s; v.y *= s; v.z *= s; v.w *= s;
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = in[j]*s; }
 }
 extern "C" __global__ void k_powf_f32(const float* in, float p, float* out, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = powf(in[i], p);
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = LOAD_F4(in, i4);
+        v.x = __expf(p*__logf(v.x)); v.y = __expf(p*__logf(v.y));
+        v.z = __expf(p*__logf(v.z)); v.w = __expf(p*__logf(v.w));
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = powf(in[j], p); }
 }
 extern "C" __global__ void k_fill_f32(float* out, float val, unsigned n) {
-    unsigned i = THREAD_ID; if (i < n) out[i] = val;
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 v = make_float4(val, val, val, val);
+        STORE_F4(out, i4, v);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = val; }
 }
 
 // ── Transpose f32 ──────────────────────────────────────────────────────────

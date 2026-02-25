@@ -716,6 +716,121 @@ fn scalar_expr(expr: &Expr, tensor_names: &[String]) -> TokenStream2 {
     }
 }
 
+/// Generate a CUDA C expression string from the AST for GPU fused kernels.
+/// Tensor variables map to `inN[i]` where N is the tensor's index.
+/// Math ops map to CUDA C++ overloaded functions (sin, cos, exp, etc.).
+fn cuda_expr(expr: &Expr, tensor_names: &[String]) -> String {
+    match expr {
+        Expr::Path(ExprPath { path, .. }) if path.segments.len() == 1 => {
+            let name = path.segments[0].ident.to_string();
+            if let Some(idx) = tensor_names.iter().position(|n| n == &name) {
+                format!("in{idx}[i]")
+            } else {
+                name
+            }
+        }
+
+        Expr::Lit(syn::ExprLit { lit, .. }) => {
+            match lit {
+                syn::Lit::Float(f) => f.to_string(),
+                syn::Lit::Int(i) => format!("(double)({})", i.base10_digits()),
+                _ => lit.to_token_stream().to_string(),
+            }
+        }
+
+        Expr::Binary(ExprBinary { left, op, right, .. }) => {
+            let l = cuda_expr(left, tensor_names);
+            let r = cuda_expr(right, tensor_names);
+            let op_str = match op {
+                syn::BinOp::Add(_) => "+",
+                syn::BinOp::Sub(_) => "-",
+                syn::BinOp::Mul(_) => "*",
+                syn::BinOp::Div(_) => "/",
+                _ => panic!("fuse!: unsupported binary op for GPU"),
+            };
+            format!("({l} {op_str} {r})")
+        }
+
+        Expr::Unary(ExprUnary { op: syn::UnOp::Neg(_), expr: inner, .. }) => {
+            let i = cuda_expr(inner, tensor_names);
+            format!("(-{i})")
+        }
+
+        Expr::MethodCall(ExprMethodCall { receiver, method, args, .. }) => {
+            let recv = cuda_expr(receiver, tensor_names);
+            let method_name = method.to_string();
+            match method_name.as_str() {
+                "exp" => format!("exp({recv})"),
+                "ln" => format!("log({recv})"),
+                "log1p" => format!("log1p({recv})"),
+                "sin" => format!("sin({recv})"),
+                "cos" => format!("cos({recv})"),
+                "tanh" => format!("tanh({recv})"),
+                "sqrt" => format!("sqrt({recv})"),
+                "abs" => format!("fabs({recv})"),
+                "recip" => format!("(1.0/({recv}))"),
+                "erf" => format!("erf({recv})"),
+                "ceil" => format!("ceil({recv})"),
+                "floor" => format!("floor({recv})"),
+                "round" => format!("round({recv})"),
+                "neg" => format!("(-{recv})"),
+                "powf" if args.len() == 1 => {
+                    let p = cuda_expr(&args[0], tensor_names);
+                    format!("pow({recv}, {p})")
+                }
+                _ => panic!("fuse!: unsupported GPU method: {method_name}"),
+            }
+        }
+
+        Expr::Call(ec) => {
+            if let Expr::Path(ExprPath { path, .. }) = &*ec.func
+                && path.segments.len() == 1
+                && ec.args.len() == 1
+            {
+                let fname = path.segments[0].ident.to_string();
+                let arg = cuda_expr(&ec.args[0], tensor_names);
+                match fname.as_str() {
+                    "exp" => return format!("exp({arg})"),
+                    "ln" => return format!("log({arg})"),
+                    "sqrt" => return format!("sqrt({arg})"),
+                    "abs" => return format!("fabs({arg})"),
+                    "sin" => return format!("sin({arg})"),
+                    "cos" => return format!("cos({arg})"),
+                    "tanh" => return format!("tanh({arg})"),
+                    _ => {}
+                }
+            }
+            panic!("fuse!: unsupported GPU function call")
+        }
+
+        Expr::Paren(ep) => {
+            let inner = cuda_expr(&ep.expr, tensor_names);
+            format!("({inner})")
+        }
+
+        Expr::Cast(ec) => {
+            if let Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) = &*ec.expr
+                && let Ok(v) = i.base10_parse::<f64>()
+            {
+                return format!("{v}");
+            }
+            cuda_expr(&ec.expr, tensor_names)
+        }
+
+        _ => panic!("fuse!: unsupported expression for GPU codegen"),
+    }
+}
+
+/// Compute a simple FNV-1a hash of the GPU expression for kernel name deduplication.
+fn expr_hash(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
 // Activation methods recognized for GEMM fusion.
 const GEMM_ACTIVATIONS: &[&str] = &[
     "sigmoid", "relu", "tanh", "gelu", "exp", "ln", "sqrt", "abs", "neg", "recip",
@@ -776,7 +891,7 @@ fn fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
         .collect();
 
     if is_elementwise_fusible(&body) {
-        // Fused path: single from_fn pass over all elements
+        // Fused path: single kernel pass over all elements
         let scalar_body = scalar_expr(&body, &tensor_names);
         let let_bindings: Vec<TokenStream2> = tensors
             .iter()
@@ -786,13 +901,32 @@ fn fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
             })
             .collect();
 
+        // GPU codegen: CUDA/HIP C expression + kernel hash
+        let gpu_expr_str = cuda_expr(&body, &tensor_names);
+        let kernel_hash = expr_hash(&gpu_expr_str);
+        let n_inputs = tensors.len();
+
+        let storage_ptrs: Vec<TokenStream2> = tensors
+            .iter()
+            .map(|t| quote! { #t.__storage_ptr() })
+            .collect();
+
         Ok(quote! {{
             #(#shape_checks)*
             use nabla::scalar::MathOps as _;
-            nabla::tensor::Tensor::from_fn(#first.nrows(), #first.ncols(), |__fuse_r, __fuse_c| {
-                #(#let_bindings)*
-                #scalar_body
-            })
+            let __fuse_inputs: &[*const u8] = &[#(#storage_ptrs),*];
+            nabla::tensor::Tensor::__fuse_elementwise(
+                __fuse_inputs,
+                #first.nrows(),
+                #first.ncols(),
+                |__fuse_r, __fuse_c| {
+                    #(#let_bindings)*
+                    #scalar_body
+                },
+                #gpu_expr_str,
+                #kernel_hash,
+                #n_inputs,
+            )
         }})
     } else {
         // Fallback: tensor-level chained ops (existing behavior)

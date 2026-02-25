@@ -38,7 +38,7 @@ pub(crate) fn grid_1d(n: usize) -> u32 {
 ///
 /// Generic over `B` (the raw GPU buffer type) — instantiated as
 /// `RtcStorage<CuBuffer, T>` for CUDA, `RtcStorage<HipBuffer, T>` for HIP.
-pub(crate) struct RtcStorage<B, T: Scalar> {
+pub struct RtcStorage<B, T: Scalar> {
     pub(crate) nrows: usize,
     pub(crate) ncols: usize,
     pub(crate) buf: B,

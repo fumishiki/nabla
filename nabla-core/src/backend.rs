@@ -159,6 +159,10 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     /// Write element at `(row, col)`.
     fn set<T: Scalar>(storage: &mut Self::Storage<T>, row: usize, col: usize, val: T);
 
+    /// Block until all pending operations on this backend's device/stream have completed.
+    /// On GPU backends this flushes the command stream; on CPU this is a no-op.
+    fn sync<T: Scalar>(_storage: &Self::Storage<T>) {}
+
     /// Compute `out = a * b`, overwriting `out`.
     fn matmul_into<T: Scalar>(
         out: &mut Self::Storage<T>,
@@ -250,6 +254,23 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
 
     /// `(row, col)` of the element with the minimum value (or magnitude for complex types).
     fn argmin_all<T: Scalar>(a: &Self::Storage<T>) -> (usize, usize);
+
+    /// Launch a fused element-wise kernel.
+    ///
+    /// GPU backends JIT-compile `gpu_expr` (a CUDA/HIP C expression over
+    /// `in0[i], in1[i], …`) into a single kernel, caching by `kernel_hash`.
+    /// CPU backends ignore the GPU arguments and use `from_fn` with `cpu_fn`.
+    fn fuse_launch<T: Scalar>(
+        _inputs: &[*const u8],
+        nrows: usize,
+        ncols: usize,
+        cpu_fn: impl FnMut(usize, usize) -> T,
+        _gpu_expr: &str,
+        _kernel_hash: &str,
+        _n_inputs: usize,
+    ) -> Self::Storage<T> {
+        Self::from_fn(nrows, ncols, cpu_fn)
+    }
 }
 
 /// CPU backend — row-major `Vec<T>` storage, no external BLAS dependencies.

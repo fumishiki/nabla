@@ -48,7 +48,7 @@ fn check(err: hip::hipError_t) -> HipResult<()> {
 
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
-pub(crate) struct HipBuffer {
+pub struct HipBuffer {
     pub(crate) ptr: *mut c_void,
     size: usize,
 }
@@ -514,6 +514,116 @@ pub(crate) fn hip_min_all<T: Scalar>(a: &HipStorage<T>) -> T { gpu_common::rtc_m
 pub(crate) fn hip_argmax_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) { gpu_common::rtc_argmax_all(a) }
 pub(crate) fn hip_argmin_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) { gpu_common::rtc_argmin_all(a) }
 
+// ── Fused element-wise kernel launch ────────────────────────────────────────
+
+fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_name: &str) -> String {
+    let mut src = String::with_capacity(512);
+    src.push_str("extern \"C\" __global__ void ");
+    src.push_str(kernel_name);
+    src.push('(');
+    for i in 0..n_inputs {
+        src.push_str("const ");
+        src.push_str(type_name);
+        src.push_str("* in");
+        src.push_str(&i.to_string());
+        src.push_str(", ");
+    }
+    src.push_str(type_name);
+    src.push_str("* out, unsigned n) {\n");
+    src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
+    src.push_str("    if (i < n) {\n");
+    src.push_str("        out[i] = ");
+    src.push_str(gpu_expr);
+    src.push_str(";\n");
+    src.push_str("    }\n}\n");
+    src
+}
+
+fn hip_fuse_launch<T: Scalar>(
+    inputs: &[*const u8],
+    nrows: usize,
+    ncols: usize,
+    gpu_expr: &str,
+    kernel_hash: &str,
+    n_inputs: usize,
+) -> HipStorage<T> {
+    let ctx = get_ctx();
+    let n = nrows * ncols;
+    let tsuf = type_suffix::<T>();
+    let kernel_name = format!("k_fused_{kernel_hash}_{tsuf}");
+
+    // Check cache, compile if missing
+    {
+        let map = ctx.kernels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !map.contains_key(&kernel_name) {
+            drop(map);
+            let type_name = if tsuf == "f32" { "float" } else { "double" };
+            let src_str = fuse_kernel_source(gpu_expr, n_inputs, type_name, &kernel_name);
+            let c_src = CString::new(src_str).unwrap_or_else(|_| panic!("null in source"));
+            let prog_name = CString::new("nabla_fuse").unwrap_or_else(|_| panic!("null"));
+
+            let mut prog: hip::hiprtcProgram = core::ptr::null_mut();
+            let err = unsafe {
+                hip::hiprtcCreateProgram(
+                    &mut prog, c_src.as_ptr(), prog_name.as_ptr(),
+                    0, core::ptr::null_mut(), core::ptr::null_mut(),
+                )
+            };
+            if err != hip::hiprtcResult::HIPRTC_SUCCESS {
+                panic!("hiprtcCreateProgram for fuse: {err:?}");
+            }
+            let err = unsafe { hip::hiprtcCompileProgram(prog, 0, core::ptr::null_mut()) };
+            if err != hip::hiprtcResult::HIPRTC_SUCCESS {
+                panic!("hiprtcCompileProgram for fuse: {err:?}");
+            }
+            let mut code_size: usize = 0;
+            let err = unsafe { hip::hiprtcGetCodeSize(prog, &mut code_size) };
+            if err != hip::hiprtcResult::HIPRTC_SUCCESS {
+                panic!("hiprtcGetCodeSize: {err:?}");
+            }
+            let mut code = vec![0u8; code_size];
+            let err = unsafe { hip::hiprtcGetCode(prog, code.as_mut_ptr().cast()) };
+            if err != hip::hiprtcResult::HIPRTC_SUCCESS {
+                panic!("hiprtcGetCode: {err:?}");
+            }
+            unsafe { hip::hiprtcDestroyProgram(&mut prog) };
+
+            let mut module: hip::hipModule_t = core::ptr::null_mut();
+            check(unsafe { hip::hipModuleLoadData(&mut module, code.as_ptr().cast()) })
+                .unwrap_or_else(|e| panic!("HIP module load: {e}"));
+            let c_fn = CString::new(kernel_name.as_str()).unwrap_or_else(|_| panic!("null"));
+            let mut func: hip::hipFunction_t = core::ptr::null_mut();
+            check(unsafe { hip::hipModuleGetFunction(&mut func, module, c_fn.as_ptr()) })
+                .unwrap_or_else(|e| panic!("HIP get_function: {e}"));
+
+            let mut map = ctx.kernels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.insert(kernel_name.clone(), KernelEntry { func, _module: module });
+        }
+    }
+
+    let func = get_kernel(ctx, &kernel_name).unwrap_or_else(|e| panic!("{e}"));
+    let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
+        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let n_u32 = n as u32;
+    let grid = grid_1d(n);
+
+    // SAFETY: input pointers are valid HipStorage<T>
+    let input_ptrs: Vec<*mut c_void> = inputs.iter().map(|&p| {
+        let storage = unsafe { &*(p as *const HipStorage<T>) };
+        storage.buf.ptr
+    }).collect();
+
+    let mut args: Vec<*mut c_void> = Vec::with_capacity(n_inputs + 2);
+    for ptr in &input_ptrs {
+        args.push(ptr as *const *mut c_void as *mut c_void);
+    }
+    args.push((&out_buf.ptr as *const *mut c_void).cast_mut().cast());
+    args.push((&n_u32 as *const u32).cast_mut().cast());
+
+    hip_launch(func, [grid, 1, 1], [BLOCK_SIZE, 1, 1], &mut args);
+    HipStorage::new(nrows, ncols, out_buf)
+}
+
 // ── Backend impl ─────────────────────────────────────────────────────────────
 
 impl crate::backend::private::Sealed for crate::backend::Hip {}
@@ -613,4 +723,16 @@ impl crate::backend::Backend for crate::backend::Hip {
     fn argmax_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) { hip_argmax_all(a) }
     #[inline]
     fn argmin_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) { hip_argmin_all(a) }
+
+    fn fuse_launch<T: Scalar>(
+        inputs: &[*const u8],
+        nrows: usize,
+        ncols: usize,
+        _cpu_fn: impl FnMut(usize, usize) -> T,
+        gpu_expr: &str,
+        kernel_hash: &str,
+        n_inputs: usize,
+    ) -> HipStorage<T> {
+        hip_fuse_launch::<T>(inputs, nrows, ncols, gpu_expr, kernel_hash, n_inputs)
+    }
 }

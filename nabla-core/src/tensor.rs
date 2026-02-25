@@ -80,6 +80,14 @@ impl<T: Scalar, B: Backend, Axes> Tensor<T, B, Axes> {
         B::get(&self.storage, row, col)
     }
 
+    /// Block until all pending backend operations (e.g. GPU kernels) have completed.
+    /// On GPU backends this flushes the command stream; on CPU this is a no-op.
+    /// Use this for accurate throughput benchmarks instead of `get()` to avoid
+    /// including the device-to-host transfer cost in measurements.
+    pub fn sync(&self) {
+        B::sync(&self.storage);
+    }
+
     /// Dimension along a given axis: 0 -> nrows, 1 -> ncols.
     #[must_use]
     #[inline]
@@ -91,6 +99,31 @@ impl<T: Scalar, B: Backend, Axes> Tensor<T, B, Axes> {
         }
     }
 
+    /// Opaque pointer to internal storage (for fuse! macro GPU codegen).
+    #[doc(hidden)]
+    #[inline]
+    pub fn __storage_ptr(&self) -> *const u8 {
+        &self.storage as *const B::Storage<T> as *const u8
+    }
+}
+
+impl<T: Scalar, B: Backend> Tensor<T, B> {
+    /// Fused element-wise kernel launch (for fuse! macro codegen).
+    ///
+    /// GPU backends JIT-compile the expression; CPU backends use the closure.
+    #[doc(hidden)]
+    #[inline]
+    pub fn __fuse_elementwise(
+        inputs: &[*const u8],
+        nrows: usize,
+        ncols: usize,
+        cpu_fn: impl FnMut(usize, usize) -> T,
+        gpu_expr: &str,
+        kernel_hash: &str,
+        n_inputs: usize,
+    ) -> Self {
+        Self::from_storage(B::fuse_launch(inputs, nrows, ncols, cpu_fn, gpu_expr, kernel_hash, n_inputs))
+    }
 }
 
 /// Sealed module for `MatmulCompat`.
