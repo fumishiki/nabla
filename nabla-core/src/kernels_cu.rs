@@ -194,7 +194,8 @@ __device__ float warp_reduce_min_f32(float val) {
 // Single-kernel sum: grid-stride + float4 + last-block final reduction
 extern "C" __global__ void k_sum_f32(const float* __restrict__ in,
                                       float* __restrict__ partial,
-                                      unsigned n) {
+                                      unsigned n,
+                                      float* __restrict__ out) {
     float acc = 0.0f;
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
@@ -243,14 +244,15 @@ extern "C" __global__ void k_sum_f32(const float* __restrict__ in,
                 val = warp_reduce_sum_f32(val);
             }
         }
-        if (tid == 0) partial[0] = val;
+        if (tid == 0) out[0] = val;
     }
 }
 
 // Single-kernel max: grid-stride + float4 + last-block aggregation
 extern "C" __global__ void k_max_f32(const float* __restrict__ in,
                                       float* __restrict__ partial,
-                                      unsigned n) {
+                                      unsigned n,
+                                      float* __restrict__ out) {
     float acc = -__int_as_float(0x7f800000); // -INFINITY
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
@@ -297,13 +299,14 @@ extern "C" __global__ void k_max_f32(const float* __restrict__ in,
                 val = warp_reduce_max_f32(val);
             }
         }
-        if (tid == 0) partial[0] = val;
+        if (tid == 0) out[0] = val;
     }
 }
 
 extern "C" __global__ void k_min_f32(const float* __restrict__ in,
                                       float* __restrict__ partial,
-                                      unsigned n) {
+                                      unsigned n,
+                                      float* __restrict__ out) {
     float acc = __int_as_float(0x7f800000); // +INFINITY
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
@@ -350,7 +353,7 @@ extern "C" __global__ void k_min_f32(const float* __restrict__ in,
                 val = warp_reduce_min_f32(val);
             }
         }
-        if (tid == 0) partial[0] = val;
+        if (tid == 0) out[0] = val;
     }
 }
 
@@ -446,7 +449,8 @@ __device__ double warp_reduce_min_f64(double val) {
 
 // Single-kernel sum with last-block aggregation
 extern "C" __global__ void k_sum_f64(const double* __restrict__ in,
-                                      double* __restrict__ partial, unsigned n) {
+                                      double* __restrict__ partial, unsigned n,
+                                      double* __restrict__ out) {
     double acc = 0.0;
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
@@ -493,14 +497,15 @@ extern "C" __global__ void k_sum_f64(const double* __restrict__ in,
                 val = warp_reduce_sum_f64(val);
             }
         }
-        if (tid == 0) partial[0] = val;
+        if (tid == 0) out[0] = val;
     }
 }
 
 // Single-kernel max with last-block aggregation
 extern "C" __global__ void k_max_f64(const double* __restrict__ in,
                                       double* __restrict__ partial,
-                                      unsigned n) {
+                                      unsigned n,
+                                      double* __restrict__ out) {
     double acc = __longlong_as_double(0xFFF0000000000000LL); // -INFINITY
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
@@ -547,13 +552,14 @@ extern "C" __global__ void k_max_f64(const double* __restrict__ in,
                 val = warp_reduce_max_f64(val);
             }
         }
-        if (tid == 0) partial[0] = val;
+        if (tid == 0) out[0] = val;
     }
 }
 
 extern "C" __global__ void k_min_f64(const double* __restrict__ in,
                                       double* __restrict__ partial,
-                                      unsigned n) {
+                                      unsigned n,
+                                      double* __restrict__ out) {
     double acc = __longlong_as_double(0x7FF0000000000000LL); // +INFINITY
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
@@ -600,7 +606,7 @@ extern "C" __global__ void k_min_f64(const double* __restrict__ in,
                 val = warp_reduce_min_f64(val);
             }
         }
-        if (tid == 0) partial[0] = val;
+        if (tid == 0) out[0] = val;
     }
 }
 
