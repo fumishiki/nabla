@@ -7,9 +7,9 @@
 #![allow(dead_code)]
 
 pub(crate) const BLOCK_SIZE: u32 = 256;
-pub(crate) const REDUCE_BLOCK: u32 = 1024;
+pub(crate) const REDUCE_BLOCK: u32 = 256;
 // Max blocks for first-pass reduction; last block aggregates.
-pub(crate) const REDUCE_GRID_CAP: u32 = 64;
+pub(crate) const REDUCE_GRID_CAP: u32 = 128;
 
 // Combined kernel source — unary, binary, scalar, reduction, transpose, matmul for f32+f64.
 pub(crate) const KERNELS: &str = r#"
