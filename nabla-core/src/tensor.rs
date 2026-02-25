@@ -908,6 +908,45 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         self.reshape(1, n)
     }
 
+    /// Unflatten a dimension: reshape `axis` dim by splitting it into `sizes`.
+    ///
+    /// For a 2-D tensor: axis=0 splits rows, axis=1 splits columns.
+    /// `sizes` is `(new_axis_size, other_size)` such that `new_axis_size * other_size = dim_size`.
+    /// Result: axis=0 → `(sizes.0, sizes.1 * ncols)`, axis=1 → `(nrows * sizes.0, sizes.1)`.
+    #[must_use]
+    pub fn unflatten(&self, axis: usize, sizes: (usize, usize)) -> Self {
+        let (m, n) = self.shape();
+        match axis {
+            0 => {
+                assert_eq!(sizes.0 * sizes.1, m, "unflatten: {m} != {}*{}", sizes.0, sizes.1);
+                self.reshape(sizes.0, sizes.1 * n)
+            }
+            1 => {
+                assert_eq!(sizes.0 * sizes.1, n, "unflatten: {n} != {}*{}", sizes.0, sizes.1);
+                self.reshape(m * sizes.0, sizes.1)
+            }
+            _ => panic!("unflatten: axis {axis} out of bounds for 2-D tensor"),
+        }
+    }
+
+    /// Return a contiguous copy of the tensor (forces row-major layout).
+    ///
+    /// After `transpose()` or `permute()`, the logical layout may differ from
+    /// physical memory. `contiguous()` materializes into a fresh, dense buffer.
+    #[must_use]
+    pub fn contiguous(&self) -> Self {
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| self.get(r, c))
+    }
+
+    /// Detach from the computation graph: returns a clone with no gradient tracking.
+    ///
+    /// For tensors without AD, this is equivalent to `clone()`.
+    #[must_use]
+    pub fn detach(&self) -> Self {
+        self.clone()
+    }
+
     /// Sum along axis. axis=0 -> (1, ncols), axis=1 -> (nrows, 1).
     #[must_use]
     pub fn sum_axis(&self, axis: usize) -> Self {

@@ -1372,6 +1372,18 @@ impl crate::backend::Backend for crate::backend::Gpu {
     fn argmin_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> (usize, usize) {
         gpu_argmin_all::<T>(s)
     }
+
+    fn silu<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("silu: wgpu kernel not yet implemented") }
+    fn mish<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("mish: wgpu kernel not yet implemented") }
+    fn leaky_relu<T: crate::scalar::Scalar>(_a: &GpuStorage<T>, _s: T) -> GpuStorage<T> { unimplemented!("leaky_relu: wgpu kernel not yet implemented") }
+    fn elu<T: crate::scalar::Scalar>(_a: &GpuStorage<T>, _alpha: T) -> GpuStorage<T> { unimplemented!("elu: wgpu kernel not yet implemented") }
+    fn hardswish<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("hardswish: wgpu kernel not yet implemented") }
+    fn softmax<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("softmax: wgpu kernel not yet implemented") }
+    fn layer_norm<T: crate::scalar::Scalar>(_a: &GpuStorage<T>, _g: &GpuStorage<T>, _b: &GpuStorage<T>, _eps: T) -> GpuStorage<T> { unimplemented!("layer_norm: wgpu kernel not yet implemented") }
+    fn rms_norm<T: crate::scalar::Scalar>(_a: &GpuStorage<T>, _g: &GpuStorage<T>, _eps: T) -> GpuStorage<T> { unimplemented!("rms_norm: wgpu kernel not yet implemented") }
+    fn sum_axis1<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("sum_axis1: wgpu kernel not yet implemented") }
+    fn max_axis1<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("max_axis1: wgpu kernel not yet implemented") }
+    fn embedding<T: crate::scalar::Scalar>(_i: &GpuStorage<T>, _w: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("embedding: wgpu kernel not yet implemented") }
 }
 
 /// WGSL compute shader for BCSR SpMM (Block Compressed Sparse Row × Dense).

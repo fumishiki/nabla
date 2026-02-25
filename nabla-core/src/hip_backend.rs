@@ -977,4 +977,16 @@ impl crate::backend::Backend for crate::backend::Hip {
         }).collect();
         hip_mega_fuse_launch::<T>(&mega_ops, nrows, ncols, kernel_hash)
     }
+
+    fn silu<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "silu") }
+    fn mish<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "mish") }
+    fn leaky_relu<T: Scalar>(_a: &HipStorage<T>, _s: T) -> HipStorage<T> { unimplemented!("leaky_relu: HIP kernel not yet implemented") }
+    fn elu<T: Scalar>(_a: &HipStorage<T>, _alpha: T) -> HipStorage<T> { unimplemented!("elu: HIP kernel not yet implemented") }
+    fn hardswish<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "hardswish") }
+    fn softmax<T: Scalar>(_a: &HipStorage<T>) -> HipStorage<T> { unimplemented!("softmax: HIP kernel not yet implemented") }
+    fn layer_norm<T: Scalar>(_a: &HipStorage<T>, _g: &HipStorage<T>, _b: &HipStorage<T>, _eps: T) -> HipStorage<T> { unimplemented!("layer_norm: HIP kernel not yet implemented") }
+    fn rms_norm<T: Scalar>(_a: &HipStorage<T>, _g: &HipStorage<T>, _eps: T) -> HipStorage<T> { unimplemented!("rms_norm: HIP kernel not yet implemented") }
+    fn sum_axis1<T: Scalar>(_a: &HipStorage<T>) -> HipStorage<T> { unimplemented!("sum_axis1: HIP kernel not yet implemented") }
+    fn max_axis1<T: Scalar>(_a: &HipStorage<T>) -> HipStorage<T> { unimplemented!("max_axis1: HIP kernel not yet implemented") }
+    fn embedding<T: Scalar>(_i: &HipStorage<T>, _w: &HipStorage<T>) -> HipStorage<T> { unimplemented!("embedding: HIP kernel not yet implemented") }
 }

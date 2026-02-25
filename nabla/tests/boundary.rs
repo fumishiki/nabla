@@ -2611,3 +2611,39 @@ fn interpolate_bilinear_upsample() {
     let out = x.interpolate_bilinear(2, 2, 4, 4);
     assert_eq!(out.shape(), (1, 16));
 }
+
+#[test]
+fn unflatten_axis0() {
+    let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]];
+    let b = a.unflatten(0, (2, 2)); // (4,2) -> (2, 2*2) = (2,4)
+    assert_eq!(b.shape(), (2, 4));
+    assert_eq!(b.get(0, 0), 1.0);
+    assert_eq!(b.get(1, 2), 7.0);
+}
+
+#[test]
+fn unflatten_axis1() {
+    let a: Tensor<f64> = mat![[1.0, 2.0, 3.0, 4.0]];
+    let b = a.unflatten(1, (2, 2)); // (1,4) -> (1*2, 2) = (2,2)
+    assert_eq!(b.shape(), (2, 2));
+    assert_eq!(b.get(0, 0), 1.0);
+    assert_eq!(b.get(1, 0), 3.0);
+}
+
+#[test]
+fn contiguous_identity() {
+    let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let b = a.contiguous();
+    assert_eq!(b.shape(), (2, 2));
+    assert_eq!(b.get(0, 1), 2.0);
+    assert_eq!(b.get(1, 0), 3.0);
+}
+
+#[test]
+fn detach_is_independent_copy() {
+    let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let b = a.detach();
+    assert_eq!(b.shape(), a.shape());
+    assert_eq!(b.get(0, 0), a.get(0, 0));
+    assert_eq!(b.get(1, 1), a.get(1, 1));
+}
