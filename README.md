@@ -90,7 +90,7 @@ let (val, deriv) = energy_grad(2.0);    // → (sin(4), 4·cos(4))
 | **4 backends** | `cpu` (faer + rayon) · `wgpu` (WGSL, cross-platform) · `cuda` (NVRTC JIT) · `hip` (hiprtc JIT) |
 | **No external LA deps** | Pure Rust — no LAPACK, no BLAS, no foreign bindings |
 
-131 boundary tests · MSRV 1.85 (edition 2024) · Apache-2.0 OR MIT
+157 boundary tests · MSRV 1.85 (edition 2024) · Apache-2.0 OR MIT
 
 ---
 
@@ -292,12 +292,14 @@ let dx = tape.grad(&xv);
 
 Compile-time exclusive selection — exactly one backend per binary.
 
-| Feature | Backend | Types | Notes |
+| Feature | Backend | Scalar types | Notes |
 |---|---|---|---|
-| `cpu` | faer + rayon | f32, f64, c32, c64 | Default |
-| `wgpu` | WGSL compute (Vulkan/Metal/DX12) | f32 | register-tile MMA |
-| `cuda` | NVRTC JIT (no SDK at build time) | f32, f64 | WMMA tensor cores + warp shuffle |
-| `hip` | hiprtc JIT | f32, f64 | WMMA intrinsics |
+| `cpu` | faer + rayon | f16, bf16, f32, f64, c32, c64 | Default. All modules available |
+| `wgpu` | WGSL (Vulkan / Metal / DX12) | f32 | No f64 (WGSL/Metal limitation). No c32/c64 |
+| `cuda` | NVRTC JIT (no SDK at build time) | f32, f64 | WMMA tensor cores + warp shuffle. No c32/c64 |
+| `hip` | hiprtc JIT | f32, f64 | WMMA intrinsics. No c32/c64 |
+
+**Module availability by backend** — `linalg` and `sparse` (factorizations, CSC solve) are **CPU-only**. `cas`, `ode`, and `autograd` work on all backends.
 
 ```bash
 cargo build                                              # CPU
@@ -307,6 +309,20 @@ cargo build --no-default-features --features hip         # AMD
 ```
 
 **Prohibited**: two features enabled simultaneously → `compile_error!`. No implicit CPU fallback on GPU backends.
+
+**CUDA/HIP runtime requirements** — no CUDA/HIP SDK needed at build time. Libraries are dynamically loaded at runtime via `libloading`:
+- CUDA: `libcuda.so` + `libnvrtc.so` (NVIDIA driver ≥ Volta recommended for WMMA)
+- HIP: `libamdhip64.so` + `libhiprtc.so` (CDNA2+ recommended for WMMA)
+
+**Macro GPU dispatch** — macros that run on GPU vs CPU:
+
+| Macro | GPU backends | CPU only | Notes |
+|---|---|---|---|
+| `einsum!` | ✅ | — | Compile-time codegen → GPU kernel |
+| `fuse!` | ✅ | — | Fused op chain → 1 GPU kernel (no intermediates) |
+| `stencil!` | — | ✅ | Offset-index bounds detection, CPU |
+| `map!` / `map_!` | — | ✅ | Arbitrary closures can't run on GPU; use `fuse!` instead |
+| `par_map!` | — | ✅ | Rayon parallel, CPU only |
 
 ### Code is backend-agnostic
 
@@ -360,39 +376,26 @@ nabla/                       [workspace root]
 │   │   ├── autograd.rs      Tape (reverse) + GpuTape (GPU-resident)
 │   │   ├── cas.rs           Expr tree + E-graph 32 rules
 │   │   └── ode.rs           Euler/RK4/DP/BDF-1/IF-Euler/METD/Verlet/Parareal
-│   ├── scripts/             rust-script examples
-│   └── tests/               131 boundary + GPU + compile-fail tests
+│   ├── examples/            cargo run --example <name> (10 examples)
+│   └── tests/               157 boundary + GPU + compile-fail tests
 └── docs/spec.md             full specification
 ```
 
 ---
 
-## rust-script examples
-
-Install: `cargo install rust-script`
+## Examples
 
 ```bash
-rust-script nabla/scripts/ode_vanderpol.rs      # stiff Van der Pol ODE
-rust-script nabla/scripts/linear_regression.rs  # gradient descent
-rust-script nabla/scripts/sparse_solve.rs       # sparse Poisson
-rust-script nabla/scripts/cas_simplify.rs       # symbolic differentiation
-```
-
-Each script declares its dependency inline — no `Cargo.toml` needed:
-
-```rust
-#!/usr/bin/env rust-script
-//! ```cargo
-//! [dependencies]
-//! nabla = { path = "..", features = ["cpu"] }
-//! ```
-use nabla::prelude::*;
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let a = mat![[2.0_f64, 1.0], [5.0, 7.0]];
-    let x = a.solve(&mat![[11.0_f64], [13.0]])?;
-    println!("x = [{:.4}, {:.4}]", x[(0,0)], x[(1,0)]);
-    Ok(())
-}
+cargo run --example 01_matrix_ops --features cpu        # matrix ops + LU solve
+cargo run --example 02_least_squares --features cpu     # QR least-squares
+cargo run --example 03_svd_compress --features cpu      # SVD low-rank compression
+cargo run --example 04_autograd_mlp --features cpu      # reverse-mode AD
+cargo run --example 05_ode_lorenz --features cpu        # Lorenz attractor (Dormand-Prince)
+cargo run --example 06_sparse_solve --features cpu      # sparse Poisson FD
+cargo run --example 07_einsum_attention --features cpu  # einsum! softmax attention
+cargo run --example 08_cas_symbolic --features cpu      # symbolic diff + eval
+cargo run --example 09_dae_pendulum --features cpu      # DAE pendulum
+cargo run --example 10_half_precision --features cpu    # f16/bf16 arithmetic
 ```
 
 ---
@@ -407,6 +410,20 @@ cargo doc --workspace --no-deps                        # docs
 ```
 
 MSRV: **1.85.0** (Rust edition 2024)
+
+---
+
+## Known limitations
+
+| Limitation | Detail |
+|---|---|
+| No wgpu f64 | WGSL / Metal lacks f64 — use `cuda` or `hip` for f64 |
+| No GPU complex | c32 / c64 unsupported on all GPU backends (compile error by design) |
+| GPU linalg: TRSM only | `gpu_trsm_lower` (recursive GEMM) — full LU / Cholesky / QR are CPU-only |
+| `from_fn` requires host | Closures cannot execute on GPU — use `fuse!` for GPU element-wise ops |
+| L2/L3 `fuse!` GPU fusion | L1 element-wise fusion on CPU; GPU kernel fusion requires codegen extension |
+| Tape AD overhead | `Tape` is Rc + dynamic graph (CPU) — use `GpuTape` for GPU-resident AD |
+| No REPL | Compile language — use `cargo watch -x run` or `rust-script` for quick experiments |
 
 ---
 
