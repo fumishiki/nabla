@@ -64,6 +64,18 @@ enum ShaderOp {
     Argmin,
     Matmul { tile: u32 },
     MatmulRegTile { tr: u32, tc: u32, bm: u32, bn: u32, bk: u32 },
+    // Activation / composite ops
+    ActivationSilu,
+    ActivationMish,
+    ActivationLeakyRelu,
+    ActivationElu,
+    ActivationHardswish,
+    Softmax,
+    LayerNorm,
+    RmsNorm,
+    SumAxis1,
+    MaxAxis1,
+    Embedding,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -226,6 +238,17 @@ fn generate_shader(key: PipelineKey) -> String {
         ShaderOp::Argmin => gen_argmin(wg),
         ShaderOp::Matmul { tile } => gen_matmul(tile),
         ShaderOp::MatmulRegTile { tr, tc, bm, bn, bk } => gen_matmul_register_tile(tr, tc, bm, bn, bk),
+        ShaderOp::ActivationSilu => gen_activation_silu(wg),
+        ShaderOp::ActivationMish => gen_activation_mish(wg),
+        ShaderOp::ActivationLeakyRelu => gen_activation_leaky_relu(wg),
+        ShaderOp::ActivationElu => gen_activation_elu(wg),
+        ShaderOp::ActivationHardswish => gen_activation_hardswish(wg),
+        ShaderOp::Softmax => gen_softmax(wg),
+        ShaderOp::LayerNorm => gen_layer_norm(wg),
+        ShaderOp::RmsNorm => gen_rms_norm(wg),
+        ShaderOp::SumAxis1 => gen_sum_axis1(wg),
+        ShaderOp::MaxAxis1 => gen_max_axis1(wg),
+        ShaderOp::Embedding => gen_embedding(wg),
     }
 }
 
@@ -614,6 +637,315 @@ fn main(
 ")
 }
 
+// ── Activation & composite WGSL shaders ──────────────────────────────────────
+
+fn gen_activation_silu(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let n = params[0];
+    if i >= n {{ return; }}
+    let x = a[i];
+    out[i] = x / (1.0 + exp(-x));
+}}
+")
+}
+
+fn gen_activation_mish(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let n = params[0];
+    if i >= n {{ return; }}
+    let x = a[i];
+    let sp = log(1.0 + exp(x));
+    out[i] = x * tanh(sp);
+}}
+")
+}
+
+fn gen_activation_leaky_relu(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let n = params[0];
+    if i >= n {{ return; }}
+    let x = a[i];
+    let slope = bitcast<f32>(params[1]);
+    out[i] = select(slope * x, x, x >= 0.0);
+}}
+")
+}
+
+fn gen_activation_elu(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let n = params[0];
+    if i >= n {{ return; }}
+    let x = a[i];
+    let alpha = bitcast<f32>(params[1]);
+    out[i] = select(alpha * (exp(x) - 1.0), x, x >= 0.0);
+}}
+")
+}
+
+fn gen_activation_hardswish(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let n = params[0];
+    if i >= n {{ return; }}
+    let x = a[i];
+    let v = clamp(x + 3.0, 0.0, 6.0);
+    out[i] = x * v / 6.0;
+}}
+")
+}
+
+fn gen_softmax(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+var<workgroup> sdata: array<f32, {wg}>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id) wg_id: vec3<u32>) {{
+    let row = wg_id.x;
+    let rows = params[0];
+    let cols = params[1];
+    if row >= rows {{ return; }}
+    let tid = lid.x;
+    let base = row * cols;
+
+    // Pass 1: find max
+    var m: f32 = -3.402823e+38;
+    for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
+        m = max(m, a[base + j]);
+    }}
+    sdata[tid] = m;
+    workgroupBarrier();
+    for (var s: u32 = {wg}u / 2u; s > 0u; s = s / 2u) {{
+        if tid < s {{ sdata[tid] = max(sdata[tid], sdata[tid + s]); }}
+        workgroupBarrier();
+    }}
+    let row_max = sdata[0];
+    workgroupBarrier();
+
+    // Pass 2: sum exp
+    var sum_val: f32 = 0.0;
+    for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
+        sum_val = sum_val + exp(a[base + j] - row_max);
+    }}
+    sdata[tid] = sum_val;
+    workgroupBarrier();
+    for (var s: u32 = {wg}u / 2u; s > 0u; s = s / 2u) {{
+        if tid < s {{ sdata[tid] = sdata[tid] + sdata[tid + s]; }}
+        workgroupBarrier();
+    }}
+    let row_sum = sdata[0];
+    workgroupBarrier();
+
+    // Pass 3: write output
+    let inv = 1.0 / row_sum;
+    for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
+        out[base + j] = exp(a[base + j] - row_max) * inv;
+    }}
+}}
+")
+}
+
+fn gen_layer_norm(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> gamma: array<f32>;
+@group(0) @binding(2) var<storage, read> beta: array<f32>;
+@group(0) @binding(3) var<storage, read_write> out: array<f32>;
+@group(0) @binding(4) var<storage, read> params: array<u32>;
+var<workgroup> sdata: array<f32, {wg}>;
+@compute @workgroup_size({wg})
+fn main(@builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id) wg_id: vec3<u32>) {{
+    let row = wg_id.x;
+    let cols = params[1];
+    let eps = bitcast<f32>(params[2]);
+    let tid = lid.x;
+    let base = row * cols;
+
+    // Mean
+    var sum_val: f32 = 0.0;
+    for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
+        sum_val = sum_val + a[base + j];
+    }}
+    sdata[tid] = sum_val;
+    workgroupBarrier();
+    for (var s: u32 = {wg}u / 2u; s > 0u; s = s / 2u) {{
+        if tid < s {{ sdata[tid] = sdata[tid] + sdata[tid + s]; }}
+        workgroupBarrier();
+    }}
+    let mean = sdata[0] / f32(cols);
+    workgroupBarrier();
+
+    // Variance
+    var var_val: f32 = 0.0;
+    for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
+        let d = a[base + j] - mean;
+        var_val = var_val + d * d;
+    }}
+    sdata[tid] = var_val;
+    workgroupBarrier();
+    for (var s: u32 = {wg}u / 2u; s > 0u; s = s / 2u) {{
+        if tid < s {{ sdata[tid] = sdata[tid] + sdata[tid + s]; }}
+        workgroupBarrier();
+    }}
+    let inv_std = 1.0 / sqrt(sdata[0] / f32(cols) + eps);
+    workgroupBarrier();
+
+    // Normalize + affine
+    for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
+        out[base + j] = (a[base + j] - mean) * inv_std * gamma[j] + beta[j];
+    }}
+}}
+")
+}
+
+fn gen_rms_norm(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> gamma: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+@group(0) @binding(3) var<storage, read> params: array<u32>;
+var<workgroup> sdata: array<f32, {wg}>;
+@compute @workgroup_size({wg})
+fn main(@builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id) wg_id: vec3<u32>) {{
+    let row = wg_id.x;
+    let cols = params[1];
+    let eps = bitcast<f32>(params[2]);
+    let tid = lid.x;
+    let base = row * cols;
+
+    // Sum of squares
+    var sq_sum: f32 = 0.0;
+    for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
+        let v = a[base + j];
+        sq_sum = sq_sum + v * v;
+    }}
+    sdata[tid] = sq_sum;
+    workgroupBarrier();
+    for (var s: u32 = {wg}u / 2u; s > 0u; s = s / 2u) {{
+        if tid < s {{ sdata[tid] = sdata[tid] + sdata[tid + s]; }}
+        workgroupBarrier();
+    }}
+    let inv_rms = 1.0 / sqrt(sdata[0] / f32(cols) + eps);
+    workgroupBarrier();
+
+    for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
+        out[base + j] = a[base + j] * inv_rms * gamma[j];
+    }}
+}}
+")
+}
+
+fn gen_sum_axis1(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+var<workgroup> sdata: array<f32, {wg}>;
+@compute @workgroup_size({wg})
+fn main(@builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id) wg_id: vec3<u32>) {{
+    let row = wg_id.x;
+    let cols = params[1];
+    let tid = lid.x;
+    let base = row * cols;
+    var acc: f32 = 0.0;
+    for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
+        acc = acc + a[base + j];
+    }}
+    sdata[tid] = acc;
+    workgroupBarrier();
+    for (var s: u32 = {wg}u / 2u; s > 0u; s = s / 2u) {{
+        if tid < s {{ sdata[tid] = sdata[tid] + sdata[tid + s]; }}
+        workgroupBarrier();
+    }}
+    if tid == 0u {{ out[row] = sdata[0]; }}
+}}
+")
+}
+
+fn gen_max_axis1(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+var<workgroup> sdata: array<f32, {wg}>;
+@compute @workgroup_size({wg})
+fn main(@builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id) wg_id: vec3<u32>) {{
+    let row = wg_id.x;
+    let cols = params[1];
+    let tid = lid.x;
+    let base = row * cols;
+    var acc: f32 = -3.402823e+38;
+    for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
+        acc = max(acc, a[base + j]);
+    }}
+    sdata[tid] = acc;
+    workgroupBarrier();
+    for (var s: u32 = {wg}u / 2u; s > 0u; s = s / 2u) {{
+        if tid < s {{ sdata[tid] = max(sdata[tid], sdata[tid + s]); }}
+        workgroupBarrier();
+    }}
+    if tid == 0u {{ out[row] = sdata[0]; }}
+}}
+")
+}
+
+fn gen_embedding(wg: u32) -> String {
+    format!(r"
+@group(0) @binding(0) var<storage, read> indices: array<f32>;
+@group(0) @binding(1) var<storage, read> weight: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+@group(0) @binding(3) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let tid = gid.x;
+    let n_tokens = params[0];
+    let embed_dim = params[1];
+    let total = n_tokens * embed_dim;
+    if tid >= total {{ return; }}
+    let token = tid / embed_dim;
+    let dim = tid % embed_dim;
+    let idx = u32(indices[token]);
+    out[tid] = weight[idx * embed_dim + dim];
+}}
+")
+}
+
 // Select matmul tile size based on matrix dimensions
 fn select_matmul_tile(m: usize, k: usize, n: usize) -> u32 {
     let max_dim = m.max(k).max(n);
@@ -962,6 +1294,162 @@ fn run_argreduce_f32(
     let vals: Vec<f32> = unsafe { bytes_to_scalar::<f32>(&vbytes) };
     let idxs: Vec<u32> = bytes_to_u32(&ibytes);
     (vals, idxs)
+}
+
+// ── Activation & composite GPU dispatch ──────────────────────────────────────
+
+fn run_activation_1in(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, n: usize, extra_params: &[u32]) -> wgpu::Buffer {
+    let wg = ctx.wg_size;
+    let key = PipelineKey { op, wg_size: wg };
+    let mut pdata = vec![n as u32];
+    pdata.extend_from_slice(extra_params);
+    let p = params_buf(&pdata);
+    let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
+    with_pipeline(ctx, key, |pipeline| {
+        let bg = bind_group(ctx, pipeline, &[(a, true), (&out, false), (&p, true)]);
+        dispatch_and_wait(ctx, pipeline, &bg, workgroups(n, wg));
+    });
+    out
+}
+
+fn run_rowwise_1in(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, rows: usize, cols: usize) -> wgpu::Buffer {
+    let wg = ctx.wg_size;
+    let key = PipelineKey { op, wg_size: wg };
+    let p = params_buf(&[rows as u32, cols as u32]);
+    let out = GpuStorage::<f32>::empty_buf((rows * cols * 4) as u64);
+    with_pipeline(ctx, key, |pipeline| {
+        let bg = bind_group(ctx, pipeline, &[(a, true), (&out, false), (&p, true)]);
+        dispatch_and_wait(ctx, pipeline, &bg, rows as u32);
+    });
+    out
+}
+
+fn run_rowwise_reduce(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, rows: usize, cols: usize) -> wgpu::Buffer {
+    let wg = ctx.wg_size;
+    let key = PipelineKey { op, wg_size: wg };
+    let p = params_buf(&[rows as u32, cols as u32]);
+    let out = GpuStorage::<f32>::empty_buf((rows * 4) as u64);
+    with_pipeline(ctx, key, |pipeline| {
+        let bg = bind_group(ctx, pipeline, &[(a, true), (&out, false), (&p, true)]);
+        dispatch_and_wait(ctx, pipeline, &bg, rows as u32);
+    });
+    out
+}
+
+pub(crate) fn gpu_silu<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let buf = run_activation_1in(ctx, ShaderOp::ActivationSilu, &a.buffer, a.nrows * a.ncols, &[]);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
+}
+
+pub(crate) fn gpu_mish<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let buf = run_activation_1in(ctx, ShaderOp::ActivationMish, &a.buffer, a.nrows * a.ncols, &[]);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
+}
+
+pub(crate) fn gpu_leaky_relu<T: Scalar>(a: &GpuStorage<T>, slope: T) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let slope_bits = (slope.to_f64() as f32).to_bits();
+    let buf = run_activation_1in(ctx, ShaderOp::ActivationLeakyRelu, &a.buffer, a.nrows * a.ncols, &[slope_bits]);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
+}
+
+pub(crate) fn gpu_elu<T: Scalar>(a: &GpuStorage<T>, alpha: T) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let alpha_bits = (alpha.to_f64() as f32).to_bits();
+    let buf = run_activation_1in(ctx, ShaderOp::ActivationElu, &a.buffer, a.nrows * a.ncols, &[alpha_bits]);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
+}
+
+pub(crate) fn gpu_hardswish<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let buf = run_activation_1in(ctx, ShaderOp::ActivationHardswish, &a.buffer, a.nrows * a.ncols, &[]);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
+}
+
+pub(crate) fn gpu_softmax<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let buf = run_rowwise_1in(ctx, ShaderOp::Softmax, &a.buffer, a.nrows, a.ncols);
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
+}
+
+pub(crate) fn gpu_layer_norm<T: Scalar>(
+    a: &GpuStorage<T>, gamma: &GpuStorage<T>, beta: &GpuStorage<T>, eps: T,
+) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let wg = ctx.wg_size;
+    let key = PipelineKey { op: ShaderOp::LayerNorm, wg_size: wg };
+    let eps_bits = (eps.to_f64() as f32).to_bits();
+    let p = params_buf(&[a.nrows as u32, a.ncols as u32, eps_bits]);
+    let out = GpuStorage::<f32>::empty_buf((a.nrows * a.ncols * 4) as u64);
+    with_pipeline(ctx, key, |pipeline| {
+        let bg = bind_group(ctx, pipeline, &[
+            (&a.buffer, true), (&gamma.buffer, true), (&beta.buffer, true),
+            (&out, false), (&p, true),
+        ]);
+        dispatch_and_wait(ctx, pipeline, &bg, a.nrows as u32);
+    });
+    GpuStorage::from_buffer(a.nrows, a.ncols, out)
+}
+
+pub(crate) fn gpu_rms_norm<T: Scalar>(
+    a: &GpuStorage<T>, gamma: &GpuStorage<T>, eps: T,
+) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let wg = ctx.wg_size;
+    let key = PipelineKey { op: ShaderOp::RmsNorm, wg_size: wg };
+    let eps_bits = (eps.to_f64() as f32).to_bits();
+    let p = params_buf(&[a.nrows as u32, a.ncols as u32, eps_bits]);
+    let out = GpuStorage::<f32>::empty_buf((a.nrows * a.ncols * 4) as u64);
+    with_pipeline(ctx, key, |pipeline| {
+        let bg = bind_group(ctx, pipeline, &[
+            (&a.buffer, true), (&gamma.buffer, true), (&out, false), (&p, true),
+        ]);
+        dispatch_and_wait(ctx, pipeline, &bg, a.nrows as u32);
+    });
+    GpuStorage::from_buffer(a.nrows, a.ncols, out)
+}
+
+pub(crate) fn gpu_sum_axis1<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let buf = run_rowwise_reduce(ctx, ShaderOp::SumAxis1, &a.buffer, a.nrows, a.ncols);
+    GpuStorage::from_buffer(a.nrows, 1, buf)
+}
+
+pub(crate) fn gpu_max_axis1<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let buf = run_rowwise_reduce(ctx, ShaderOp::MaxAxis1, &a.buffer, a.nrows, a.ncols);
+    GpuStorage::from_buffer(a.nrows, 1, buf)
+}
+
+pub(crate) fn gpu_embedding<T: Scalar>(indices: &GpuStorage<T>, weight: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n_tokens = indices.nrows * indices.ncols;
+    let embed_dim = weight.ncols;
+    let total = n_tokens * embed_dim;
+    let wg = ctx.wg_size;
+    let key = PipelineKey { op: ShaderOp::Embedding, wg_size: wg };
+    let p = params_buf(&[n_tokens as u32, embed_dim as u32]);
+    let out = GpuStorage::<f32>::empty_buf((total * 4) as u64);
+    with_pipeline(ctx, key, |pipeline| {
+        let bg = bind_group(ctx, pipeline, &[
+            (&indices.buffer, true), (&weight.buffer, true), (&out, false), (&p, true),
+        ]);
+        dispatch_and_wait(ctx, pipeline, &bg, workgroups(total, wg));
+    });
+    GpuStorage::from_buffer(n_tokens, embed_dim, out)
 }
 
 // ── pub(crate) GPU dispatch functions ────────────────────────────────────────
@@ -1373,17 +1861,17 @@ impl crate::backend::Backend for crate::backend::Gpu {
         gpu_argmin_all::<T>(s)
     }
 
-    fn silu<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("silu: wgpu kernel not yet implemented") }
-    fn mish<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("mish: wgpu kernel not yet implemented") }
-    fn leaky_relu<T: crate::scalar::Scalar>(_a: &GpuStorage<T>, _s: T) -> GpuStorage<T> { unimplemented!("leaky_relu: wgpu kernel not yet implemented") }
-    fn elu<T: crate::scalar::Scalar>(_a: &GpuStorage<T>, _alpha: T) -> GpuStorage<T> { unimplemented!("elu: wgpu kernel not yet implemented") }
-    fn hardswish<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("hardswish: wgpu kernel not yet implemented") }
-    fn softmax<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("softmax: wgpu kernel not yet implemented") }
-    fn layer_norm<T: crate::scalar::Scalar>(_a: &GpuStorage<T>, _g: &GpuStorage<T>, _b: &GpuStorage<T>, _eps: T) -> GpuStorage<T> { unimplemented!("layer_norm: wgpu kernel not yet implemented") }
-    fn rms_norm<T: crate::scalar::Scalar>(_a: &GpuStorage<T>, _g: &GpuStorage<T>, _eps: T) -> GpuStorage<T> { unimplemented!("rms_norm: wgpu kernel not yet implemented") }
-    fn sum_axis1<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("sum_axis1: wgpu kernel not yet implemented") }
-    fn max_axis1<T: crate::scalar::Scalar>(_a: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("max_axis1: wgpu kernel not yet implemented") }
-    fn embedding<T: crate::scalar::Scalar>(_i: &GpuStorage<T>, _w: &GpuStorage<T>) -> GpuStorage<T> { unimplemented!("embedding: wgpu kernel not yet implemented") }
+    fn silu<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_silu(a) }
+    fn mish<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_mish(a) }
+    fn leaky_relu<T: crate::scalar::Scalar>(a: &GpuStorage<T>, s: T) -> GpuStorage<T> { gpu_leaky_relu(a, s) }
+    fn elu<T: crate::scalar::Scalar>(a: &GpuStorage<T>, alpha: T) -> GpuStorage<T> { gpu_elu(a, alpha) }
+    fn hardswish<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_hardswish(a) }
+    fn softmax<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_softmax(a) }
+    fn layer_norm<T: crate::scalar::Scalar>(a: &GpuStorage<T>, g: &GpuStorage<T>, b: &GpuStorage<T>, eps: T) -> GpuStorage<T> { gpu_layer_norm(a, g, b, eps) }
+    fn rms_norm<T: crate::scalar::Scalar>(a: &GpuStorage<T>, g: &GpuStorage<T>, eps: T) -> GpuStorage<T> { gpu_rms_norm(a, g, eps) }
+    fn sum_axis1<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_sum_axis1(a) }
+    fn max_axis1<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_max_axis1(a) }
+    fn embedding<T: crate::scalar::Scalar>(i: &GpuStorage<T>, w: &GpuStorage<T>) -> GpuStorage<T> { gpu_embedding(i, w) }
 }
 
 /// WGSL compute shader for BCSR SpMM (Block Compressed Sparse Row × Dense).

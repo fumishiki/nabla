@@ -322,15 +322,27 @@ const KERNEL_NAMES: &[&str] = &[
     "k_neg_f32", "k_recip_f32", "k_exp_f32", "k_ln_f32", "k_log1p_f32",
     "k_sin_f32", "k_cos_f32", "k_tanh_f32", "k_sqrt_f32", "k_abs_f32",
     "k_ceil_f32", "k_floor_f32", "k_round_f32", "k_erf_f32",
+    // activations f32
+    "k_sigmoid_f32", "k_silu_f32", "k_mish_f32", "k_leaky_relu_f32",
+    "k_elu_f32", "k_hardswish_f32",
     "k_add_f32", "k_sub_f32", "k_emul_f32", "k_ediv_f32",
     "k_scale_f32", "k_powf_f32", "k_fill_f32",
     "k_transpose_f32", "k_matmul_f32", "k_sum_f32", "k_max_f32", "k_min_f32",
+    // row-wise f32
+    "k_softmax_f32", "k_layer_norm_f32", "k_rms_norm_f32",
+    "k_sum_axis1_f32", "k_max_axis1_f32", "k_embedding_f32",
     "k_neg_f64", "k_recip_f64", "k_exp_f64", "k_ln_f64", "k_log1p_f64",
     "k_sin_f64", "k_cos_f64", "k_tanh_f64", "k_sqrt_f64", "k_abs_f64",
     "k_ceil_f64", "k_floor_f64", "k_round_f64", "k_erf_f64",
+    // activations f64
+    "k_sigmoid_f64", "k_silu_f64", "k_mish_f64", "k_leaky_relu_f64",
+    "k_elu_f64", "k_hardswish_f64",
     "k_add_f64", "k_sub_f64", "k_emul_f64", "k_ediv_f64",
     "k_scale_f64", "k_powf_f64", "k_fill_f64",
     "k_transpose_f64", "k_matmul_f64", "k_sum_f64", "k_max_f64", "k_min_f64",
+    // row-wise f64
+    "k_softmax_f64", "k_layer_norm_f64", "k_rms_norm_f64",
+    "k_sum_axis1_f64", "k_max_axis1_f64", "k_embedding_f64",
 ];
 
 fn compile_all_kernels(ctx: &HipCtx) -> HipResult<()> {
@@ -666,6 +678,146 @@ pub(crate) fn hip_min_all<T: Scalar>(a: &HipStorage<T>) -> T { gpu_common::rtc_m
 pub(crate) fn hip_argmax_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) { gpu_common::rtc_argmax_all(a) }
 pub(crate) fn hip_argmin_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) { gpu_common::rtc_argmin_all(a) }
 
+// ── Row-wise kernel launch helpers ──────────────────────────────────────────
+
+fn hip_softmax<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
+    let ctx = get_ctx();
+    let rows = a.nrows;
+    let cols = a.ncols;
+    let name = format!("k_softmax_{}", type_suffix::<T>());
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let out_buf = HipBuffer::alloc_zeros(rows * cols * core::mem::size_of::<T>())
+        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let rows_u32 = rows as u32;
+    let cols_u32 = cols as u32;
+    hip_launch(func, [rows as u32, 1, 1], [BLOCK_SIZE, 1, 1], &mut [
+        (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+        (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+        (&rows_u32 as *const u32).cast_mut().cast(),
+        (&cols_u32 as *const u32).cast_mut().cast(),
+    ]);
+    HipStorage::new(rows, cols, out_buf)
+}
+
+fn hip_layer_norm<T: Scalar>(
+    a: &HipStorage<T>, gamma: &HipStorage<T>, beta: &HipStorage<T>, eps: T,
+) -> HipStorage<T> {
+    let ctx = get_ctx();
+    let rows = a.nrows;
+    let cols = a.ncols;
+    let name = format!("k_layer_norm_{}", type_suffix::<T>());
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let out_buf = HipBuffer::alloc_zeros(rows * cols * core::mem::size_of::<T>())
+        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let rows_u32 = rows as u32;
+    let cols_u32 = cols as u32;
+    let eps_f = eps.to_f64();
+    if type_suffix::<T>() == "f32" {
+        let eps_val = eps_f as f32;
+        hip_launch(func, [rows as u32, 1, 1], [BLOCK_SIZE, 1, 1], &mut [
+            (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&gamma.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&beta.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&rows_u32 as *const u32).cast_mut().cast(),
+            (&cols_u32 as *const u32).cast_mut().cast(),
+            (&eps_val as *const f32).cast_mut().cast(),
+        ]);
+    } else {
+        hip_launch(func, [rows as u32, 1, 1], [BLOCK_SIZE, 1, 1], &mut [
+            (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&gamma.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&beta.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&rows_u32 as *const u32).cast_mut().cast(),
+            (&cols_u32 as *const u32).cast_mut().cast(),
+            (&eps_f as *const f64).cast_mut().cast(),
+        ]);
+    }
+    HipStorage::new(rows, cols, out_buf)
+}
+
+fn hip_rms_norm<T: Scalar>(
+    a: &HipStorage<T>, gamma: &HipStorage<T>, eps: T,
+) -> HipStorage<T> {
+    let ctx = get_ctx();
+    let rows = a.nrows;
+    let cols = a.ncols;
+    let name = format!("k_rms_norm_{}", type_suffix::<T>());
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let out_buf = HipBuffer::alloc_zeros(rows * cols * core::mem::size_of::<T>())
+        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let rows_u32 = rows as u32;
+    let cols_u32 = cols as u32;
+    let eps_f = eps.to_f64();
+    if type_suffix::<T>() == "f32" {
+        let eps_val = eps_f as f32;
+        hip_launch(func, [rows as u32, 1, 1], [BLOCK_SIZE, 1, 1], &mut [
+            (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&gamma.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&rows_u32 as *const u32).cast_mut().cast(),
+            (&cols_u32 as *const u32).cast_mut().cast(),
+            (&eps_val as *const f32).cast_mut().cast(),
+        ]);
+    } else {
+        hip_launch(func, [rows as u32, 1, 1], [BLOCK_SIZE, 1, 1], &mut [
+            (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&gamma.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&rows_u32 as *const u32).cast_mut().cast(),
+            (&cols_u32 as *const u32).cast_mut().cast(),
+            (&eps_f as *const f64).cast_mut().cast(),
+        ]);
+    }
+    HipStorage::new(rows, cols, out_buf)
+}
+
+fn hip_axis_reduce<T: Scalar>(a: &HipStorage<T>, op: &str) -> HipStorage<T> {
+    let ctx = get_ctx();
+    let rows = a.nrows;
+    let cols = a.ncols;
+    let name = format!("k_{op}_{}", type_suffix::<T>());
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let out_buf = HipBuffer::alloc_zeros(rows * core::mem::size_of::<T>())
+        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let rows_u32 = rows as u32;
+    let cols_u32 = cols as u32;
+    hip_launch(func, [rows as u32, 1, 1], [BLOCK_SIZE, 1, 1], &mut [
+        (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+        (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+        (&rows_u32 as *const u32).cast_mut().cast(),
+        (&cols_u32 as *const u32).cast_mut().cast(),
+    ]);
+    HipStorage::new(rows, 1, out_buf)
+}
+
+fn hip_embedding<T: Scalar>(indices: &HipStorage<T>, weight: &HipStorage<T>) -> HipStorage<T> {
+    let ctx = get_ctx();
+    let n_tokens = indices.nrows * indices.ncols;
+    let embed_dim = weight.ncols;
+    let total = n_tokens * embed_dim;
+    let name = format!("k_embedding_{}", type_suffix::<T>());
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
+        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let n_tokens_u32 = n_tokens as u32;
+    let embed_dim_u32 = embed_dim as u32;
+    hip_launch(
+        func,
+        [((total as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE, 1, 1],
+        [BLOCK_SIZE, 1, 1],
+        &mut [
+            (&indices.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&weight.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&n_tokens_u32 as *const u32).cast_mut().cast(),
+            (&embed_dim_u32 as *const u32).cast_mut().cast(),
+        ],
+    );
+    HipStorage::new(n_tokens, embed_dim, out_buf)
+}
+
 // ── Fused element-wise kernel launch ────────────────────────────────────────
 
 
@@ -980,13 +1132,13 @@ impl crate::backend::Backend for crate::backend::Hip {
 
     fn silu<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "silu") }
     fn mish<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "mish") }
-    fn leaky_relu<T: Scalar>(_a: &HipStorage<T>, _s: T) -> HipStorage<T> { unimplemented!("leaky_relu: HIP kernel not yet implemented") }
-    fn elu<T: Scalar>(_a: &HipStorage<T>, _alpha: T) -> HipStorage<T> { unimplemented!("elu: HIP kernel not yet implemented") }
+    fn leaky_relu<T: Scalar>(a: &HipStorage<T>, _s: T) -> HipStorage<T> { launch_unary(a, "leaky_relu") }
+    fn elu<T: Scalar>(a: &HipStorage<T>, _alpha: T) -> HipStorage<T> { launch_unary(a, "elu") }
     fn hardswish<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { launch_unary(a, "hardswish") }
-    fn softmax<T: Scalar>(_a: &HipStorage<T>) -> HipStorage<T> { unimplemented!("softmax: HIP kernel not yet implemented") }
-    fn layer_norm<T: Scalar>(_a: &HipStorage<T>, _g: &HipStorage<T>, _b: &HipStorage<T>, _eps: T) -> HipStorage<T> { unimplemented!("layer_norm: HIP kernel not yet implemented") }
-    fn rms_norm<T: Scalar>(_a: &HipStorage<T>, _g: &HipStorage<T>, _eps: T) -> HipStorage<T> { unimplemented!("rms_norm: HIP kernel not yet implemented") }
-    fn sum_axis1<T: Scalar>(_a: &HipStorage<T>) -> HipStorage<T> { unimplemented!("sum_axis1: HIP kernel not yet implemented") }
-    fn max_axis1<T: Scalar>(_a: &HipStorage<T>) -> HipStorage<T> { unimplemented!("max_axis1: HIP kernel not yet implemented") }
-    fn embedding<T: Scalar>(_i: &HipStorage<T>, _w: &HipStorage<T>) -> HipStorage<T> { unimplemented!("embedding: HIP kernel not yet implemented") }
+    fn softmax<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { hip_softmax(a) }
+    fn layer_norm<T: Scalar>(a: &HipStorage<T>, g: &HipStorage<T>, b: &HipStorage<T>, eps: T) -> HipStorage<T> { hip_layer_norm(a, g, b, eps) }
+    fn rms_norm<T: Scalar>(a: &HipStorage<T>, g: &HipStorage<T>, eps: T) -> HipStorage<T> { hip_rms_norm(a, g, eps) }
+    fn sum_axis1<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { hip_axis_reduce(a, "sum_axis1") }
+    fn max_axis1<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> { hip_axis_reduce(a, "max_axis1") }
+    fn embedding<T: Scalar>(i: &HipStorage<T>, w: &HipStorage<T>) -> HipStorage<T> { hip_embedding(i, w) }
 }

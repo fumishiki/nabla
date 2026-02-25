@@ -467,22 +467,34 @@ const KERNEL_NAMES: &[&str] = &[
     "k_neg_f32", "k_recip_f32", "k_exp_f32", "k_ln_f32", "k_log1p_f32",
     "k_sin_f32", "k_cos_f32", "k_tanh_f32", "k_sqrt_f32", "k_abs_f32",
     "k_ceil_f32", "k_floor_f32", "k_round_f32", "k_erf_f32",
+    // activations f32
+    "k_sigmoid_f32", "k_silu_f32", "k_mish_f32", "k_leaky_relu_f32",
+    "k_elu_f32", "k_hardswish_f32",
     // binary f32
     "k_add_f32", "k_sub_f32", "k_emul_f32", "k_ediv_f32",
     // scalar f32
     "k_scale_f32", "k_powf_f32", "k_fill_f32",
     // transpose+matmul+reduction f32
     "k_transpose_f32", "k_matmul_f32", "k_sum_f32", "k_max_f32", "k_min_f32",
+    // row-wise f32
+    "k_softmax_f32", "k_layer_norm_f32", "k_rms_norm_f32",
+    "k_sum_axis1_f32", "k_max_axis1_f32", "k_embedding_f32",
     // unary f64
     "k_neg_f64", "k_recip_f64", "k_exp_f64", "k_ln_f64", "k_log1p_f64",
     "k_sin_f64", "k_cos_f64", "k_tanh_f64", "k_sqrt_f64", "k_abs_f64",
     "k_ceil_f64", "k_floor_f64", "k_round_f64", "k_erf_f64",
+    // activations f64
+    "k_sigmoid_f64", "k_silu_f64", "k_mish_f64", "k_leaky_relu_f64",
+    "k_elu_f64", "k_hardswish_f64",
     // binary f64
     "k_add_f64", "k_sub_f64", "k_emul_f64", "k_ediv_f64",
     // scalar f64
     "k_scale_f64", "k_powf_f64", "k_fill_f64",
     // transpose+matmul+reduction f64
     "k_transpose_f64", "k_matmul_f64", "k_sum_f64", "k_max_f64", "k_min_f64",
+    // row-wise f64
+    "k_softmax_f64", "k_layer_norm_f64", "k_rms_norm_f64",
+    "k_sum_axis1_f64", "k_max_axis1_f64", "k_embedding_f64",
 ];
 
 fn compile_all_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResult<()> {
