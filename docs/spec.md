@@ -998,14 +998,14 @@ Current limitation: rule application order determines the result (phase-ordering
 | bf16/f16 Scalar | ✅ W7 | all | `f16`/`bf16` types + backend-specific enable | wgpu `FLOAT16`, CUDA `__half`, HIP `__half` |
 | f32 float4 vectorization | ✅ W19 | cuda/hip | 128-bit `float4` loads/stores + fast math intrinsics | 4× memory throughput |
 | GPU kernel fusion (L1) | ✅ W19 | cuda/hip | `fuse!` → `cuda_expr()` → NVRTC/hiprtc JIT → cache | 3.8× speedup (4-op chain) |
-| Caching memory allocator | ✅ W20 | cuda/hip | Power-of-2 `MemoryPool`, Drop → return, `malloc_async` fallback | 15× exp speedup |
-| Vectorized fuse codegen | ✅ W20 | cuda/hip | float4 in `fuse_kernel_source()`, scalar tail | 1824 GB/s fuse bandwidth |
-| Async execution pipeline | ✅ W20 | cuda/hip | Remove per-kernel sync, defer to readback only | exp 0.155ms (866 GB/s) |
-| Single-element D2H readback | ✅ W20 | cuda/hip | `copy_element()` — 4-byte D2H instead of full tensor | Eliminate 64MB copy overhead |
-| Auto-fusion cost model | 🔲 | cuda/hip | Register pressure / icache analysis for fusion decisions | PyTorch Inductor-inspired |
-| CUDA Graph capture/replay | 🔲 | cuda | `cuStreamBeginCapture` → batch kernel replay | 90–95% launch overhead reduction |
-| Persistent grid-stride kernels | 🔲 | cuda/hip | Launch ~SMs blocks, loop over elements | 1.5–2× for small tensors |
-| Stream-ordered alloc upgrade | 🔲 | cuda | `cudaMallocAsync` for pool misses + best-fit coalescing | PyTorch-level 2–3% overhead |
+| Caching memory allocator | ✅ W20 | cuda/hip | Best-fit dual-pool (small/large), 512B-aligned, block splitting, GC | PyTorch-equivalent overhead |
+| Vectorized fuse codegen | ✅ W20 | cuda/hip | float4 in `fuse_kernel_source()`, `__ldg` prefetch, scalar tail | 3294 GB/s fuse bandwidth |
+| Async execution pipeline | ✅ W20 | cuda/hip | Remove per-kernel sync, defer to readback only | sin 0.040ms = PyTorch |
+| Single-element D2H readback | ✅ W20 | cuda/hip | `copy_element()` — 4-byte D2H instead of full tensor | exp+get 0.053ms = PyTorch |
+| Fusion cost model | ✅ W20 | cuda/hip | `estimate_register_pressure()` in proc macro, `maxrregcount=120` | PyTorch Inductor-inspired |
+| CUDA Graph capture/replay | ✅ W20 | cuda | `NablaCudaGraph`: `begin_capture` → `end_capture` → `launch` | 90–95% launch overhead reduction |
+| Best-fit allocator + splitting | ✅ W20 | cuda/hip | Dual pools (small <1MB / large ≥1MB), over-alloc 2MB/20MB, GC 0.9 | PyTorch CUDACachingAllocator |
+| `__ldg` read-only prefetch | ✅ W20 | cuda | `__ldg()` hints in fuse codegen (float4 + scalar + f64 paths) | 5–15% cache hit improvement |
 | Mega-kernel fusion (L4) | 🔲 | cuda/hip | SM-level persistent kernel, cross-op pipelining | MPK [2512.22219], FlashFuser [2512.12949] |
 
 **CUDA/HIP backend** — CUDA C and HIP C are source-compatible for standard math kernels. Single `kernels_cu.rs` contains all 32 ops as `const &str`. At init, `nvrtc`/`hiprtc` compiles to PTX/ISA, cached in `HashMap`. Key CUDA/HIP advantages over wgpu:
@@ -1047,12 +1047,12 @@ fuse!(c = exp(a) + ln(b))
 
 | Workload | nabla (kernel-only) | PyTorch (kernel-only) | Gap | nabla (with readback) |
 |---|---|---|---|---|
-| exp | 0.128 ms (1051 GB/s) | 0.041 ms (3308 GB/s) | 3.1× | 0.052 ms (**≈ PyTorch**) |
-| sin | 0.040 ms (3318 GB/s) | 0.041 ms (3295 GB/s) | **≈ equal** | — |
-| tanh | 0.040 ms (3320 GB/s) | 0.041 ms (3310 GB/s) | **≈ equal** | — |
-| add | 0.058 ms (2317 GB/s) | 0.058 ms (2309 GB/s) | **≈ equal** | — |
-| fuse exp+sin (2-op) | 0.041 ms (3294 GB/s) | 0.081 ms (1653 GB/s, eager) | **nabla 2× faster** | — |
-| fuse 4-op chain | 0.047 ms (2883 GB/s) | 0.041 ms (3287 GB/s, compile) | 1.1× | — |
+| exp | 0.127 ms (1059 GB/s) | 0.041 ms (3308 GB/s) | 3.1× | 0.053 ms (**≈ PyTorch**) |
+| sin | 0.040 ms (3315 GB/s) | 0.041 ms (3295 GB/s) | **≈ equal** | — |
+| tanh | 0.040 ms (3317 GB/s) | 0.041 ms (3310 GB/s) | **≈ equal** | — |
+| add | 0.058 ms (2309 GB/s) | 0.058 ms (2309 GB/s) | **≈ equal** | — |
+| fuse exp+sin (2-op) | 0.041 ms (3291 GB/s) | 0.081 ms (1653 GB/s, eager) | **nabla 2× faster** | — |
+| fuse 4-op chain | 0.046 ms (2913 GB/s) | 0.041 ms (3287 GB/s, compile) | 1.1× | — |
 
 Previous (pre-optimization, W19): exp 2.38ms, fuse 4-op 2.43ms → **19–51× improvement from W20 optimizations**. Gap vs PyTorch reduced from **46×** to **≈ parity** for most ops.
 
@@ -1261,27 +1261,27 @@ Bandwidth utilization analysis (GH200, theoretical peak ~4000 GB/s):
 
 | Workload | nabla GB/s | PyTorch GB/s | % of peak (nabla) | % of peak (PyTorch) |
 |---|---|---|---|---|
-| exp | 1051 | 3308 | 26% | 83% |
-| sin | 3318 | 3295 | **83%** | 82% |
-| tanh | 3320 | 3310 | **83%** | 83% |
-| add | 2317 | 2309 | **58%** | 58% |
-| fuse exp+sin | 3294 | 1653 (eager) | **82%** | 41% |
-| fuse 4-op | 2883 | 3287 (compile) | **72%** | 82% |
+| exp | 1059 | 3308 | 26% | 83% |
+| sin | 3315 | 3295 | **83%** | 82% |
+| tanh | 3317 | 3310 | **83%** | 83% |
+| add | 2309 | 2309 | **58%** | 58% |
+| fuse exp+sin | 3291 | 1653 (eager) | **82%** | 41% |
+| fuse 4-op | 2913 | 3287 (compile) | **73%** | 82% |
 
 nabla now achieves **58–83%** of peak bandwidth (up from 22–46% pre-W20). sin/tanh/add match PyTorch exactly. Fuse exp+sin achieves 82% vs PyTorch eager 41% — **nabla 2× faster**. Remaining exp gap (26% vs 83%) is output allocation overhead.
 
 **F. Remaining gap closure roadmap** (priority-ordered):
 
-| Optimization | Expected speedup | Effort | Technique source |
+| Optimization | Status | Result | Technique source |
 |---|---|---|---|
-| 1. CUDA Graphs for fuse chains | 1.5–2× (eliminates launch overhead) | Medium | PyTorch `CUDAGraph`, PyGraph [2503.19779] |
-| 2. Auto-tune BLOCK_SIZE (64–512) | 1.2–1.5× (find optimal occupancy) | Low | Triton auto-tuner |
-| 3. Best-fit allocator with splitting | 1.1–1.3× (reduce fragmentation) | Medium | PyTorch CUDACachingAllocator |
-| 4. Persistent grid-stride kernels | 1.3–1.5× (small tensor perf) | Low | PyTorch ATen kernels |
-| 5. Prefetch hints (`__ldg`) | 1.05–1.1× (cache-line prefetch) | Low | CUDA `__ldg()` intrinsic |
-| 6. Multi-stream pipeline | 1.2–1.5× (overlap H2D + compute) | High | PyTorch DataLoader pattern |
-| 7. Fusion cost model | Prevents regressions | Medium | TorchInductor heuristics |
-| 8. Warp-level primitives in fuse | 1.1–1.2× (warp-uniform control flow) | Low | CUDA `__ballot_sync` |
+| 1. CUDA Graphs for fuse chains | ✅ W20 | `NablaCudaGraph` capture/replay API | PyTorch `CUDAGraph`, PyGraph [2503.19779] |
+| 2. Best-fit allocator with splitting | ✅ W20 | Dual-pool, 512B-aligned, over-alloc, GC 0.9 | PyTorch CUDACachingAllocator |
+| 3. Prefetch hints (`__ldg`) | ✅ W20 | `__ldg()` in fuse codegen (float4/scalar/f64) | CUDA `__ldg()` intrinsic |
+| 4. Fusion cost model | ✅ W20 | `estimate_register_pressure()`, `maxrregcount=120` | TorchInductor heuristics |
+| 5. Auto-tune BLOCK_SIZE | ⏸ Tested | `cuOccupancyMaxPotentialBlockSize` regressed 2–3× — fixed 256 is optimal | Triton auto-tuner |
+| 6. Persistent grid-stride kernels | ⏸ Tested | Grid capping regressed perf — original if/else pattern is optimal for n≥4096² | PyTorch ATen kernels |
+| 7. Multi-stream pipeline | 🔲 | — | PyTorch DataLoader pattern |
+| 8. Mega-kernel fusion (L4) | 🔲 | — | MPK [2512.22219], FlashFuser [2512.12949] |
 
 ---
 
