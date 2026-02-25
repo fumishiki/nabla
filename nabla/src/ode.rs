@@ -103,6 +103,41 @@ fn validate(t_span: (f64, f64), dt: f64) -> Result<()> {
     Ok(())
 }
 
+/// Validate an adaptive-step configuration.
+fn validate_adaptive(t_span: (f64, f64), config: &AdaptiveConfig) -> Result<()> {
+    if t_span.0 >= t_span.1 {
+        return Err(Error::invalid("t_span.0 must be less than t_span.1"));
+    }
+    if config.dt_init <= 0.0 {
+        return Err(Error::invalid("dt_init must be positive"));
+    }
+    if config.dt_min <= 0.0 {
+        return Err(Error::invalid("dt_min must be positive"));
+    }
+    if config.dt_max <= 0.0 {
+        return Err(Error::invalid("dt_max must be positive"));
+    }
+    if config.dt_min > config.dt_max {
+        return Err(Error::invalid("dt_min must be <= dt_max"));
+    }
+    Ok(())
+}
+
+/// Estimate step count and return pre-allocated (times, states) vectors.
+#[inline]
+fn alloc_trajectory<T: Scalar, B: Backend>(
+    t_span: (f64, f64),
+    dt: f64,
+    y0: &Tensor<T, B>,
+) -> (Vec<f64>, Vec<Tensor<T, B>>) {
+    let capacity = ((t_span.1 - t_span.0) / dt).ceil() as usize + 1;
+    let mut times = Vec::with_capacity(capacity);
+    let mut states = Vec::with_capacity(capacity);
+    times.push(t_span.0);
+    states.push(y0.clone());
+    (times, states)
+}
+
 /// Convert an f64 Butcher-tableau / step-size constant to scalar type T.
 #[inline]
 fn sc<T: Scalar>(v: f64) -> T {
@@ -163,19 +198,11 @@ where
     F: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>>,
 {
     validate(t_span, dt)?;
-
-    let capacity = ((t_span.1 - t_span.0) / dt).ceil() as usize + 1;
-    let mut times = Vec::with_capacity(capacity);
-    let mut states = Vec::with_capacity(capacity);
-
+    let (mut times, mut states) = alloc_trajectory(t_span, dt, y0);
     let mut t = t_span.0;
     let mut y = y0.clone();
 
-    times.push(t);
-    states.push(y.clone());
-
     while t < t_span.1 {
-        // Clamp step so we do not overshoot t_span.1.
         let h = dt.min(t_span.1 - t);
         let k = f(t, &y)?;
         y = &y + &(&k * sc::<T>(h));
@@ -208,16 +235,9 @@ where
     F: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>>,
 {
     validate(t_span, dt)?;
-
-    let capacity = ((t_span.1 - t_span.0) / dt).ceil() as usize + 1;
-    let mut times = Vec::with_capacity(capacity);
-    let mut states = Vec::with_capacity(capacity);
-
+    let (mut times, mut states) = alloc_trajectory(t_span, dt, y0);
     let mut t = t_span.0;
     let mut y = y0.clone();
-
-    times.push(t);
-    states.push(y.clone());
 
     while t < t_span.1 {
         let h = dt.min(t_span.1 - t);
@@ -325,24 +345,10 @@ where
     F: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>>,
     T::Real: Into<f64>,
 {
-    if t_span.0 >= t_span.1 {
-        return Err(Error::invalid("t_span.0 must be less than t_span.1"));
-    }
-    if config.dt_init <= 0.0 {
-        return Err(Error::invalid("dt_init must be positive"));
-    }
-    if config.dt_min <= 0.0 {
-        return Err(Error::invalid("dt_min must be positive"));
-    }
-    if config.dt_max <= 0.0 {
-        return Err(Error::invalid("dt_max must be positive"));
-    }
-    if config.dt_min > config.dt_max {
-        return Err(Error::invalid("dt_min must be <= dt_max"));
-    }
+    validate_adaptive(t_span, config)?;
 
-    let mut times = Vec::new();
-    let mut states = Vec::new();
+    let mut times = vec![t_span.0];
+    let mut states = vec![y0.clone()];
 
     let mut t = t_span.0;
     let mut y = y0.clone();
@@ -351,9 +357,6 @@ where
         .min(config.dt_max)
         .max(config.dt_min)
         .min(t_span.1 - t_span.0);
-
-    times.push(t);
-    states.push(y.clone());
 
     // FSAL: compute k1 once, then reuse k7 of accepted step as k1 of next step.
     let mut k1 = f(t, &y)?;
@@ -512,17 +515,10 @@ where
         (0..n).map(|k| v.get(i, k) * phi1_diag[k] * v.get(j, k)).sum()
     });
 
-    let capacity = ((t_span.1 - t_span.0) / dt).ceil() as usize + 1;
-    let mut times = Vec::with_capacity(capacity);
-    let mut states = Vec::with_capacity(capacity);
-
+    let (mut times, mut states) = alloc_trajectory(t_span, dt, y0);
     let mut t = t_span.0;
     let mut y = y0.clone();
 
-    times.push(t);
-    states.push(y.clone());
-
-    // y_{n+1} = exp(hA) * y_n + h * phi1(hA) * g(t_n, y_n)
     while t < t_span.1 {
         let h = dt.min(t_span.1 - t);
         let gv = g(t, &y)?;
@@ -610,16 +606,9 @@ where
     F: Fn(f64, &Tensor<T, Cpu>) -> Result<Tensor<T, Cpu>>,
 {
     validate(t_span, config.dt)?;
-
-    let capacity = ((t_span.1 - t_span.0) / config.dt).ceil() as usize + 1;
-    let mut times = Vec::with_capacity(capacity);
-    let mut states = Vec::with_capacity(capacity);
-
+    let (mut times, mut states) = alloc_trajectory(t_span, config.dt, y0);
     let mut t = t_span.0;
     let mut y = y0.clone();
-
-    times.push(t);
-    states.push(y.clone());
 
     while t < t_span.1 {
         let h = config.dt.min(t_span.1 - t);
@@ -706,20 +695,13 @@ where
     G: Fn(&Tensor<f64, Cpu>, &Tensor<f64, Cpu>, f64) -> Tensor<f64, Cpu>,
 {
     validate(t_span, cfg.dt)?;
-
+    let (mut times, mut states) = alloc_trajectory(t_span, cfg.dt, &x0);
     let n_z = z0.nrows();
     let eps = 1e-7;
-
-    let capacity = ((t_span.1 - t_span.0) / cfg.dt).ceil() as usize + 1;
-    let mut times = Vec::with_capacity(capacity);
-    let mut states = Vec::with_capacity(capacity);
 
     let mut t = t_span.0;
     let mut x = x0;
     let mut z = z0;
-
-    times.push(t);
-    states.push(x.clone());
 
     while t < t_span.1 {
         let h = cfg.dt.min(t_span.1 - t);
@@ -884,15 +866,9 @@ where
     let exp_hl = crate::linalg::expm(&hl)?;
     let phi1_hl = phi1_matrix(&hl, cfg.order);
 
-    let capacity = ((t_span.1 - t_span.0) / cfg.dt).ceil() as usize + 1;
-    let mut times = Vec::with_capacity(capacity);
-    let mut states = Vec::with_capacity(capacity);
-
+    let (mut times, mut states) = alloc_trajectory(t_span, cfg.dt, &y0);
     let mut t = t_span.0;
     let mut y = y0;
-
-    times.push(t);
-    states.push(y.clone());
 
     while t < t_span.1 {
         let h = cfg.dt.min(t_span.1 - t);
@@ -1146,15 +1122,9 @@ where
     let exp_z_t: T = sc(exp_z);
     let h_phi1_t: T = sc(h * phi1_val);
 
-    let capacity = ((t_span.1 - t_span.0) / h).ceil() as usize + 1;
-    let mut times = Vec::with_capacity(capacity);
-    let mut states = Vec::with_capacity(capacity);
-
+    let (mut times, mut states) = alloc_trajectory(t_span, h, y0);
     let mut t = t_span.0;
     let mut y = y0.clone();
-
-    times.push(t);
-    states.push(y.clone());
 
     while t < t_span.1 {
         let step = h.min(t_span.1 - t);

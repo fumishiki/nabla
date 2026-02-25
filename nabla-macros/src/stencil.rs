@@ -92,9 +92,10 @@ impl syn::parse::Parse for StencilInput {
         let out_name: Ident = input.parse()?;
         let inner;
         syn::bracketed!(inner in input);
-        let out_indices: syn::punctuated::Punctuated<Ident, Token![,]> =
-            inner.parse_terminated(Ident::parse, Token![,])?;
-        let out_indices: Vec<Ident> = out_indices.into_iter().collect();
+        let out_indices: Vec<Ident> = inner
+            .parse_terminated(Ident::parse, Token![,])?
+            .into_iter()
+            .collect();
 
         input.parse::<Token![=]>()?;
 

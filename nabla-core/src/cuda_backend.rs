@@ -2,11 +2,10 @@
 //
 // Design:
 //   - CudaCtx (OnceLock singleton): cudarc CudaContext + default stream + JIT module cache.
-//   - CudaStorage<T>: CuBuffer (RAII GPU memory) + lazy host_cache for readback.
+//   - CudaStorage<T> = RtcStorage<CuBuffer, T>: shared GPU storage with lazy host_cache.
 //   - Kernels compiled once from kernels_cu::KERNELS, cached per-function.
 //   - TypeId dispatch: f32/f64 → type-suffixed kernel name.
 
-use std::any::TypeId;
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -15,6 +14,7 @@ use cudarc::driver::sys::{CUdeviceptr, CUfunction, CUmodule};
 use cudarc::driver::{result, CudaContext as CudarcContext, CudaStream};
 use cudarc::nvrtc;
 
+use crate::gpu_common::{self, EnsureCache, RtcStorage, grid_1d, lock_or_recover, type_suffix};
 use crate::kernels_cu::{self, BLOCK_SIZE};
 use crate::scalar::Scalar;
 
@@ -55,8 +55,8 @@ type CudaResult<T> = Result<T, CudaError>;
 
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
-struct CuBuffer {
-    ptr: CUdeviceptr,
+pub(crate) struct CuBuffer {
+    pub(crate) ptr: CUdeviceptr,
     size: usize,
 }
 
@@ -98,6 +98,30 @@ impl Drop for CuBuffer {
         if self.ptr != 0 {
             // SAFETY: freeing GPU memory allocated by us.
             unsafe { let _ = result::free_sync(self.ptr); }
+        }
+    }
+}
+
+// ── Storage type alias ───────────────────────────────────────────────────────
+
+/// Row-major CUDA-backed matrix storage.
+pub type CudaStorage<T> = RtcStorage<CuBuffer, T>;
+
+// SAFETY: CuBuffer is a raw GPU pointer (u64) + usize — trivially Send+Sync.
+// Mutex<Option<Vec<T>>> is Send+Sync when T: Send+Sync (Scalar guarantees this).
+unsafe impl<T: Scalar> Send for CudaStorage<T> {}
+unsafe impl<T: Scalar> Sync for CudaStorage<T> {}
+
+impl<T: Scalar> EnsureCache for CudaStorage<T> {
+    fn ensure_cache(&self) {
+        let mut guard = lock_or_recover(&self.host_cache);
+        if guard.is_none() {
+            let ctx = get_ctx();
+            let mut host = vec![T::zero(); self.n()];
+            if let Err(e) = self.buf.copy_to_host(&ctx.stream, &mut host) {
+                panic!("CUDA readback failed: {e}");
+            }
+            *guard = Some(host);
         }
     }
 }
@@ -239,78 +263,6 @@ fn get_kernel(ctx: &CudaCtx, name: &str) -> CudaResult<CUfunction> {
     map.get(name)
         .map(|e| e.func)
         .ok_or_else(|| CudaError::KernelNotFound(name.to_owned()))
-}
-
-// ── Type suffix helper ───────────────────────────────────────────────────────
-
-fn type_suffix<T: Scalar>() -> &'static str {
-    if TypeId::of::<T>() == TypeId::of::<f32>() {
-        "f32"
-    } else if TypeId::of::<T>() == TypeId::of::<f64>() {
-        "f64"
-    } else {
-        panic!("CUDA backend supports f32/f64 only")
-    }
-}
-
-fn grid_1d(n: usize) -> u32 {
-    #[allow(clippy::cast_possible_truncation)]
-    { n.div_ceil(BLOCK_SIZE as usize) as u32 }
-}
-
-// ── CudaStorage ──────────────────────────────────────────────────────────────
-
-/// Row-major CUDA-backed matrix storage.
-pub struct CudaStorage<T: Scalar> {
-    pub(crate) nrows: usize,
-    pub(crate) ncols: usize,
-    buf: CuBuffer,
-    host_cache: Mutex<Option<Vec<T>>>,
-}
-
-// SAFETY: CuBuffer is a raw GPU pointer (u64) + usize — trivially Send+Sync.
-// Mutex<Option<Vec<T>>> is Send+Sync when T: Send+Sync (Scalar guarantees this).
-unsafe impl<T: Scalar> Send for CudaStorage<T> {}
-unsafe impl<T: Scalar> Sync for CudaStorage<T> {}
-
-fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-impl<T: Scalar> CudaStorage<T> {
-    fn new(nrows: usize, ncols: usize, buf: CuBuffer) -> Self {
-        Self { nrows, ncols, buf, host_cache: Mutex::new(None) }
-    }
-
-    fn new_cached(nrows: usize, ncols: usize, buf: CuBuffer, cache: Vec<T>) -> Self {
-        Self { nrows, ncols, buf, host_cache: Mutex::new(Some(cache)) }
-    }
-
-    fn n(&self) -> usize {
-        self.nrows * self.ncols
-    }
-
-    fn invalidate_cache(&mut self) {
-        *lock_or_recover(&self.host_cache) = None;
-    }
-
-    fn ensure_cache(&self) {
-        let mut guard = lock_or_recover(&self.host_cache);
-        if guard.is_none() {
-            let ctx = get_ctx();
-            let mut host = vec![T::zero(); self.n()];
-            if let Err(e) = self.buf.copy_to_host(&ctx.stream, &mut host) {
-                panic!("CUDA readback failed: {e}");
-            }
-            *guard = Some(host);
-        }
-    }
-
-    fn cached_get(&self, idx: usize) -> T {
-        self.ensure_cache();
-        let guard = lock_or_recover(&self.host_cache);
-        guard.as_ref().expect("cache populated")[idx]
-    }
 }
 
 // ── Launch helpers ───────────────────────────────────────────────────────────
@@ -584,61 +536,13 @@ pub(crate) fn cuda_matmul<T: Scalar>(
     cuda_matmul_tiled(ctx, out, a, b);
 }
 
-pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    // Readback to host and reduce — simple, correct, avoids complex atomic patterns.
-    a.ensure_cache();
-    let guard = lock_or_recover(&a.host_cache);
-    let data = guard.as_ref().expect("cache populated");
-    data.iter().fold(T::zero(), |acc, &x| acc + x)
-}
+// Reductions — delegated to shared gpu_common implementation
 
-pub(crate) fn cuda_max_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    a.ensure_cache();
-    let guard = lock_or_recover(&a.host_cache);
-    let data = guard.as_ref().expect("cache populated");
-    assert!(!data.is_empty(), "max_all: matrix must be non-empty");
-    let mut it = data.iter();
-    let init = *it.next().expect("non-empty");
-    it.fold(init, |acc, &x| acc.reduction_max(x))
-}
-
-pub(crate) fn cuda_min_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    a.ensure_cache();
-    let guard = lock_or_recover(&a.host_cache);
-    let data = guard.as_ref().expect("cache populated");
-    assert!(!data.is_empty(), "min_all: matrix must be non-empty");
-    let mut it = data.iter();
-    let init = *it.next().expect("non-empty");
-    it.fold(init, |acc, &x| acc.reduction_min(x))
-}
-
-pub(crate) fn cuda_argmax_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) {
-    a.ensure_cache();
-    let guard = lock_or_recover(&a.host_cache);
-    let data = guard.as_ref().expect("cache populated");
-    let cols = a.ncols;
-    let mut best = 0usize;
-    for i in 1..data.len() {
-        if data[i].reduction_gt(data[best]) {
-            best = i;
-        }
-    }
-    (best / cols, best % cols)
-}
-
-pub(crate) fn cuda_argmin_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) {
-    a.ensure_cache();
-    let guard = lock_or_recover(&a.host_cache);
-    let data = guard.as_ref().expect("cache populated");
-    let cols = a.ncols;
-    let mut best = 0usize;
-    for i in 1..data.len() {
-        if data[best].reduction_gt(data[i]) {
-            best = i;
-        }
-    }
-    (best / cols, best % cols)
-}
+pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T { gpu_common::rtc_sum_all(a) }
+pub(crate) fn cuda_max_all<T: Scalar>(a: &CudaStorage<T>) -> T { gpu_common::rtc_max_all(a) }
+pub(crate) fn cuda_min_all<T: Scalar>(a: &CudaStorage<T>) -> T { gpu_common::rtc_min_all(a) }
+pub(crate) fn cuda_argmax_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmax_all(a) }
+pub(crate) fn cuda_argmin_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmin_all(a) }
 
 // ── Backend impl ─────────────────────────────────────────────────────────────
 

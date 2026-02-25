@@ -227,9 +227,10 @@ fn canonicalize(input: &mut EinsumInput) {
 
     // Assign canonical names to output (free) indices
     for (pos, idx) in input.output_indices.iter().enumerate() {
-        let old = idx.to_string();
-        if pos < FREE_NAMES.len() && !rename.contains_key(&old) {
-            rename.insert(old, Ident::new(FREE_NAMES[pos], idx.span()));
+        if pos < FREE_NAMES.len() {
+            rename
+                .entry(idx.to_string())
+                .or_insert_with(|| Ident::new(FREE_NAMES[pos], idx.span()));
         }
     }
 
@@ -242,14 +243,15 @@ fn canonicalize(input: &mut EinsumInput) {
             let old = idx.to_string();
             if !free_names.contains(&old)
                 && seen.insert(old.clone())
-                && !rename.contains_key(&old)
                 && contraction_pos < CONTRACTION_NAMES.len()
             {
-                rename.insert(
-                    old,
-                    Ident::new(CONTRACTION_NAMES[contraction_pos], idx.span()),
-                );
-                contraction_pos += 1;
+                rename
+                    .entry(old)
+                    .or_insert_with(|| {
+                        let ident = Ident::new(CONTRACTION_NAMES[contraction_pos], idx.span());
+                        contraction_pos += 1;
+                        ident
+                    });
             }
         }
     }
@@ -279,11 +281,10 @@ fn classify(input: &EinsumInput) -> ContractionKind {
 
     let free_names: HashSet<String> = free.iter().map(Ident::to_string).collect();
     let mut contraction: Vec<String> = vec![];
-    let mut seen: HashSet<String> = HashSet::new();
     for term in rhs {
         for idx in &term.indices {
             let s = idx.to_string();
-            if !free_names.contains(&s) && seen.insert(s.clone()) {
+            if !free_names.contains(&s) && !contraction.contains(&s) {
                 contraction.push(s);
             }
         }

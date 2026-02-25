@@ -57,6 +57,18 @@ fn fuse_rules() -> Vec<Rewrite<FuseExpr, ()>> {
     ]
 }
 
+// Store an opaque sub-expression as a unique symbol, avoiding separate name.clone().
+fn add_opaque_symbol(
+    expr: &Expr,
+    rec: &mut RecExpr<FuseExpr>,
+    sym_map: &mut Vec<(String, Expr)>,
+) -> Id {
+    let name = format!("__sym{}", sym_map.len());
+    let id = rec.add(FuseExpr::Symbol(Symbol::from(&*name)));
+    sym_map.push((name, expr.clone()));
+    id
+}
+
 // syn::Expr → RecExpr<FuseExpr>, returning root Id. Opaque sub-exprs get unique symbols.
 fn expr_to_egg(
     expr: &Expr,
@@ -69,18 +81,14 @@ fn expr_to_egg(
             if let Ok(v) = f.base10_parse::<f64>() {
                 rec.add(FuseExpr::Num(OrderedFloat(v)))
             } else {
-                let name = format!("__sym{}", sym_map.len());
-                sym_map.push((name.clone(), expr.clone()));
-                rec.add(FuseExpr::Symbol(Symbol::from(name)))
+                add_opaque_symbol(expr, rec, sym_map)
             }
         }
         Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => {
             if let Ok(v) = i.base10_parse::<i64>() {
                 rec.add(FuseExpr::Num(OrderedFloat(v as f64)))
             } else {
-                let name = format!("__sym{}", sym_map.len());
-                sym_map.push((name.clone(), expr.clone()));
-                rec.add(FuseExpr::Symbol(Symbol::from(name)))
+                add_opaque_symbol(expr, rec, sym_map)
             }
         }
 
@@ -93,11 +101,7 @@ fn expr_to_egg(
                 syn::BinOp::Sub(_) => rec.add(FuseExpr::Sub([l, r])),
                 syn::BinOp::Mul(_) => rec.add(FuseExpr::Mul([l, r])),
                 syn::BinOp::Div(_) => rec.add(FuseExpr::Div([l, r])),
-                _ => {
-                    let name = format!("__sym{}", sym_map.len());
-                    sym_map.push((name.clone(), expr.clone()));
-                    rec.add(FuseExpr::Symbol(Symbol::from(name)))
-                }
+                _ => add_opaque_symbol(expr, rec, sym_map),
             }
         }
 
@@ -125,12 +129,7 @@ fn expr_to_egg(
                     let arg = expr_to_egg(&mc.args[0], rec, sym_map);
                     rec.add(FuseExpr::Pow([recv, arg]))
                 }
-                _ => {
-                    // Opaque method call — store original expr
-                    let name = format!("__sym{}", sym_map.len());
-                    sym_map.push((name.clone(), expr.clone()));
-                    rec.add(FuseExpr::Symbol(Symbol::from(name)))
-                }
+                _ => add_opaque_symbol(expr, rec, sym_map),
             }
         }
 
@@ -153,9 +152,7 @@ fn expr_to_egg(
                     _ => {}
                 }
             }
-            let name = format!("__sym{}", sym_map.len());
-            sym_map.push((name.clone(), expr.clone()));
-            rec.add(FuseExpr::Symbol(Symbol::from(name)))
+            add_opaque_symbol(expr, rec, sym_map)
         }
 
         // Paren
@@ -168,11 +165,7 @@ fn expr_to_egg(
         }
 
         // Anything else — opaque symbol
-        _ => {
-            let name = format!("__sym{}", sym_map.len());
-            sym_map.push((name.clone(), expr.clone()));
-            rec.add(FuseExpr::Symbol(Symbol::from(name)))
-        }
+        _ => add_opaque_symbol(expr, rec, sym_map),
     }
 }
 
@@ -309,9 +302,11 @@ impl Parse for RowExprs {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let inner;
         syn::bracketed!(inner in input);
-        let elems: Punctuated<Expr, Comma> = inner.parse_terminated(Expr::parse, Comma)?;
         Ok(RowExprs {
-            elems: elems.into_iter().collect(),
+            elems: inner
+                .parse_terminated(Expr::parse, Comma)?
+                .into_iter()
+                .collect(),
         })
     }
 }
@@ -413,8 +408,10 @@ impl Parse for FuseInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let body: Expr = input.parse()?;
         input.parse::<syn::Token![;]>()?;
-        let vars: Punctuated<Ident, Comma> = input.parse_terminated(Ident::parse, Comma)?;
-        let tensors: Vec<_> = vars.into_iter().collect();
+        let tensors: Vec<Ident> = input
+            .parse_terminated(Ident::parse, Comma)?
+            .into_iter()
+            .collect();
         if tensors.is_empty() {
             return Err(Error::new(
                 Span::call_site(),
@@ -852,10 +849,11 @@ struct NamedInput {
 
 impl Parse for NamedInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        let fields: Punctuated<NamedField, Comma> =
-            input.parse_terminated(NamedField::parse, Comma)?;
         Ok(NamedInput {
-            fields: fields.into_iter().collect(),
+            fields: input
+                .parse_terminated(NamedField::parse, Comma)?
+                .into_iter()
+                .collect(),
         })
     }
 }
@@ -1058,11 +1056,13 @@ struct NamedZerosInput {
 
 impl Parse for NamedZerosInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        let axes: Punctuated<Ident, Comma> = Punctuated::parse_separated_nonempty(input)?;
+        let axes: Vec<Ident> = Punctuated::<Ident, Comma>::parse_separated_nonempty(input)?
+            .into_iter()
+            .collect();
         input.parse::<syn::Token![;]>()?;
-        let dims: Punctuated<Expr, Comma> = Punctuated::parse_separated_nonempty(input)?;
-        let axes: Vec<Ident> = axes.into_iter().collect();
-        let dims: Vec<Expr> = dims.into_iter().collect();
+        let dims: Vec<Expr> = Punctuated::<Expr, Comma>::parse_separated_nonempty(input)?
+            .into_iter()
+            .collect();
         if axes.len() != dims.len() {
             return Err(Error::new(
                 Span::call_site(),

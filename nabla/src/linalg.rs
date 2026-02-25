@@ -236,36 +236,103 @@ fn matmul_buf(l: &[f64], u: &[f64], n: usize) -> Vec<f64> {
 // Macros for boilerplate reduction
 // ---------------------------------------------------------------------------
 
-/// Generate pub solve/reconstruct/inverse methods for symmetric factorizations (Llt, Ldlt).
-macro_rules! impl_symmetric_solve {
-    ($Type:ident) => {
+/// Generate pub solve/reconstruct/inverse wrappers for factorization types.
+///
+/// `symmetric` variant: solve_transpose/solve_adjoint delegate to solve_impl (A = A^T).
+/// `general` variant: solve_transpose rebuilds via reconstruct+refactor.
+macro_rules! impl_factorization_methods {
+    // Symmetric factorizations: A^T = A, so transpose/adjoint solve = regular solve.
+    (symmetric $Type:ident) => {
         impl $Type<f64> {
             /// Solve `A·x = b`.
+            #[must_use]
             pub fn solve(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
                 self.solve_impl(rhs)
             }
-
             /// Solve in place.
             pub fn solve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
                 *rhs = self.solve_impl(rhs);
             }
-
             /// Solve `A^T·x = b` (same as solve for symmetric A).
+            #[must_use]
             pub fn solve_transpose(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
                 self.solve_impl(rhs)
             }
-
             /// Solve `A^H·x = b` (same as solve for symmetric A).
+            #[must_use]
             pub fn solve_adjoint(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
                 self.solve_impl(rhs)
             }
-
             /// Reconstruct original matrix.
+            #[must_use]
             pub fn reconstruct(&self) -> Tensor<f64, Cpu> {
                 self.reconstruct_impl()
             }
-
             /// Compute matrix inverse.
+            #[must_use]
+            pub fn inverse(&self) -> Tensor<f64, Cpu> {
+                self.inverse_impl()
+            }
+        }
+    };
+    // General (non-symmetric) factorizations with full solve variants.
+    (general $Type:ident) => {
+        impl $Type<f64> {
+            /// Solve `A·x = b`.
+            #[must_use]
+            pub fn solve(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
+                self.solve_impl(rhs)
+            }
+            /// Solve in place.
+            pub fn solve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
+                *rhs = self.solve_impl(rhs);
+            }
+            /// Solve `A^T·x = b`.
+            #[must_use]
+            pub fn solve_transpose(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
+                let a = self.reconstruct_impl();
+                let at = a.t();
+                // Factorization of A^T; fall back to rhs on singular (should not happen).
+                match $Type::factorize(&at) {
+                    Ok(f) => f.solve_impl(rhs),
+                    Err(_) => rhs.clone(),
+                }
+            }
+            /// Solve in place `A^T·x = b`.
+            pub fn solve_transpose_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
+                *rhs = self.solve_transpose(rhs);
+            }
+            /// Solve `A^H·x = b` (same as transpose for real).
+            #[must_use]
+            pub fn solve_adjoint(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
+                self.solve_transpose(rhs)
+            }
+            /// Solve in place `A^H·x = b`.
+            pub fn solve_adjoint_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
+                *rhs = self.solve_adjoint(rhs);
+            }
+            /// Solve `x·A = b`.
+            #[must_use]
+            pub fn rsolve(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
+                let bt = rhs.t();
+                let a = self.reconstruct_impl();
+                let at = a.t();
+                match $Type::factorize(&at) {
+                    Ok(f) => f.solve_impl(&bt).t(),
+                    Err(_) => rhs.clone(),
+                }
+            }
+            /// Solve in place `x·A = b`.
+            pub fn rsolve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
+                *rhs = self.rsolve(rhs);
+            }
+            /// Reconstruct original matrix.
+            #[must_use]
+            pub fn reconstruct(&self) -> Tensor<f64, Cpu> {
+                self.reconstruct_impl()
+            }
+            /// Compute matrix inverse.
+            #[must_use]
             pub fn inverse(&self) -> Tensor<f64, Cpu> {
                 self.inverse_impl()
             }
@@ -1914,81 +1981,9 @@ impl LinalgExt for Tensor<f64, Cpu> {
 // Solve methods on factorization types
 // ===========================================================================
 
-impl PartialPivLu<f64> {
-    /// Solve `A·x = b`.
-    #[must_use]
-    pub fn solve(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
-        self.solve_impl(rhs)
-    }
-
-    /// Solve in place.
-    pub fn solve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
-        *rhs = self.solve_impl(rhs);
-    }
-
-    /// Solve `A^T·x = b`.
-    #[must_use]
-    pub fn solve_transpose(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
-        // Reuse the full matrix by transposing and re-factoring
-        // For simplicity: rebuild A from factors and solve A^T
-        let a_reconstructed = self.reconstruct_impl();
-        let at = a_reconstructed.t();
-        if let Ok(lu_t) = PartialPivLu::factorize(&at) {
-            lu_t.solve_impl(rhs)
-        } else {
-            rhs.clone()
-        }
-    }
-
-    /// Solve in place `A^T·x = b`.
-    pub fn solve_transpose_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
-        *rhs = self.solve_transpose(rhs);
-    }
-
-    /// Solve `A^H·x = b` (same as transpose for real).
-    #[must_use]
-    pub fn solve_adjoint(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
-        self.solve_transpose(rhs)
-    }
-
-    /// Solve in place `A^H·x = b`.
-    pub fn solve_adjoint_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
-        *rhs = self.solve_adjoint(rhs);
-    }
-
-    /// Solve `x·A = b`.
-    #[must_use]
-    pub fn rsolve(&self, rhs: &Tensor<f64, Cpu>) -> Tensor<f64, Cpu> {
-        let bt = rhs.t();
-        let a_reconstructed = self.reconstruct_impl();
-        let at = a_reconstructed.t();
-        if let Ok(lu_t) = PartialPivLu::factorize(&at) {
-            lu_t.solve_impl(&bt).t()
-        } else {
-            rhs.clone()
-        }
-    }
-
-    /// Solve in place `x·A = b`.
-    pub fn rsolve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) {
-        *rhs = self.rsolve(rhs);
-    }
-
-    /// Reconstruct original matrix.
-    #[must_use]
-    pub fn reconstruct(&self) -> Tensor<f64, Cpu> {
-        self.reconstruct_impl()
-    }
-
-    /// Compute matrix inverse.
-    #[must_use]
-    pub fn inverse(&self) -> Tensor<f64, Cpu> {
-        self.inverse_impl()
-    }
-}
-
-impl_symmetric_solve!(Llt);
-impl_symmetric_solve!(Ldlt);
+impl_factorization_methods!(general PartialPivLu);
+impl_factorization_methods!(symmetric Llt);
+impl_factorization_methods!(symmetric Ldlt);
 
 impl Lblt<f64> {
     /// Reconstruct the stored matrix.

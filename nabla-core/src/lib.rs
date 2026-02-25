@@ -53,6 +53,9 @@ pub(crate) mod gpu;
 #[cfg(any(feature = "cuda", feature = "hip"))]
 pub(crate) mod kernels_cu;
 
+#[cfg(any(feature = "cuda", feature = "hip"))]
+pub(crate) mod gpu_common;
+
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda_backend;
 

@@ -2,16 +2,16 @@
 //
 // Design mirrors cuda_backend.rs:
 //   - HipCtx (OnceLock singleton): device init + hiprtc module cache.
-//   - HipStorage<T>: RAII GPU memory + lazy host_cache.
+//   - HipStorage<T> = RtcStorage<HipBuffer, T>: shared GPU storage with lazy host_cache.
 //   - Same CUDA C kernel source (CUDA/HIP source-compatible for compute kernels).
 
-use std::any::TypeId;
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::sync::{Mutex, OnceLock};
 
 use hip_runtime_sys as hip;
 
+use crate::gpu_common::{self, EnsureCache, RtcStorage, grid_1d, lock_or_recover, type_suffix};
 use crate::kernels_cu::{self, BLOCK_SIZE};
 use crate::scalar::Scalar;
 
@@ -48,8 +48,8 @@ fn check(err: hip::hipError_t) -> HipResult<()> {
 
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
-struct HipBuffer {
-    ptr: *mut c_void,
+pub(crate) struct HipBuffer {
+    pub(crate) ptr: *mut c_void,
     size: usize,
 }
 
@@ -109,6 +109,29 @@ impl Drop for HipBuffer {
         if !self.ptr.is_null() {
             // SAFETY: freeing device memory allocated by hipMalloc.
             unsafe { let _ = hip::hipFree(self.ptr); }
+        }
+    }
+}
+
+// ── Storage type alias ───────────────────────────────────────────────────────
+
+/// Row-major HIP-backed matrix storage.
+pub type HipStorage<T> = RtcStorage<HipBuffer, T>;
+
+// SAFETY: HipBuffer is Send+Sync (raw GPU pointer). Mutex<Option<Vec<T>>>
+// is Send+Sync when T: Send+Sync, which Scalar guarantees.
+unsafe impl<T: Scalar> Send for HipStorage<T> {}
+unsafe impl<T: Scalar> Sync for HipStorage<T> {}
+
+impl<T: Scalar> EnsureCache for HipStorage<T> {
+    fn ensure_cache(&self) {
+        let mut guard = lock_or_recover(&self.host_cache);
+        if guard.is_none() {
+            let mut host = vec![T::zero(); self.n()];
+            if let Err(e) = self.buf.copy_to_host(&mut host) {
+                panic!("HIP readback failed: {e}");
+            }
+            *guard = Some(host);
         }
     }
 }
@@ -232,22 +255,7 @@ fn get_kernel(ctx: &HipCtx, name: &str) -> HipResult<hip::hipFunction_t> {
         .ok_or_else(|| HipError::KernelNotFound(name.to_owned()))
 }
 
-// ── Type + grid helpers ──────────────────────────────────────────────────────
-
-fn type_suffix<T: Scalar>() -> &'static str {
-    if TypeId::of::<T>() == TypeId::of::<f32>() {
-        "f32"
-    } else if TypeId::of::<T>() == TypeId::of::<f64>() {
-        "f64"
-    } else {
-        panic!("HIP backend supports f32/f64 only")
-    }
-}
-
-fn grid_1d(n: usize) -> u32 {
-    #[allow(clippy::cast_possible_truncation)]
-    { n.div_ceil(BLOCK_SIZE as usize) as u32 }
-}
+// ── Launch helper ────────────────────────────────────────────────────────────
 
 fn hip_launch(
     func: hip::hipFunction_t,
@@ -274,58 +282,6 @@ fn hip_launch(
     let sync = unsafe { hip::hipDeviceSynchronize() };
     if sync != hip::hipError_t::hipSuccess {
         panic!("HIP sync failed: {sync:?}");
-    }
-}
-
-// ── HipStorage ───────────────────────────────────────────────────────────────
-
-/// Row-major HIP-backed matrix storage.
-pub struct HipStorage<T: Scalar> {
-    pub(crate) nrows: usize,
-    pub(crate) ncols: usize,
-    buf: HipBuffer,
-    host_cache: Mutex<Option<Vec<T>>>,
-}
-
-// SAFETY: HipBuffer is Send+Sync (raw GPU pointer). Mutex<Option<Vec<T>>>
-// is Send+Sync when T: Send+Sync, which Scalar guarantees.
-unsafe impl<T: Scalar> Send for HipStorage<T> {}
-unsafe impl<T: Scalar> Sync for HipStorage<T> {}
-
-fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-impl<T: Scalar> HipStorage<T> {
-    fn new(nrows: usize, ncols: usize, buf: HipBuffer) -> Self {
-        Self { nrows, ncols, buf, host_cache: Mutex::new(None) }
-    }
-
-    fn new_cached(nrows: usize, ncols: usize, buf: HipBuffer, cache: Vec<T>) -> Self {
-        Self { nrows, ncols, buf, host_cache: Mutex::new(Some(cache)) }
-    }
-
-    fn n(&self) -> usize { self.nrows * self.ncols }
-
-    fn invalidate_cache(&mut self) {
-        *lock_or_recover(&self.host_cache) = None;
-    }
-
-    fn ensure_cache(&self) {
-        let mut guard = lock_or_recover(&self.host_cache);
-        if guard.is_none() {
-            let mut host = vec![T::zero(); self.n()];
-            if let Err(e) = self.buf.copy_to_host(&mut host) {
-                panic!("HIP readback failed: {e}");
-            }
-            *guard = Some(host);
-        }
-    }
-
-    fn cached_get(&self, idx: usize) -> T {
-        self.ensure_cache();
-        let guard = lock_or_recover(&self.host_cache);
-        guard.as_ref().expect("cache populated")[idx]
     }
 }
 
@@ -446,7 +402,7 @@ pub(crate) fn hip_clone<T: Scalar>(s: &HipStorage<T>) -> HipStorage<T> {
         }
     }
     let cache = lock_or_recover(&s.host_cache).clone();
-    HipStorage { nrows: s.nrows, ncols: s.ncols, buf: new_buf, host_cache: Mutex::new(cache) }
+    RtcStorage { nrows: s.nrows, ncols: s.ncols, buf: new_buf, host_cache: Mutex::new(cache) }
 }
 
 pub(crate) fn hip_transpose<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
@@ -550,58 +506,13 @@ pub(crate) fn hip_matmul<T: Scalar>(
     );
 }
 
-// Reductions — readback to host (simple, correct)
+// Reductions — delegated to shared gpu_common implementation
 
-pub(crate) fn hip_sum_all<T: Scalar>(a: &HipStorage<T>) -> T {
-    a.ensure_cache();
-    let guard = lock_or_recover(&a.host_cache);
-    let data = guard.as_ref().expect("cache populated");
-    data.iter().fold(T::zero(), |acc, &x| acc + x)
-}
-
-pub(crate) fn hip_max_all<T: Scalar>(a: &HipStorage<T>) -> T {
-    a.ensure_cache();
-    let guard = lock_or_recover(&a.host_cache);
-    let data = guard.as_ref().expect("cache populated");
-    assert!(!data.is_empty(), "max_all: matrix must be non-empty");
-    let mut it = data.iter();
-    let init = *it.next().expect("non-empty");
-    it.fold(init, |acc, &x| acc.reduction_max(x))
-}
-
-pub(crate) fn hip_min_all<T: Scalar>(a: &HipStorage<T>) -> T {
-    a.ensure_cache();
-    let guard = lock_or_recover(&a.host_cache);
-    let data = guard.as_ref().expect("cache populated");
-    assert!(!data.is_empty(), "min_all: matrix must be non-empty");
-    let mut it = data.iter();
-    let init = *it.next().expect("non-empty");
-    it.fold(init, |acc, &x| acc.reduction_min(x))
-}
-
-pub(crate) fn hip_argmax_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) {
-    a.ensure_cache();
-    let guard = lock_or_recover(&a.host_cache);
-    let data = guard.as_ref().expect("cache populated");
-    let cols = a.ncols;
-    let mut best = 0usize;
-    for i in 1..data.len() {
-        if data[i].reduction_gt(data[best]) { best = i; }
-    }
-    (best / cols, best % cols)
-}
-
-pub(crate) fn hip_argmin_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) {
-    a.ensure_cache();
-    let guard = lock_or_recover(&a.host_cache);
-    let data = guard.as_ref().expect("cache populated");
-    let cols = a.ncols;
-    let mut best = 0usize;
-    for i in 1..data.len() {
-        if data[best].reduction_gt(data[i]) { best = i; }
-    }
-    (best / cols, best % cols)
-}
+pub(crate) fn hip_sum_all<T: Scalar>(a: &HipStorage<T>) -> T { gpu_common::rtc_sum_all(a) }
+pub(crate) fn hip_max_all<T: Scalar>(a: &HipStorage<T>) -> T { gpu_common::rtc_max_all(a) }
+pub(crate) fn hip_min_all<T: Scalar>(a: &HipStorage<T>) -> T { gpu_common::rtc_min_all(a) }
+pub(crate) fn hip_argmax_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) { gpu_common::rtc_argmax_all(a) }
+pub(crate) fn hip_argmin_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) { gpu_common::rtc_argmin_all(a) }
 
 // ── Backend impl ─────────────────────────────────────────────────────────────
 
