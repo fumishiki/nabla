@@ -1500,7 +1500,7 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 
 **目的**: 汎用性の極限。ユーザーは任意のアーキテクチャを nabla のプリミティブの組み合わせだけで構築できる。エッジケースでも、プリミティブの組み合わせか最小限の拡張で対応可能。
 
-**現状のカバレッジ**: ✅ 180+ ops (element-wise, matmul, reduction, activations, loss, normalization, conv, pooling, attention, manipulation, construction)
+**現状のカバレッジ**: ✅ 190+ ops (element-wise, matmul, reduction, activations, loss, normalization, conv, pooling, attention, manipulation, construction, regularization)
 **目標**: CNN / Transformer / GAN / Diffusion — あらゆるアーキテクチャに必要な計算プリミティブを網羅
 
 #### A. Convolution（畳み込み）— ✅ CPU実装済
@@ -1510,7 +1510,7 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 | `conv1d(x, w, bias, stride, padding, dilation, groups)` | $(x * w)[n,c_o,l] = \sum_{c_i,k} x[n,c_i,l \cdot s+k \cdot d] \cdot w[c_o,c_i,k]$ | 🔲 GPU | ✅ 必要 | ✅ |
 | `conv2d(x, w, bias, stride, padding, dilation, groups)` | $(x * w)[n,c_o,h,w] = \sum_{c_i,kh,kw} x \cdot w$ | 🔲 GPU (im2col + GEMM) | ✅ 必要 | ✅ |
 | `conv_transpose2d(x, w, ...)` | Fractionally-strided convolution | 🔲 GPU | ✅ 必要 | ✅ |
-| `conv3d` | 3D convolution | 🔲 GPU | ✅ 必要 | 🟡 P1 |
+| `conv3d` | 3D convolution | 🔲 GPU | ✅ 必要 | ✅ |
 
 **実装方針**: im2col → 既存matmul (cuBLAS TF32) パイプライン。Winograd F(2×2, 3×3) は conv2d 3×3 stride=1 の高速パス。`groups=C` で depthwise convolution。
 
@@ -1620,7 +1620,7 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 | `eye` / `identity` | ✅ | — |
 | `arange(start, end, step)` | ✅ | Index tensors, positional encoding |
 | `linspace(start, end, steps)` | ✅ | Uniform sampling |
-| `rand` / `randn` | 🔲 | Weight init, dropout, stochastic |
+| `rand` / `randn` | ✅ CPU (xorshift64 + Box-Muller) | Weight init, dropout, stochastic |
 | `from_numpy` / `to_numpy` | N/A | Rust has no NumPy; use `from_slice` / `to_vec` |
 | `empty` (uninitialized) | ✅ | Performance (skip zeroing) |
 | `contiguous` | 🔲 | Force contiguous layout after permute |
@@ -1643,7 +1643,15 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 
 ---
 
-#### 実装優先度まとめ
+#### K. Regularization / Utility — ✅ CPU実装済
+
+| Op | 説明 | 現状 |
+|---|---|---|
+| `dropout(x, p, training, seed)` | 確率 p で要素をゼロ化、残りを 1/(1-p) でスケール | ✅ CPU |
+| `interpolate_nearest(x, h, w, out_h, out_w)` | 最近傍補間（upsample/downsample） | ✅ CPU |
+| `interpolate_bilinear(x, h, w, out_h, out_w)` | バイリニア補間（align_corners=false） | ✅ CPU |
+
+---
 
 **Phase 1 (P0 — CPU実装完了 ✅):**
 
@@ -1672,11 +1680,11 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 | 16 | `roll` / `flip` / `meshgrid` | ✅ CPU |
 | 17 | `argmax_axis` / `argmin_axis` / `cumprod` / `prod_all` / `count_nonzero` | ✅ CPU |
 | 18 | `cosine_embedding_loss` | ✅ CPU |
-| 19 | `conv3d` | 🔲 |
-| 20 | `rand` / `randn` (GPU) | 🔲 |
-| 21 | `dropout` (training mask) | 🔲 |
+| 19 | `conv3d` | ✅ CPU |
+| 20 | `rand` / `randn` | ✅ CPU (xorshift64 + Box-Muller) |
+| 21 | `dropout` (training mask) | ✅ CPU |
 | 22 | `cumsum` / `cumprod` GPU | 🔲 |
-| 23 | `interpolate` (upsample) | 🔲 |
+| 23 | `interpolate` (upsample) | ✅ CPU (nearest + bilinear) |
 
 **Phase 3 (GPU kernels — 既存CPU ops のGPU高速化):**
 

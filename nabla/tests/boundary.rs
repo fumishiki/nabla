@@ -2482,3 +2482,132 @@ fn cosine_embedding_loss_same() {
     let loss = Tensor::cosine_embedding_loss(&x, &y, 1.0, 0.0);
     assert!((loss - 0.0).abs() < 1e-6);
 }
+
+// ── P1 ops tests ─────────────────────────────────────────────────────
+
+#[test]
+fn conv3d_basic() {
+    // 1 batch, 1 channel, 2x2x2 volume, 1 filter, 2x2x2 kernel
+    let x: Tensor<f64> = Tensor::from_fn(1, 8, |_r, c| (c + 1) as f64); // 1..8
+    let w: Tensor<f64> = Tensor::fill(1, 8, 1.0); // all 1s kernel
+    let out = x.conv3d(&w, None, 1, 1, 2, 2, 2, 1, 2, 2, 2, (1,1,1), (0,0,0), (1,1,1), 1);
+    assert_eq!(out.shape(), (1, 1)); // single output voxel
+    assert!((out.get(0, 0) - 36.0).abs() < 1e-6); // sum 1..8 = 36
+}
+
+#[test]
+fn conv3d_with_padding() {
+    let x: Tensor<f64> = Tensor::from_fn(1, 8, |_r, c| 1.0);
+    let w: Tensor<f64> = Tensor::fill(1, 8, 1.0);
+    let out = x.conv3d(&w, None, 1, 1, 2, 2, 2, 1, 2, 2, 2, (1,1,1), (1,1,1), (1,1,1), 1);
+    // with padding=1 on each side, output size = (2+2-2)/1+1 = 3 per dim
+    assert_eq!(out.shape(), (1, 27));
+}
+
+#[test]
+fn rand_shape_and_range() {
+    let t: Tensor<f64> = Tensor::rand(3, 4, 42);
+    assert_eq!(t.shape(), (3, 4));
+    for r in 0..3 {
+        for c in 0..4 {
+            let v = t.get(r, c);
+            assert!(v >= 0.0 && v <= 1.0, "rand value {v} out of range");
+        }
+    }
+}
+
+#[test]
+fn rand_deterministic() {
+    let a: Tensor<f64> = Tensor::rand(2, 3, 123);
+    let b: Tensor<f64> = Tensor::rand(2, 3, 123);
+    for r in 0..2 {
+        for c in 0..3 {
+            assert!((a.get(r, c) - b.get(r, c)).abs() < 1e-15);
+        }
+    }
+}
+
+#[test]
+fn randn_shape_and_stats() {
+    let t: Tensor<f64> = Tensor::randn(1, 10000, 42);
+    let mean = t.sum_all() / 10000.0;
+    assert!(mean.abs() < 0.1, "randn mean {mean} too far from 0");
+}
+
+#[test]
+fn dropout_training_off() {
+    let x: Tensor<f64> = Tensor::fill(2, 3, 1.0);
+    let out = x.dropout(0.5, false, 42);
+    for r in 0..2 {
+        for c in 0..3 {
+            assert!((out.get(r, c) - 1.0).abs() < 1e-12);
+        }
+    }
+}
+
+#[test]
+fn dropout_training_on() {
+    let x: Tensor<f64> = Tensor::fill(1, 1000, 1.0);
+    let out = x.dropout(0.5, true, 42);
+    let nonzero = (0..1000).filter(|&c| out.get(0, c).abs() > 1e-12).count();
+    // ~50% should survive, check within reasonable range
+    assert!(nonzero > 300 && nonzero < 700, "dropout kept {nonzero}/1000");
+    // Surviving values should be scaled by 1/(1-p) = 2.0
+    for c in 0..1000 {
+        let v = out.get(0, c);
+        assert!(v.abs() < 1e-12 || (v - 2.0).abs() < 1e-12, "unexpected value {v}");
+    }
+}
+
+#[test]
+fn dropout_p_zero() {
+    let x: Tensor<f64> = Tensor::fill(2, 3, 1.0);
+    let out = x.dropout(0.0, true, 42);
+    assert!((out.sum_all() - 6.0).abs() < 1e-12);
+}
+
+#[test]
+fn dropout_p_one() {
+    let x: Tensor<f64> = Tensor::fill(2, 3, 1.0);
+    let out = x.dropout(1.0, true, 42);
+    assert!(out.sum_all().abs() < 1e-12);
+}
+
+#[test]
+fn interpolate_nearest_upsample() {
+    // 1 channel, 2x2 -> 4x4
+    let x: Tensor<f64> = mat![[1.0, 2.0, 3.0, 4.0]]; // 2x2 flattened
+    let out = x.interpolate_nearest(2, 2, 4, 4);
+    assert_eq!(out.shape(), (1, 16));
+    // top-left 2x2 block should all be 1.0 (from pixel (0,0))
+    assert!((out.get(0, 0) - 1.0).abs() < 1e-12);
+    assert!((out.get(0, 1) - 1.0).abs() < 1e-12);
+    assert!((out.get(0, 4) - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn interpolate_nearest_downsample() {
+    // 1 channel, 4x4 -> 2x2
+    let x: Tensor<f64> = Tensor::from_fn(1, 16, |_r, c| c as f64);
+    let out = x.interpolate_nearest(4, 4, 2, 2);
+    assert_eq!(out.shape(), (1, 4));
+}
+
+#[test]
+fn interpolate_bilinear_identity() {
+    // Same size => should preserve values (approximately)
+    let x: Tensor<f64> = mat![[1.0, 2.0, 3.0, 4.0]]; // 2x2
+    let out = x.interpolate_bilinear(2, 2, 2, 2);
+    assert_eq!(out.shape(), (1, 4));
+    for c in 0..4 {
+        assert!((out.get(0, c) - x.get(0, c)).abs() < 1e-6, "c={c}");
+    }
+}
+
+#[test]
+fn interpolate_bilinear_upsample() {
+    // 1 channel, 2x2 -> 4x4: should be smooth
+    let x: Tensor<f64> = mat![[0.0, 1.0, 0.0, 1.0]]; // 2x2: [[0,1],[0,1]]
+    let out = x.interpolate_bilinear(2, 2, 4, 4);
+    assert_eq!(out.shape(), (1, 16));
+}

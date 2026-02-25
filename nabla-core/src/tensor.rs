@@ -2362,6 +2362,205 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             .collect();
         Self::from_storage(B::from_vec(nrows, ncols, data))
     }
+
+    // ── Conv3D ──────────────────────────────────────────────────────
+
+    /// 3-D convolution.
+    ///
+    /// Input: (N*C_in, D*H*W), Weight: (C_out, C_in/groups * kD * kH * kW).
+    /// Output: (N*C_out, out_D * out_H * out_W).
+    #[must_use]
+    pub fn conv3d(
+        &self,
+        weight: &Self,
+        bias: Option<&Self>,
+        n_batch: usize,
+        c_in: usize,
+        d: usize, h: usize, w: usize,
+        c_out: usize,
+        kd: usize, kh: usize, kw: usize,
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        dilation: (usize, usize, usize),
+        groups: usize,
+    ) -> Self {
+        assert!(c_in % groups == 0 && c_out % groups == 0);
+        let c_in_g = c_in / groups;
+        let c_out_g = c_out / groups;
+        let out_d = (d + 2 * padding.0 - dilation.0 * (kd - 1) - 1) / stride.0 + 1;
+        let out_h = (h + 2 * padding.1 - dilation.1 * (kh - 1) - 1) / stride.1 + 1;
+        let out_w = (w + 2 * padding.2 - dilation.2 * (kw - 1) - 1) / stride.2 + 1;
+        let out_spatial = out_d * out_h * out_w;
+
+        Self::from_fn(n_batch * c_out, out_spatial, |row, col| {
+            let b = row / c_out;
+            let oc = row % c_out;
+            let g = oc / c_out_g;
+            let od = col / (out_h * out_w);
+            let oh = (col / out_w) % out_h;
+            let ow = col % out_w;
+
+            let mut acc = if let Some(bi) = bias { bi.get(0, oc) } else { T::zero() };
+            for ic in 0..c_in_g {
+                for kdr in 0..kd {
+                    for khr in 0..kh {
+                        for kwc in 0..kw {
+                            let id = od * stride.0 + kdr * dilation.0;
+                            let ih = oh * stride.1 + khr * dilation.1;
+                            let iw = ow * stride.2 + kwc * dilation.2;
+                            if id >= padding.0 && id < d + padding.0
+                                && ih >= padding.1 && ih < h + padding.1
+                                && iw >= padding.2 && iw < w + padding.2
+                            {
+                                let x_val = self.get(
+                                    b * c_in + g * c_in_g + ic,
+                                    (id - padding.0) * h * w + (ih - padding.1) * w + (iw - padding.2),
+                                );
+                                let w_val = weight.get(
+                                    oc,
+                                    ic * kd * kh * kw + kdr * kh * kw + khr * kw + kwc,
+                                );
+                                acc = acc + x_val * w_val;
+                            }
+                        }
+                    }
+                }
+            }
+            acc
+        })
+    }
+
+    // ── Random constructors ─────────────────────────────────────────
+
+    /// Uniform random tensor in [0, 1). Uses xorshift64 seeded from `seed`.
+    #[must_use]
+    pub fn rand(nrows: usize, ncols: usize, seed: u64) -> Self {
+        let s0 = if seed == 0 { 0x12345678_9ABCDEF0_u64 } else { seed };
+        let n = nrows * ncols;
+        let mut data = Vec::with_capacity(n);
+        let mut s = s0;
+        for _ in 0..n {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            data.push(T::from_f64((s as f64) / (u64::MAX as f64)));
+        }
+        Self::from_storage(B::from_vec(nrows, ncols, data))
+    }
+
+    /// Normal-distributed random tensor (mean=0, std=1) via Box-Muller. Uses xorshift64 seeded from `seed`.
+    #[must_use]
+    pub fn randn(nrows: usize, ncols: usize, seed: u64) -> Self {
+        let mut s = if seed == 0 { 0x12345678_9ABCDEF0_u64 } else { seed };
+        let mut xorshift = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s as f64) / (u64::MAX as f64)
+        };
+        let n = nrows * ncols;
+        let mut data = Vec::with_capacity(n);
+        let mut i = 0;
+        while i < n {
+            let u1 = xorshift().max(1e-300);
+            let u2 = xorshift();
+            let r = (-2.0 * u1.ln()).sqrt();
+            let theta = 2.0 * std::f64::consts::PI * u2;
+            data.push(T::from_f64(r * theta.cos()));
+            if i + 1 < n {
+                data.push(T::from_f64(r * theta.sin()));
+            }
+            i += 2;
+        }
+        Self::from_storage(B::from_vec(nrows, ncols, data))
+    }
+
+    // ── Dropout ─────────────────────────────────────────────────────
+
+    /// Dropout: randomly zeroes elements with probability `p` during training.
+    /// When `training` is false, returns a clone. `seed` controls the random mask.
+    #[must_use]
+    pub fn dropout(&self, p: f64, training: bool, seed: u64) -> Self {
+        if !training || p <= 0.0 {
+            return self.clone();
+        }
+        if p >= 1.0 {
+            let (m, n) = self.shape();
+            return Self::zeros(m, n);
+        }
+        let scale = T::from_f64(1.0 / (1.0 - p));
+        let threshold = (p * (u64::MAX as f64)) as u64;
+        let (m, n) = self.shape();
+        let mut s = if seed == 0 { 0xDEADBEEF_CAFE1234_u64 } else { seed };
+        let mut data = Vec::with_capacity(m * n);
+        for r in 0..m {
+            for c in 0..n {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                let x = self.get(r, c);
+                data.push(if s < threshold { T::zero() } else { x * scale });
+            }
+        }
+        Self::from_storage(B::from_vec(m, n, data))
+    }
+
+    // ── Interpolate ─────────────────────────────────────────────────
+
+    /// Nearest-neighbor interpolation (upsample/downsample).
+    ///
+    /// Input: (N*C, H*W). Output: (N*C, out_H * out_W).
+    #[must_use]
+    pub fn interpolate_nearest(
+        &self,
+        h: usize, w: usize,
+        out_h: usize, out_w: usize,
+    ) -> Self {
+        let nc = self.nrows();
+        Self::from_fn(nc, out_h * out_w, |row, col| {
+            let oh = col / out_w;
+            let ow = col % out_w;
+            let ih = oh * h / out_h;
+            let iw = ow * w / out_w;
+            self.get(row, ih * w + iw)
+        })
+    }
+
+    /// Bilinear interpolation (upsample/downsample).
+    ///
+    /// Input: (N*C, H*W). Output: (N*C, out_H * out_W).
+    #[must_use]
+    pub fn interpolate_bilinear(
+        &self,
+        h: usize, w: usize,
+        out_h: usize, out_w: usize,
+    ) -> Self {
+        let nc = self.nrows();
+        Self::from_fn(nc, out_h * out_w, |row, col| {
+            let oh = col / out_w;
+            let ow = col % out_w;
+            // Map output coords to input coords (align_corners=false)
+            let scale_h = h as f64 / out_h as f64;
+            let scale_w = w as f64 / out_w as f64;
+            let src_h = (oh as f64 + 0.5) * scale_h - 0.5;
+            let src_w = (ow as f64 + 0.5) * scale_w - 0.5;
+            let h0 = src_h.floor().max(0.0) as usize;
+            let w0 = src_w.floor().max(0.0) as usize;
+            let h1 = (h0 + 1).min(h - 1);
+            let w1 = (w0 + 1).min(w - 1);
+            let fh = T::from_f64((src_h - h0 as f64).clamp(0.0, 1.0));
+            let fw = T::from_f64((src_w - w0 as f64).clamp(0.0, 1.0));
+            let one = T::one();
+            let v00 = self.get(row, h0 * w + w0);
+            let v01 = self.get(row, h0 * w + w1);
+            let v10 = self.get(row, h1 * w + w0);
+            let v11 = self.get(row, h1 * w + w1);
+            // bilinear blend
+            let top = v00 * (one - fw) + v01 * fw;
+            let bot = v10 * (one - fw) + v11 * fw;
+            top * (one - fh) + bot * fh
+        })
+    }
 }
 
 #[cfg(feature = "cpu")]
