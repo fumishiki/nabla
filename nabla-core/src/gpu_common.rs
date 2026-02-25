@@ -477,6 +477,16 @@ impl<B, T: Scalar> RtcStorage<B, T> {
         Self { nrows, ncols, buf, host_cache: Mutex::new(None) }
     }
 
+    /// Public constructor for external buffer wrapping (e.g. GpuTensor → nabla bridge).
+    pub fn from_parts(nrows: usize, ncols: usize, buf: B) -> Self {
+        Self { nrows, ncols, buf, host_cache: Mutex::new(None) }
+    }
+
+    /// Returns a reference to the raw GPU buffer.
+    pub fn buffer(&self) -> &B {
+        &self.buf
+    }
+
     pub(crate) fn new_cached(nrows: usize, ncols: usize, buf: B, cache: Vec<T>) -> Self {
         Self { nrows, ncols, buf, host_cache: Mutex::new(Some(cache)) }
     }

@@ -7,6 +7,9 @@
 #![allow(dead_code)]
 
 pub(crate) const BLOCK_SIZE: u32 = 256;
+pub(crate) const REDUCE_BLOCK: u32 = 256;
+// Max blocks for first-pass reduction; second pass reduces these to 1.
+pub(crate) const REDUCE_GRID_CAP: u32 = 256;
 
 // Combined kernel source — unary, binary, scalar, reduction, transpose, matmul for f32+f64.
 pub(crate) const KERNELS: &str = r#"
@@ -186,62 +189,92 @@ __device__ float warp_reduce_min_f32(float val) {
     return val;
 }
 
-// ── Reduction f32 (warp shuffle) ──────────────────────────────────────────
+// ── Reduction f32 (grid-stride + vectorized float4 + two-pass) ────────────
 
-extern "C" __global__ void k_sum_f32(const float* in, float* out, unsigned n) {
+extern "C" __global__ void k_sum_f32(const float* __restrict__ in,
+                                      float* __restrict__ out, unsigned n) {
+    float acc = 0.0f;
     unsigned tid = threadIdx.x;
-    unsigned i = blockIdx.x * blockDim.x + tid;
-    float val = (i < n) ? in[i] : 0.0f;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    // Vectorized float4 loads (16-byte aligned)
+    unsigned n4 = n / 4;
+    const float4* in4 = (const float4*)in;
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n4; i += grid_stride) {
+        float4 v = in4[i];
+        acc += v.x + v.y + v.z + v.w;
+    }
+    // Tail elements
+    for (unsigned i = n4 * 4 + blockIdx.x * blockDim.x + tid; i < n; i += grid_stride)
+        acc += in[i];
 
-    val = warp_reduce_sum_f32(val);
+    // Warp reduce
+    acc = warp_reduce_sum_f32(acc);
 
     __shared__ float sdata[32];
-    if (tid % 32 == 0) sdata[tid / 32] = val;
+    if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
 
     if (tid < 32) {
-        val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0f;
-        val = warp_reduce_sum_f32(val);
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0f;
+        acc = warp_reduce_sum_f32(acc);
     }
-    if (tid == 0) atomicAdd(&out[0], val);
+    if (tid == 0) out[blockIdx.x] = acc;
 }
 
-extern "C" __global__ void k_max_f32(const float* in, float* out,
+extern "C" __global__ void k_max_f32(const float* __restrict__ in,
+                                      float* __restrict__ out,
                                       unsigned n, const float* init) {
+    float acc = *init;
     unsigned tid = threadIdx.x;
-    unsigned i = blockIdx.x * blockDim.x + tid;
-    float val = (i < n) ? in[i] : *init;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    const float4* in4 = (const float4*)in;
+    unsigned n4 = n / 4;
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n4; i += grid_stride) {
+        float4 v = in4[i];
+        acc = fmaxf(acc, fmaxf(fmaxf(v.x, v.y), fmaxf(v.z, v.w)));
+    }
+    for (unsigned i = n4 * 4 + blockIdx.x * blockDim.x + tid; i < n; i += grid_stride)
+        acc = fmaxf(acc, in[i]);
 
-    val = warp_reduce_max_f32(val);
+    acc = warp_reduce_max_f32(acc);
 
     __shared__ float sdata[32];
-    if (tid % 32 == 0) sdata[tid / 32] = val;
+    if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
 
     if (tid < 32) {
-        val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
-        val = warp_reduce_max_f32(val);
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
+        acc = warp_reduce_max_f32(acc);
     }
-    if (tid == 0) out[blockIdx.x] = val;
+    if (tid == 0) out[blockIdx.x] = acc;
 }
 
-extern "C" __global__ void k_min_f32(const float* in, float* out,
+extern "C" __global__ void k_min_f32(const float* __restrict__ in,
+                                      float* __restrict__ out,
                                       unsigned n, const float* init) {
+    float acc = *init;
     unsigned tid = threadIdx.x;
-    unsigned i = blockIdx.x * blockDim.x + tid;
-    float val = (i < n) ? in[i] : *init;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    const float4* in4 = (const float4*)in;
+    unsigned n4 = n / 4;
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n4; i += grid_stride) {
+        float4 v = in4[i];
+        acc = fminf(acc, fminf(fminf(v.x, v.y), fminf(v.z, v.w)));
+    }
+    for (unsigned i = n4 * 4 + blockIdx.x * blockDim.x + tid; i < n; i += grid_stride)
+        acc = fminf(acc, in[i]);
 
-    val = warp_reduce_min_f32(val);
+    acc = warp_reduce_min_f32(acc);
 
     __shared__ float sdata[32];
-    if (tid % 32 == 0) sdata[tid / 32] = val;
+    if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
 
     if (tid < 32) {
-        val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
-        val = warp_reduce_min_f32(val);
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
+        acc = warp_reduce_min_f32(acc);
     }
-    if (tid == 0) out[blockIdx.x] = val;
+    if (tid == 0) out[blockIdx.x] = acc;
 }
 
 // ── Unary f64 ──────────────────────────────────────────────────────────────
@@ -332,63 +365,89 @@ __device__ double warp_reduce_min_f64(double val) {
     return val;
 }
 
-// ── Reduction f64 (warp shuffle) ──────────────────────────────────────────
+// ── Reduction f64 (grid-stride + vectorized double2 + two-pass) ───────────
 
-extern "C" __global__ void k_sum_f64(const double* in, double* out, unsigned n) {
+extern "C" __global__ void k_sum_f64(const double* __restrict__ in,
+                                      double* __restrict__ out, unsigned n) {
+    double acc = 0.0;
     unsigned tid = threadIdx.x;
-    unsigned i = blockIdx.x * blockDim.x + tid;
-    double val = (i < n) ? in[i] : 0.0;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    unsigned n2 = n / 2;
+    const double2* in2 = (const double2*)in;
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n2; i += grid_stride) {
+        double2 v = in2[i];
+        acc += v.x + v.y;
+    }
+    for (unsigned i = n2 * 2 + blockIdx.x * blockDim.x + tid; i < n; i += grid_stride)
+        acc += in[i];
 
-    val = warp_reduce_sum_f64(val);
+    acc = warp_reduce_sum_f64(acc);
 
     __shared__ double sdata[32];
-    if (tid % 32 == 0) sdata[tid / 32] = val;
+    if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
 
     if (tid < 32) {
-        val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0;
-        val = warp_reduce_sum_f64(val);
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0;
+        acc = warp_reduce_sum_f64(acc);
     }
-    // atomicAdd for doubles requires compute >= 6.0
-    if (tid == 0) atomicAdd(&out[0], val);
+    if (tid == 0) out[blockIdx.x] = acc;
 }
 
-extern "C" __global__ void k_max_f64(const double* in, double* out,
+extern "C" __global__ void k_max_f64(const double* __restrict__ in,
+                                      double* __restrict__ out,
                                       unsigned n, const double* init) {
+    double acc = *init;
     unsigned tid = threadIdx.x;
-    unsigned i = blockIdx.x * blockDim.x + tid;
-    double val = (i < n) ? in[i] : *init;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    unsigned n2 = n / 2;
+    const double2* in2 = (const double2*)in;
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n2; i += grid_stride) {
+        double2 v = in2[i];
+        acc = fmax(acc, fmax(v.x, v.y));
+    }
+    for (unsigned i = n2 * 2 + blockIdx.x * blockDim.x + tid; i < n; i += grid_stride)
+        acc = fmax(acc, in[i]);
 
-    val = warp_reduce_max_f64(val);
+    acc = warp_reduce_max_f64(acc);
 
     __shared__ double sdata[32];
-    if (tid % 32 == 0) sdata[tid / 32] = val;
+    if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
 
     if (tid < 32) {
-        val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
-        val = warp_reduce_max_f64(val);
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
+        acc = warp_reduce_max_f64(acc);
     }
-    if (tid == 0) out[blockIdx.x] = val;
+    if (tid == 0) out[blockIdx.x] = acc;
 }
 
-extern "C" __global__ void k_min_f64(const double* in, double* out,
+extern "C" __global__ void k_min_f64(const double* __restrict__ in,
+                                      double* __restrict__ out,
                                       unsigned n, const double* init) {
+    double acc = *init;
     unsigned tid = threadIdx.x;
-    unsigned i = blockIdx.x * blockDim.x + tid;
-    double val = (i < n) ? in[i] : *init;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    unsigned n2 = n / 2;
+    const double2* in2 = (const double2*)in;
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n2; i += grid_stride) {
+        double2 v = in2[i];
+        acc = fmin(acc, fmin(v.x, v.y));
+    }
+    for (unsigned i = n2 * 2 + blockIdx.x * blockDim.x + tid; i < n; i += grid_stride)
+        acc = fmin(acc, in[i]);
 
-    val = warp_reduce_min_f64(val);
+    acc = warp_reduce_min_f64(acc);
 
     __shared__ double sdata[32];
-    if (tid % 32 == 0) sdata[tid / 32] = val;
+    if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
 
     if (tid < 32) {
-        val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
-        val = warp_reduce_min_f64(val);
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
+        acc = warp_reduce_min_f64(acc);
     }
-    if (tid == 0) out[blockIdx.x] = val;
+    if (tid == 0) out[blockIdx.x] = acc;
 }
 
 "#;

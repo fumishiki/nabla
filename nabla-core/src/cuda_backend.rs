@@ -834,85 +834,85 @@ pub(crate) fn cuda_matmul<T: Scalar>(
     cublas_gemm(ctx, out, a, b);
 }
 
-// Reductions — GPU-side kernels (warp-shuffle + atomicAdd/per-block)
+// Reductions — GPU-side two-pass kernels (grid-stride + vectorized + warp-shuffle)
 
-pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    let ctx = get_ctx();
-    let n = a.n();
-    if n == 0 { return T::zero(); }
-    let suffix = type_suffix::<T>();
-    let name = format!("k_sum_{suffix}");
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
-    // k_sum uses atomicAdd to a single output scalar (initialized to 0)
-    let out_buf = CuBuffer::alloc_zeros(&ctx.stream, core::mem::size_of::<T>())
-        .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
-    let n_u32 = n as u32;
-    let grid = grid_1d(n);
-    unsafe {
-        result::launch_kernel(
-            func, (grid, 1, 1), (BLOCK_SIZE, 1, 1), 0, ctx.stream.cu_stream(),
-            &mut [
-                &a.buf.ptr as *const CUdeviceptr as *mut c_void,
-                &out_buf.ptr as *const CUdeviceptr as *mut c_void,
-                &n_u32 as *const u32 as *mut c_void,
-            ],
-        ).unwrap_or_else(|e| panic!("CUDA launch {name}: {e}"));
-    }
-    // Read single scalar back
-    let mut result = [T::zero()];
-    out_buf.copy_to_host::<T>(&ctx.stream, &mut result)
-        .unwrap_or_else(|e| panic!("CUDA D2H: {e}"));
-    result[0]
-}
+use crate::kernels_cu::{REDUCE_BLOCK, REDUCE_GRID_CAP};
 
-pub(crate) fn cuda_max_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    cuda_reduce_extremum(a, "max")
-}
-pub(crate) fn cuda_min_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    cuda_reduce_extremum(a, "min")
-}
-
-fn cuda_reduce_extremum<T: Scalar>(a: &CudaStorage<T>, op: &str) -> T {
+/// Two-pass reduction: pass 1 reduces n elements to REDUCE_GRID_CAP partial results,
+/// pass 2 reduces those to a single scalar. Grid-stride loop + float4/double2 vectorized loads.
+fn cuda_reduce_two_pass<T: Scalar>(a: &CudaStorage<T>, kernel_name: &str, needs_init: bool) -> T {
     let ctx = get_ctx();
     let n = a.n();
     assert!(n > 0, "reduction on empty");
-    let suffix = type_suffix::<T>();
-    let name = format!("k_{op}_{suffix}");
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
-    // k_max/k_min write per-block results; need multi-pass until 1 element remains
-    // Init value = first element
-    let init_buf = CuBuffer::alloc_async(&ctx.stream, core::mem::size_of::<T>())
-        .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
-    unsafe {
-        let _ = result::memcpy_dtod_async(init_buf.ptr, a.buf.ptr, core::mem::size_of::<T>(), ctx.stream.cu_stream());
-    }
-    let mut in_ptr = a.buf.ptr;
-    let mut cur_n = n as u32;
-    let mut temp_bufs: Vec<CuBuffer> = Vec::new();
-    loop {
-        let grid = grid_1d(cur_n as usize);
-        let out_buf = CuBuffer::alloc_async(&ctx.stream, (grid as usize) * core::mem::size_of::<T>())
+
+    let func = get_kernel(ctx, kernel_name).unwrap_or_else(|e| panic!("{e}"));
+    let elem = core::mem::size_of::<T>();
+    let grid1 = (REDUCE_GRID_CAP).min(((n as u32) + REDUCE_BLOCK - 1) / REDUCE_BLOCK);
+
+    // Init buffer for max/min (first element value)
+    let init_buf = if needs_init {
+        let b = CuBuffer::alloc_async(&ctx.stream, elem)
             .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
-        unsafe {
-            result::launch_kernel(
-                func, (grid, 1, 1), (BLOCK_SIZE, 1, 1), 0, ctx.stream.cu_stream(),
-                &mut [
-                    &in_ptr as *const CUdeviceptr as *mut c_void,
-                    &out_buf.ptr as *const CUdeviceptr as *mut c_void,
-                    &cur_n as *const u32 as *mut c_void,
-                    &init_buf.ptr as *const CUdeviceptr as *mut c_void,
-                ],
-            ).unwrap_or_else(|e| panic!("CUDA launch {name}: {e}"));
+        unsafe { let _ = result::memcpy_dtod_async(b.ptr, a.buf.ptr, elem, ctx.stream.cu_stream()); }
+        Some(b)
+    } else { None };
+
+    // Pass 1: n → grid1 partial results
+    let partial_buf = CuBuffer::alloc_zeros(&ctx.stream, (grid1 as usize) * elem)
+        .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
+    let n_u32 = n as u32;
+    unsafe {
+        let mut args: Vec<*mut c_void> = vec![
+            &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+            &partial_buf.ptr as *const CUdeviceptr as *mut c_void,
+            &n_u32 as *const u32 as *mut c_void,
+        ];
+        if let Some(ref ib) = init_buf {
+            args.push(&ib.ptr as *const CUdeviceptr as *mut c_void);
         }
-        in_ptr = out_buf.ptr;
-        temp_bufs.push(out_buf);
-        if grid == 1 { break; }
-        cur_n = grid;
+        result::launch_kernel(
+            func, (grid1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
+            &mut args,
+        ).unwrap_or_else(|e| panic!("CUDA launch {kernel_name} pass1: {e}"));
     }
-    let mut result = [T::zero()];
-    temp_bufs.last().unwrap().copy_to_host::<T>(&ctx.stream, &mut result)
+
+    // Pass 2: grid1 → 1
+    let final_buf = CuBuffer::alloc_zeros(&ctx.stream, elem)
+        .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
+    let grid1_u32 = grid1;
+    unsafe {
+        let mut args: Vec<*mut c_void> = vec![
+            &partial_buf.ptr as *const CUdeviceptr as *mut c_void,
+            &final_buf.ptr as *const CUdeviceptr as *mut c_void,
+            &grid1_u32 as *const u32 as *mut c_void,
+        ];
+        if let Some(ref ib) = init_buf {
+            args.push(&ib.ptr as *const CUdeviceptr as *mut c_void);
+        }
+        result::launch_kernel(
+            func, (1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
+            &mut args,
+        ).unwrap_or_else(|e| panic!("CUDA launch {kernel_name} pass2: {e}"));
+    }
+
+    let mut out = [T::zero()];
+    final_buf.copy_to_host::<T>(&ctx.stream, &mut out)
         .unwrap_or_else(|e| panic!("CUDA D2H: {e}"));
-    result[0]
+    out[0]
+}
+
+pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
+    if a.n() == 0 { return T::zero(); }
+    let name = format!("k_sum_{}", type_suffix::<T>());
+    cuda_reduce_two_pass(a, &name, false)
+}
+pub(crate) fn cuda_max_all<T: Scalar>(a: &CudaStorage<T>) -> T {
+    let name = format!("k_max_{}", type_suffix::<T>());
+    cuda_reduce_two_pass(a, &name, true)
+}
+pub(crate) fn cuda_min_all<T: Scalar>(a: &CudaStorage<T>) -> T {
+    let name = format!("k_min_{}", type_suffix::<T>());
+    cuda_reduce_two_pass(a, &name, true)
 }
 pub(crate) fn cuda_argmax_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmax_all(a) }
 pub(crate) fn cuda_argmin_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmin_all(a) }

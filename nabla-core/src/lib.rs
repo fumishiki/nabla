@@ -48,13 +48,16 @@ pub mod gpu;
 pub(crate) mod kernels_cu;
 
 #[cfg(any(feature = "cuda", feature = "hip"))]
-pub(crate) mod gpu_common;
+pub mod gpu_common;
 
 #[cfg(feature = "cuda")]
-pub(crate) mod cuda_backend;
+pub mod cuda_backend;
 
 #[cfg(feature = "cuda")]
-pub use cuda_backend::{NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached};
+pub use cuda_backend::{NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached, CuBuffer};
+
+#[cfg(any(feature = "cuda", feature = "hip"))]
+pub use gpu_common::RtcStorage;
 
 #[cfg(feature = "hip")]
 pub(crate) mod hip_backend;
