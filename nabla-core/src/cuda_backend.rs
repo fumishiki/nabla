@@ -856,26 +856,27 @@ pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
     let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let elem = core::mem::size_of::<T>();
     let grid1 = REDUCE_GRID_CAP.min(((n as u32) + REDUCE_BLOCK - 1) / REDUCE_BLOCK);
-    let out_ptr = ctx.reduce_scratch;
+    let scratch = ctx.reduce_scratch;
 
-    // Zero the single output scalar
-    unsafe { let _ = result::memset_d8_async(out_ptr, 0, elem, ctx.stream.cu_stream()); }
+    // Zero the counter at partial[gridDim.x] (4 bytes for unsigned int)
+    let counter_offset = (grid1 as usize) * elem;
+    unsafe { let _ = result::memset_d8_async(scratch + counter_offset as u64, 0, 4, ctx.stream.cu_stream()); }
 
-    // Single-pass: all blocks atomicAdd to out_ptr[0]
+    // Single kernel: all blocks write partials, last block aggregates to partial[0]
     let n_u32 = n as u32;
     unsafe {
         result::launch_kernel(
             func, (grid1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
             &mut [
                 &a.buf.ptr as *const CUdeviceptr as *mut c_void,
-                &out_ptr as *const CUdeviceptr as *mut c_void,
+                &scratch as *const CUdeviceptr as *mut c_void,
                 &n_u32 as *const u32 as *mut c_void,
             ],
         ).unwrap_or_else(|e| panic!("CUDA launch {name}: {e}"));
     }
 
     let mut out = [T::zero()];
-    unsafe { result::memcpy_dtoh_sync(&mut out, out_ptr).unwrap_or_else(|e| panic!("CUDA D2H: {e}")); }
+    unsafe { result::memcpy_dtoh_sync(&mut out, scratch).unwrap_or_else(|e| panic!("CUDA D2H: {e}")); }
     out[0]
 }
 
@@ -896,11 +897,16 @@ fn cuda_reduce_minmax<T: Scalar>(a: &CudaStorage<T>, op: &str) -> T {
     let grid1 = REDUCE_GRID_CAP.min(((n as u32) + REDUCE_BLOCK - 1) / REDUCE_BLOCK);
     let scratch = ctx.reduce_scratch;
 
-    // Use end of scratch as init value (copy first element)
-    let init_ptr = scratch + (REDUCE_GRID_CAP as u64) * 8;
+    // Init value at scratch end (copy first element of input)
+    let init_offset = (REDUCE_GRID_CAP as usize) * 8;
+    let init_ptr = scratch + init_offset as u64;
     unsafe { let _ = result::memcpy_dtod_async(init_ptr, a.buf.ptr, elem, ctx.stream.cu_stream()); }
 
-    // Pass 1: n → grid1
+    // Zero the counter at partial[gridDim.x] (4 bytes)
+    let counter_offset = (grid1 as usize) * elem;
+    unsafe { let _ = result::memset_d8_async(scratch + counter_offset as u64, 0, 4, ctx.stream.cu_stream()); }
+
+    // Single kernel: all blocks write partials + last block aggregates to partial[0]
     let n_u32 = n as u32;
     unsafe {
         result::launch_kernel(
@@ -911,27 +917,11 @@ fn cuda_reduce_minmax<T: Scalar>(a: &CudaStorage<T>, op: &str) -> T {
                 &n_u32 as *const u32 as *mut c_void,
                 &init_ptr as *const CUdeviceptr as *mut c_void,
             ],
-        ).unwrap_or_else(|e| panic!("CUDA launch {name} pass1: {e}"));
-    }
-
-    // Pass 2: grid1 → 1 (write final to init_ptr, reusing that slot)
-    let final_ptr = init_ptr + elem as u64;
-    // Copy init from scratch[0] for pass 2
-    unsafe { let _ = result::memcpy_dtod_async(final_ptr, scratch, elem, ctx.stream.cu_stream()); }
-    unsafe {
-        result::launch_kernel(
-            func, (1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
-            &mut [
-                &scratch as *const CUdeviceptr as *mut c_void,
-                &init_ptr as *const CUdeviceptr as *mut c_void,
-                &grid1 as *const u32 as *mut c_void,
-                &final_ptr as *const CUdeviceptr as *mut c_void,
-            ],
-        ).unwrap_or_else(|e| panic!("CUDA launch {name} pass2: {e}"));
+        ).unwrap_or_else(|e| panic!("CUDA launch {name}: {e}"));
     }
 
     let mut out = [T::zero()];
-    unsafe { result::memcpy_dtoh_sync(&mut out, init_ptr).unwrap_or_else(|e| panic!("CUDA D2H: {e}")); }
+    unsafe { result::memcpy_dtoh_sync(&mut out, scratch).unwrap_or_else(|e| panic!("CUDA D2H: {e}")); }
     out[0]
 }
 pub(crate) fn cuda_argmax_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmax_all(a) }

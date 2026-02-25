@@ -191,9 +191,10 @@ __device__ float warp_reduce_min_f32(float val) {
 
 // ── Reduction f32 (grid-stride + vectorized float4) ──────────────────────
 
-// Single-pass sum: grid-stride + float4 + atomicAdd (256 blocks → low contention)
+// Single-kernel sum: grid-stride + float4 + last-block final reduction
 extern "C" __global__ void k_sum_f32(const float* __restrict__ in,
-                                      float* __restrict__ out, unsigned n) {
+                                      float* __restrict__ partial,
+                                      unsigned n) {
     float acc = 0.0f;
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
@@ -211,17 +212,39 @@ extern "C" __global__ void k_sum_f32(const float* __restrict__ in,
     __shared__ float sdata[32];
     if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
-
     if (tid < 32) {
         acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0f;
         acc = warp_reduce_sum_f32(acc);
     }
-    if (tid == 0) atomicAdd(&out[0], acc);
+    if (tid == 0) partial[blockIdx.x] = acc;
+
+    // Last-block aggregation: use counter at partial[gridDim.x] (cast to uint)
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        unsigned ticket = atomicInc(counter, gridDim.x);
+        is_last = (ticket == gridDim.x - 1);
+    }
+    __syncthreads();
+    if (is_last) {
+        float val = (tid < gridDim.x) ? partial[tid] : 0.0f;
+        val = warp_reduce_sum_f32(val);
+        if (blockDim.x > 32) {
+            if (tid % 32 == 0) sdata[tid / 32] = val;
+            __syncthreads();
+            if (tid < 32) {
+                val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0f;
+                val = warp_reduce_sum_f32(val);
+            }
+        }
+        if (tid == 0) partial[0] = val;
+    }
 }
 
-// Two-pass max/min: grid-stride + float4, per-block output
+// Single-kernel max: grid-stride + float4 + last-block aggregation
 extern "C" __global__ void k_max_f32(const float* __restrict__ in,
-                                      float* __restrict__ out,
+                                      float* __restrict__ partial,
                                       unsigned n, const float* init) {
     float acc = *init;
     unsigned tid = threadIdx.x;
@@ -236,20 +259,40 @@ extern "C" __global__ void k_max_f32(const float* __restrict__ in,
         acc = fmaxf(acc, in[i]);
 
     acc = warp_reduce_max_f32(acc);
-
     __shared__ float sdata[32];
     if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
-
     if (tid < 32) {
         acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
         acc = warp_reduce_max_f32(acc);
     }
-    if (tid == 0) out[blockIdx.x] = acc;
+    if (tid == 0) partial[blockIdx.x] = acc;
+
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        unsigned ticket = atomicInc(counter, gridDim.x);
+        is_last = (ticket == gridDim.x - 1);
+    }
+    __syncthreads();
+    if (is_last) {
+        float val = (tid < gridDim.x) ? partial[tid] : *init;
+        val = warp_reduce_max_f32(val);
+        if (blockDim.x > 32) {
+            if (tid % 32 == 0) sdata[tid / 32] = val;
+            __syncthreads();
+            if (tid < 32) {
+                val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
+                val = warp_reduce_max_f32(val);
+            }
+        }
+        if (tid == 0) partial[0] = val;
+    }
 }
 
 extern "C" __global__ void k_min_f32(const float* __restrict__ in,
-                                      float* __restrict__ out,
+                                      float* __restrict__ partial,
                                       unsigned n, const float* init) {
     float acc = *init;
     unsigned tid = threadIdx.x;
@@ -264,16 +307,36 @@ extern "C" __global__ void k_min_f32(const float* __restrict__ in,
         acc = fminf(acc, in[i]);
 
     acc = warp_reduce_min_f32(acc);
-
     __shared__ float sdata[32];
     if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
-
     if (tid < 32) {
         acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
         acc = warp_reduce_min_f32(acc);
     }
-    if (tid == 0) out[blockIdx.x] = acc;
+    if (tid == 0) partial[blockIdx.x] = acc;
+
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        unsigned ticket = atomicInc(counter, gridDim.x);
+        is_last = (ticket == gridDim.x - 1);
+    }
+    __syncthreads();
+    if (is_last) {
+        float val = (tid < gridDim.x) ? partial[tid] : *init;
+        val = warp_reduce_min_f32(val);
+        if (blockDim.x > 32) {
+            if (tid % 32 == 0) sdata[tid / 32] = val;
+            __syncthreads();
+            if (tid < 32) {
+                val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
+                val = warp_reduce_min_f32(val);
+            }
+        }
+        if (tid == 0) partial[0] = val;
+    }
 }
 
 // ── Unary f64 ──────────────────────────────────────────────────────────────
@@ -366,9 +429,9 @@ __device__ double warp_reduce_min_f64(double val) {
 
 // ── Reduction f64 (grid-stride + vectorized double2) ─────────────────────
 
-// Single-pass sum with atomicAdd
+// Single-kernel sum with last-block aggregation
 extern "C" __global__ void k_sum_f64(const double* __restrict__ in,
-                                      double* __restrict__ out, unsigned n) {
+                                      double* __restrict__ partial, unsigned n) {
     double acc = 0.0;
     unsigned tid = threadIdx.x;
     unsigned grid_stride = blockDim.x * gridDim.x;
@@ -386,17 +449,38 @@ extern "C" __global__ void k_sum_f64(const double* __restrict__ in,
     __shared__ double sdata[32];
     if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
-
     if (tid < 32) {
         acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0;
         acc = warp_reduce_sum_f64(acc);
     }
-    if (tid == 0) atomicAdd(&out[0], acc);
+    if (tid == 0) partial[blockIdx.x] = acc;
+
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        unsigned ticket = atomicInc(counter, gridDim.x);
+        is_last = (ticket == gridDim.x - 1);
+    }
+    __syncthreads();
+    if (is_last) {
+        double val = (tid < gridDim.x) ? partial[tid] : 0.0;
+        val = warp_reduce_sum_f64(val);
+        if (blockDim.x > 32) {
+            if (tid % 32 == 0) sdata[tid / 32] = val;
+            __syncthreads();
+            if (tid < 32) {
+                val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0;
+                val = warp_reduce_sum_f64(val);
+            }
+        }
+        if (tid == 0) partial[0] = val;
+    }
 }
 
-// Two-pass max/min
+// Single-kernel max with last-block aggregation
 extern "C" __global__ void k_max_f64(const double* __restrict__ in,
-                                      double* __restrict__ out,
+                                      double* __restrict__ partial,
                                       unsigned n, const double* init) {
     double acc = *init;
     unsigned tid = threadIdx.x;
@@ -411,20 +495,40 @@ extern "C" __global__ void k_max_f64(const double* __restrict__ in,
         acc = fmax(acc, in[i]);
 
     acc = warp_reduce_max_f64(acc);
-
     __shared__ double sdata[32];
     if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
-
     if (tid < 32) {
         acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
         acc = warp_reduce_max_f64(acc);
     }
-    if (tid == 0) out[blockIdx.x] = acc;
+    if (tid == 0) partial[blockIdx.x] = acc;
+
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        unsigned ticket = atomicInc(counter, gridDim.x);
+        is_last = (ticket == gridDim.x - 1);
+    }
+    __syncthreads();
+    if (is_last) {
+        double val = (tid < gridDim.x) ? partial[tid] : *init;
+        val = warp_reduce_max_f64(val);
+        if (blockDim.x > 32) {
+            if (tid % 32 == 0) sdata[tid / 32] = val;
+            __syncthreads();
+            if (tid < 32) {
+                val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
+                val = warp_reduce_max_f64(val);
+            }
+        }
+        if (tid == 0) partial[0] = val;
+    }
 }
 
 extern "C" __global__ void k_min_f64(const double* __restrict__ in,
-                                      double* __restrict__ out,
+                                      double* __restrict__ partial,
                                       unsigned n, const double* init) {
     double acc = *init;
     unsigned tid = threadIdx.x;
@@ -439,16 +543,36 @@ extern "C" __global__ void k_min_f64(const double* __restrict__ in,
         acc = fmin(acc, in[i]);
 
     acc = warp_reduce_min_f64(acc);
-
     __shared__ double sdata[32];
     if (tid % 32 == 0) sdata[tid / 32] = acc;
     __syncthreads();
-
     if (tid < 32) {
         acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
         acc = warp_reduce_min_f64(acc);
     }
-    if (tid == 0) out[blockIdx.x] = acc;
+    if (tid == 0) partial[blockIdx.x] = acc;
+
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        unsigned ticket = atomicInc(counter, gridDim.x);
+        is_last = (ticket == gridDim.x - 1);
+    }
+    __syncthreads();
+    if (is_last) {
+        double val = (tid < gridDim.x) ? partial[tid] : *init;
+        val = warp_reduce_min_f64(val);
+        if (blockDim.x > 32) {
+            if (tid % 32 == 0) sdata[tid / 32] = val;
+            __syncthreads();
+            if (tid < 32) {
+                val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : *init;
+                val = warp_reduce_min_f64(val);
+            }
+        }
+        if (tid == 0) partial[0] = val;
+    }
 }
 
 "#;
