@@ -708,71 +708,31 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Element-wise SiLU (Swish): `x * sigmoid(x)`.
     #[must_use]
     pub fn silu(&self) -> Self {
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| {
-            let x = self.get(r, c);
-            x * (T::one() / (T::one() + (T::zero() - x).math_exp()))
-        })
+        Self::from_storage(B::silu(&self.storage))
     }
 
     /// Element-wise Mish: `x * tanh(softplus(x))` where softplus(x) = ln(1 + exp(x)).
     #[must_use]
     pub fn mish(&self) -> Self {
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| {
-            let x = self.get(r, c);
-            x * (T::one() + x.math_exp()).math_ln().math_tanh()
-        })
+        Self::from_storage(B::mish(&self.storage))
     }
 
     /// Element-wise Leaky ReLU: `max(alpha * x, x)`.
     #[must_use]
     pub fn leaky_relu(&self, alpha: T) -> Self {
-        let two = two::<T>();
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| {
-            let x = self.get(r, c);
-            let ax = alpha * x;
-            // max(ax, x) = (ax + x + |ax - x|) / 2
-            (ax + x + (ax - x).math_abs()) / two
-        })
+        Self::from_storage(B::leaky_relu(&self.storage, alpha))
     }
 
     /// Element-wise ELU: `x if x > 0, alpha * (exp(x) - 1) otherwise`.
     #[must_use]
     pub fn elu(&self, alpha: T) -> Self {
-        let two = two::<T>();
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| {
-            let x = self.get(r, c);
-            let neg_part = alpha * (x.math_exp() - T::one());
-            // Blend using sign: sign_pos ∈ {0, 1}
-            let abs_x = x.math_abs();
-            let eps = T::from_f64(1e-30);
-            let abs_safe = (abs_x + eps + (abs_x - eps).math_abs()) / two;
-            let sign_pos = (x + abs_x) / (two * abs_safe);
-            let one = T::one();
-            let sp = (sign_pos + one - (sign_pos - one).math_abs()) / two;
-            let sp = (sp + sp.math_abs()) / two;
-            sp * x + (one - sp) * neg_part
-        })
+        Self::from_storage(B::elu(&self.storage, alpha))
     }
 
     /// Element-wise HardSwish: `x * relu6(x + 3) / 6`.
     #[must_use]
     pub fn hardswish(&self) -> Self {
-        let two = two::<T>();
-        let three = T::from_f64(3.0);
-        let six = T::from_f64(6.0);
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| {
-            let x = self.get(r, c);
-            let xp3 = x + three;
-            // relu6(xp3) = min(max(xp3, 0), 6)
-            let clamped_lo = (xp3 + xp3.math_abs()) / two; // max(xp3, 0)
-            let clamped = (clamped_lo + six - (clamped_lo - six).math_abs()) / two; // min(_, 6)
-            x * clamped / six
-        })
+        Self::from_storage(B::hardswish(&self.storage))
     }
 
     /// Softmax along given axis (0=columns, 1=rows).
@@ -781,21 +741,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn softmax(&self, axis: usize) -> Self {
         match axis {
-            1 => {
-                let (m, n) = self.shape();
-                Self::from_fn(m, n, |r, c| {
-                    let row_max = (0..n).fold(self.get(r, 0), |acc, j| {
-                        let v = self.get(r, j);
-                        // max via (a + b + |a - b|) / 2
-                        let two = two::<T>();
-                        (acc + v + (acc - v).math_abs()) / two
-                    });
-                    let exp_sum = (0..n).fold(T::zero(), |acc, j| {
-                        acc + (self.get(r, j) - row_max).math_exp()
-                    });
-                    (self.get(r, c) - row_max).math_exp() / exp_sum
-                })
-            }
+            1 => Self::from_storage(B::softmax(&self.storage)),
             0 => self.t().softmax(1).t(),
             _ => panic!("nabla: softmax axis must be 0 or 1, got {axis}"),
         }
@@ -2259,16 +2205,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Output: (N * seq_len, embed_dim).
     #[must_use]
     pub fn embedding(indices: &Self, weight: &Self) -> Self {
-        let total = indices.nrows() * indices.ncols();
-        let dim = weight.ncols();
-        Self::from_fn(total, dim, |r, c| {
-            let idx = if indices.ncols() > 1 {
-                indices.get(r / indices.ncols(), r % indices.ncols())
-            } else {
-                indices.get(r, 0)
-            };
-            weight.get(idx.to_f64() as usize, c)
-        })
+        Self::from_storage(B::embedding(&indices.storage, &weight.storage))
     }
 
     /// Scaled dot-product attention: `softmax(Q @ K^T / sqrt(d_k)) @ V`.

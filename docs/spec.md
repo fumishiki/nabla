@@ -1527,10 +1527,10 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 
 | Op | 数式 | 現状 | AD backward |
 |---|---|---|---|
-| `layer_norm(x, shape, weight, bias, eps)` | $\frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} \cdot \gamma + \beta$ | ✅ CPU | 🔲 GPU kernel |
-| `rms_norm(x, weight, eps)` | $\frac{x}{\text{RMS}(x)} \cdot \gamma$ | ✅ CPU | 🔲 GPU kernel |
+| `layer_norm(x, shape, weight, bias, eps)` | $\frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} \cdot \gamma + \beta$ | ✅ CPU | ✅ GPU kernel |
+| `rms_norm(x, weight, eps)` | $\frac{x}{\text{RMS}(x)} \cdot \gamma$ | ✅ CPU | ✅ GPU kernel |
 | `batch_norm(x, mean, var, weight, bias, training, momentum, eps)` | Running mean/var + affine | ✅ CPU | 🔲 GPU kernel (running stats) |
-| `group_norm(x, num_groups, weight, bias, eps)` | Group-wise layer norm | ✅ CPU | 🔲 GPU kernel |
+| `group_norm(x, num_groups, weight, bias, eps)` | Group-wise layer norm | ✅ CPU | ✅ GPU kernel |
 
 **実装方針**: layer_norm/rms_norm は fused kernel (mean+var+normalize を1カーネルで)。batch_norm は training/eval モードで異なるパス。
 
@@ -1541,8 +1541,8 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 | `relu(x)` | $\max(0, x)$ | ✅ | ✅ `fuse!` |
 | `gelu(x)` | $x \cdot \Phi(x)$ | ✅ | ✅ `fuse!` |
 | `sigmoid(x)` | $\frac{1}{1+e^{-x}}$ | ✅ | ✅ `fuse!` |
-| `softmax(x, dim)` | $\frac{e^{x_i}}{\sum e^{x_j}}$ | ✅ CPU | 🔲 GPU (online softmax) |
-| `log_softmax(x, dim)` | $x_i - \log \sum e^{x_j}$ | ✅ CPU | 🔲 GPU |
+| `softmax(x, dim)` | $\frac{e^{x_i}}{\sum e^{x_j}}$ | ✅ CPU | ✅ GPU kernel |
+| `log_softmax(x, dim)` | $x_i - \log \sum e^{x_j}$ | ✅ CPU | ✅ GPU kernel |
 | `silu(x)` / swish | $x \cdot \sigma(x)$ | ✅ CPU | ✅ `fuse!` 可 |
 | `mish(x)` | $x \cdot \tanh(\text{softplus}(x))$ | ✅ CPU | ✅ `fuse!` 可 |
 | `leaky_relu(x, α)` | $\max(\alpha x, x)$ | ✅ CPU | ✅ `fuse!` 可 |
@@ -1631,10 +1631,10 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 | Op | 数式 | 現状 | GPU |
 |---|---|---|---|
 | `sum_all` / `max_all` / `min_all` | ✅ | ✅ | ✅ (quad-ILP, mapped host) |
-| `sum_axis(d)` / `mean_axis(d)` | ✅ | ✅ CPU | 🔲 GPU kernel |
-| `var_axis(d)` / `std_axis(d)` | ✅ | ✅ CPU | 🔲 GPU kernel |
-| `max_axis(d)` / `min_axis(d)` | ✅ | ✅ CPU | 🔲 GPU kernel |
-| `argmax_axis(d)` / `argmin_axis(d)` | ✅ | ✅ CPU | 🔲 GPU kernel |
+| `sum_axis(d)` / `mean_axis(d)` | ✅ | ✅ CPU | ✅ GPU kernel |
+| `var_axis(d)` / `std_axis(d)` | ✅ | ✅ CPU | ✅ GPU kernel |
+| `max_axis(d)` / `min_axis(d)` | ✅ | ✅ CPU | ✅ GPU kernel |
+| `argmax_axis(d)` / `argmin_axis(d)` | ✅ | ✅ CPU | ✅ GPU kernel |
 | `cumsum(x, dim)` | ✅ CPU | — | 🔲 GPU (parallel prefix sum) |
 | `cumprod(x, dim)` | ✅ CPU | — | 🔲 GPU (parallel prefix) |
 | `prod_all` | ✅ CPU | — | 🔲 GPU reduction |
@@ -1689,6 +1689,24 @@ nabla は計算エンジンとして、ユーザーが「この計算がない�
 **Phase 3 (GPU kernels — 既存CPU ops のGPU高速化):**
 
 GPU kernels for conv2d (im2col+GEMM), FlashAttention-2, online softmax, fused layer_norm/rms_norm, batched GEMM (cuBLAS StridedBatched), axis reductions, parallel prefix sum.
+
+**Phase 3 実装済 GPU kernels:**
+
+| Kernel | Type | Approach | Status |
+|---|---|---|---|
+| `k_silu_f32/f64` | Activation | float4 vectorized unary | ✅ |
+| `k_mish_f32/f64` | Activation | float4 vectorized unary | ✅ |
+| `k_leaky_relu_f32/f64` | Activation | float4 vectorized unary | ✅ |
+| `k_elu_f32/f64` | Activation | float4 vectorized unary | ✅ |
+| `k_hardswish_f32/f64` | Activation | float4 vectorized unary | ✅ |
+| `k_softmax_f32/f64` | Row-wise softmax | 3-pass (max, sum, normalize), warp shuffle | ✅ |
+| `k_layer_norm_f32/f64` | Fused normalization | Mean+var+normalize in single kernel | ✅ |
+| `k_rms_norm_f32/f64` | Fused normalization | RMS+normalize in single kernel | ✅ |
+| `k_sum_axis1_f32/f64` | Axis reduction | One block per row, warp shuffle | ✅ |
+| `k_max_axis1_f32/f64` | Axis reduction | One block per row, warp shuffle | ✅ |
+| `k_embedding_f32/f64` | Gather | One thread per output element | ✅ |
+
+Total: 62 CUDA/HIP kernels (up from 42).
 
 ### 14.2 Performance remaining
 

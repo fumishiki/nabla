@@ -95,6 +95,46 @@ UNARY_F32(floor, floorf,          floorf)
 UNARY_F32(round, roundf,          roundf)
 UNARY_F32(erf,   erf_approx_f32,  erf_approx_f32)
 
+// ── Activation device helpers ────────────────────────────────────────────
+
+__device__ float sigmoid_f32(float x) { return 1.0f / (1.0f + __expf(-x)); }
+__device__ double sigmoid_f64(double x) { return 1.0 / (1.0 + exp(-x)); }
+
+__device__ float silu_f32(float x) { return x * sigmoid_f32(x); }
+__device__ double silu_f64(double x) { return x * sigmoid_f64(x); }
+
+__device__ float mish_f32(float x) {
+    float sp = __logf(1.0f + __expf(x)); // softplus
+    return x * tanhf(sp);
+}
+__device__ double mish_f64(double x) {
+    double sp = log(1.0 + exp(x));
+    return x * tanh(sp);
+}
+
+__device__ float leaky_relu_f32(float x) { return (x >= 0.0f) ? x : 0.01f * x; }
+__device__ double leaky_relu_f64(double x) { return (x >= 0.0) ? x : 0.01 * x; }
+
+__device__ float elu_f32(float x) { return (x >= 0.0f) ? x : (__expf(x) - 1.0f); }
+__device__ double elu_f64(double x) { return (x >= 0.0) ? x : (exp(x) - 1.0); }
+
+__device__ float hardswish_f32(float x) {
+    float v = fminf(fmaxf(x + 3.0f, 0.0f), 6.0f);
+    return x * v * (1.0f / 6.0f);
+}
+__device__ double hardswish_f64(double x) {
+    double v = fmin(fmax(x + 3.0, 0.0), 6.0);
+    return x * v * (1.0 / 6.0);
+}
+
+// ── Activation kernels f32 (float4) ──────────────────────────────────────
+
+UNARY_F32(silu,       silu_f32,       silu_f32)
+UNARY_F32(mish,       mish_f32,       mish_f32)
+UNARY_F32(leaky_relu, leaky_relu_f32, leaky_relu_f32)
+UNARY_F32(elu,        elu_f32,        elu_f32)
+UNARY_F32(hardswish,  hardswish_f32,  hardswish_f32)
+
 // ── Binary f32 (float4) ─────────────────────────────────────────────────
 
 BINARY_F32(add,  +)
@@ -402,6 +442,14 @@ UNARY_F64(floor, floor)
 UNARY_F64(round, round)
 UNARY_F64(erf,   erf_approx_f64)
 
+// ── Activation kernels f64 ───────────────────────────────────────────────
+
+UNARY_F64(silu,       silu_f64)
+UNARY_F64(mish,       mish_f64)
+UNARY_F64(leaky_relu, leaky_relu_f64)
+UNARY_F64(elu,        elu_f64)
+UNARY_F64(hardswish,  hardswish_f64)
+
 // ── Binary f64 ─────────────────────────────────────────────────────────────
 
 BINARY_F64(add,  +)
@@ -638,9 +686,391 @@ extern "C" __global__ void k_min_f64(const double* __restrict__ in,
     }
 }
 
+// ── Online Softmax (row-wise, one block per row) f32 ─────────────────────
+
+extern "C" __global__ void k_softmax_f32(const float* __restrict__ in,
+                                          float* __restrict__ out,
+                                          unsigned rows, unsigned cols) {
+    unsigned row = blockIdx.x;
+    if (row >= rows) return;
+    const float* x = in + row * cols;
+    float* y = out + row * cols;
+    unsigned tid = threadIdx.x;
+
+    // Pass 1: find row max
+    float m = -__int_as_float(0x7f800000);
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        m = fmaxf(m, x[i]);
+    m = warp_reduce_max_f32(m);
+    __shared__ float smax[32];
+    if (tid % 32 == 0) smax[tid / 32] = m;
+    __syncthreads();
+    if (tid < 32) {
+        m = (tid < (blockDim.x + 31) / 32) ? smax[tid] : -__int_as_float(0x7f800000);
+        m = warp_reduce_max_f32(m);
+    }
+    __syncthreads();
+    if (tid == 0) smax[0] = m;
+    __syncthreads();
+    m = smax[0];
+
+    // Pass 2: sum of exp(x - max)
+    float s = 0.0f;
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        s += __expf(x[i] - m);
+    s = warp_reduce_sum_f32(s);
+    __shared__ float ssum[32];
+    if (tid % 32 == 0) ssum[tid / 32] = s;
+    __syncthreads();
+    if (tid < 32) {
+        s = (tid < (blockDim.x + 31) / 32) ? ssum[tid] : 0.0f;
+        s = warp_reduce_sum_f32(s);
+    }
+    __syncthreads();
+    if (tid == 0) ssum[0] = s;
+    __syncthreads();
+    s = ssum[0];
+
+    // Pass 3: write softmax output
+    float inv_s = 1.0f / s;
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        y[i] = __expf(x[i] - m) * inv_s;
+}
+
+extern "C" __global__ void k_softmax_f64(const double* __restrict__ in,
+                                          double* __restrict__ out,
+                                          unsigned rows, unsigned cols) {
+    unsigned row = blockIdx.x;
+    if (row >= rows) return;
+    const double* x = in + row * cols;
+    double* y = out + row * cols;
+    unsigned tid = threadIdx.x;
+
+    double m = __longlong_as_double(0xFFF0000000000000LL);
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        m = fmax(m, x[i]);
+    m = warp_reduce_max_f64(m);
+    __shared__ double smax[32];
+    if (tid % 32 == 0) smax[tid / 32] = m;
+    __syncthreads();
+    if (tid < 32) {
+        m = (tid < (blockDim.x + 31) / 32) ? smax[tid] : __longlong_as_double(0xFFF0000000000000LL);
+        m = warp_reduce_max_f64(m);
+    }
+    __syncthreads();
+    if (tid == 0) smax[0] = m;
+    __syncthreads();
+    m = smax[0];
+
+    double s = 0.0;
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        s += exp(x[i] - m);
+    s = warp_reduce_sum_f64(s);
+    __shared__ double ssum[32];
+    if (tid % 32 == 0) ssum[tid / 32] = s;
+    __syncthreads();
+    if (tid < 32) {
+        s = (tid < (blockDim.x + 31) / 32) ? ssum[tid] : 0.0;
+        s = warp_reduce_sum_f64(s);
+    }
+    __syncthreads();
+    if (tid == 0) ssum[0] = s;
+    __syncthreads();
+    s = ssum[0];
+
+    double inv_s = 1.0 / s;
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        y[i] = exp(x[i] - m) * inv_s;
+}
+
+// ── Fused Layer Norm (one block per row) f32 ─────────────────────────────
+// out[i] = (x[i] - mean) / sqrt(var + eps) * gamma[i] + beta[i]
+
+extern "C" __global__ void k_layer_norm_f32(
+    const float* __restrict__ in,
+    const float* __restrict__ gamma,
+    const float* __restrict__ beta,
+    float* __restrict__ out,
+    unsigned rows, unsigned cols, float eps) {
+    unsigned row = blockIdx.x;
+    if (row >= rows) return;
+    const float* x = in + row * cols;
+    float* y = out + row * cols;
+    unsigned tid = threadIdx.x;
+
+    // Mean
+    float sum = 0.0f;
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        sum += x[i];
+    sum = warp_reduce_sum_f32(sum);
+    __shared__ float sdata[32];
+    if (tid % 32 == 0) sdata[tid / 32] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        sum = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0f;
+        sum = warp_reduce_sum_f32(sum);
+    }
+    __syncthreads();
+    if (tid == 0) sdata[0] = sum;
+    __syncthreads();
+    float mean = sdata[0] / (float)cols;
+
+    // Variance
+    float var_sum = 0.0f;
+    for (unsigned i = tid; i < cols; i += blockDim.x) {
+        float d = x[i] - mean;
+        var_sum += d * d;
+    }
+    var_sum = warp_reduce_sum_f32(var_sum);
+    if (tid % 32 == 0) sdata[tid / 32] = var_sum;
+    __syncthreads();
+    if (tid < 32) {
+        var_sum = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0f;
+        var_sum = warp_reduce_sum_f32(var_sum);
+    }
+    __syncthreads();
+    if (tid == 0) sdata[0] = var_sum;
+    __syncthreads();
+    float inv_std = 1.0f / sqrtf(sdata[0] / (float)cols + eps);
+
+    // Normalize + affine
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        y[i] = (x[i] - mean) * inv_std * gamma[i] + beta[i];
+}
+
+extern "C" __global__ void k_layer_norm_f64(
+    const double* __restrict__ in,
+    const double* __restrict__ gamma,
+    const double* __restrict__ beta,
+    double* __restrict__ out,
+    unsigned rows, unsigned cols, double eps) {
+    unsigned row = blockIdx.x;
+    if (row >= rows) return;
+    const double* x = in + row * cols;
+    double* y = out + row * cols;
+    unsigned tid = threadIdx.x;
+
+    double sum = 0.0;
+    for (unsigned i = tid; i < cols; i += blockDim.x) sum += x[i];
+    sum = warp_reduce_sum_f64(sum);
+    __shared__ double sdata[32];
+    if (tid % 32 == 0) sdata[tid / 32] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        sum = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0;
+        sum = warp_reduce_sum_f64(sum);
+    }
+    __syncthreads();
+    if (tid == 0) sdata[0] = sum;
+    __syncthreads();
+    double mean = sdata[0] / (double)cols;
+
+    double var_sum = 0.0;
+    for (unsigned i = tid; i < cols; i += blockDim.x) {
+        double d = x[i] - mean;
+        var_sum += d * d;
+    }
+    var_sum = warp_reduce_sum_f64(var_sum);
+    if (tid % 32 == 0) sdata[tid / 32] = var_sum;
+    __syncthreads();
+    if (tid < 32) {
+        var_sum = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0;
+        var_sum = warp_reduce_sum_f64(var_sum);
+    }
+    __syncthreads();
+    if (tid == 0) sdata[0] = var_sum;
+    __syncthreads();
+    double inv_std = 1.0 / sqrt(sdata[0] / (double)cols + eps);
+
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        y[i] = (x[i] - mean) * inv_std * gamma[i] + beta[i];
+}
+
+// ── Fused RMS Norm (one block per row) ──────────────────────────────────
+// out[i] = x[i] / sqrt(mean(x^2) + eps) * gamma[i]
+
+extern "C" __global__ void k_rms_norm_f32(
+    const float* __restrict__ in,
+    const float* __restrict__ gamma,
+    float* __restrict__ out,
+    unsigned rows, unsigned cols, float eps) {
+    unsigned row = blockIdx.x;
+    if (row >= rows) return;
+    const float* x = in + row * cols;
+    float* y = out + row * cols;
+    unsigned tid = threadIdx.x;
+
+    float sq_sum = 0.0f;
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        sq_sum += x[i] * x[i];
+    sq_sum = warp_reduce_sum_f32(sq_sum);
+    __shared__ float sdata[32];
+    if (tid % 32 == 0) sdata[tid / 32] = sq_sum;
+    __syncthreads();
+    if (tid < 32) {
+        sq_sum = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0f;
+        sq_sum = warp_reduce_sum_f32(sq_sum);
+    }
+    __syncthreads();
+    if (tid == 0) sdata[0] = sq_sum;
+    __syncthreads();
+    float inv_rms = 1.0f / sqrtf(sdata[0] / (float)cols + eps);
+
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        y[i] = x[i] * inv_rms * gamma[i];
+}
+
+extern "C" __global__ void k_rms_norm_f64(
+    const double* __restrict__ in,
+    const double* __restrict__ gamma,
+    double* __restrict__ out,
+    unsigned rows, unsigned cols, double eps) {
+    unsigned row = blockIdx.x;
+    if (row >= rows) return;
+    const double* x = in + row * cols;
+    double* y = out + row * cols;
+    unsigned tid = threadIdx.x;
+
+    double sq_sum = 0.0;
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        sq_sum += x[i] * x[i];
+    sq_sum = warp_reduce_sum_f64(sq_sum);
+    __shared__ double sdata[32];
+    if (tid % 32 == 0) sdata[tid / 32] = sq_sum;
+    __syncthreads();
+    if (tid < 32) {
+        sq_sum = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0;
+        sq_sum = warp_reduce_sum_f64(sq_sum);
+    }
+    __syncthreads();
+    if (tid == 0) sdata[0] = sq_sum;
+    __syncthreads();
+    double inv_rms = 1.0 / sqrt(sdata[0] / (double)cols + eps);
+
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        y[i] = x[i] * inv_rms * gamma[i];
+}
+
+// ── Axis reduction (sum along rows → column vector, or along cols → row) ──
+
+// Sum along axis=1 (cols): one block per row, output is (rows, 1)
+extern "C" __global__ void k_sum_axis1_f32(const float* __restrict__ in,
+                                            float* __restrict__ out,
+                                            unsigned rows, unsigned cols) {
+    unsigned row = blockIdx.x;
+    if (row >= rows) return;
+    unsigned tid = threadIdx.x;
+    float acc = 0.0f;
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        acc += in[row * cols + i];
+    acc = warp_reduce_sum_f32(acc);
+    __shared__ float sdata[32];
+    if (tid % 32 == 0) sdata[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0f;
+        acc = warp_reduce_sum_f32(acc);
+    }
+    if (tid == 0) out[row] = acc;
+}
+
+extern "C" __global__ void k_sum_axis1_f64(const double* __restrict__ in,
+                                            double* __restrict__ out,
+                                            unsigned rows, unsigned cols) {
+    unsigned row = blockIdx.x;
+    if (row >= rows) return;
+    unsigned tid = threadIdx.x;
+    double acc = 0.0;
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        acc += in[row * cols + i];
+    acc = warp_reduce_sum_f64(acc);
+    __shared__ double sdata[32];
+    if (tid % 32 == 0) sdata[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0;
+        acc = warp_reduce_sum_f64(acc);
+    }
+    if (tid == 0) out[row] = acc;
+}
+
+// Max along axis=1: one block per row, output is (rows, 1)
+extern "C" __global__ void k_max_axis1_f32(const float* __restrict__ in,
+                                            float* __restrict__ out,
+                                            unsigned rows, unsigned cols) {
+    unsigned row = blockIdx.x;
+    if (row >= rows) return;
+    unsigned tid = threadIdx.x;
+    float acc = -__int_as_float(0x7f800000);
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        acc = fmaxf(acc, in[row * cols + i]);
+    acc = warp_reduce_max_f32(acc);
+    __shared__ float sdata[32];
+    if (tid % 32 == 0) sdata[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : -__int_as_float(0x7f800000);
+        acc = warp_reduce_max_f32(acc);
+    }
+    if (tid == 0) out[row] = acc;
+}
+
+extern "C" __global__ void k_max_axis1_f64(const double* __restrict__ in,
+                                            double* __restrict__ out,
+                                            unsigned rows, unsigned cols) {
+    unsigned row = blockIdx.x;
+    if (row >= rows) return;
+    unsigned tid = threadIdx.x;
+    double acc = __longlong_as_double(0xFFF0000000000000LL);
+    for (unsigned i = tid; i < cols; i += blockDim.x)
+        acc = fmax(acc, in[row * cols + i]);
+    acc = warp_reduce_max_f64(acc);
+    __shared__ double sdata[32];
+    if (tid % 32 == 0) sdata[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : __longlong_as_double(0xFFF0000000000000LL);
+        acc = warp_reduce_max_f64(acc);
+    }
+    if (tid == 0) out[row] = acc;
+}
+
+// ── Embedding gather kernel ─────────────────────────────────────────────
+// indices: (batch, seq_len) as integer indices stored as float/double
+// weight: (vocab_size, embed_dim), output: (batch*seq_len, embed_dim)
+
+extern "C" __global__ void k_embedding_f32(
+    const float* __restrict__ indices,
+    const float* __restrict__ weight,
+    float* __restrict__ out,
+    unsigned n_tokens, unsigned embed_dim) {
+    unsigned tid = THREAD_ID;
+    unsigned total = n_tokens * embed_dim;
+    if (tid >= total) return;
+    unsigned tok = tid / embed_dim;
+    unsigned dim = tid % embed_dim;
+    unsigned idx = (unsigned)indices[tok];
+    out[tid] = weight[idx * embed_dim + dim];
+}
+
+extern "C" __global__ void k_embedding_f64(
+    const double* __restrict__ indices,
+    const double* __restrict__ weight,
+    double* __restrict__ out,
+    unsigned n_tokens, unsigned embed_dim) {
+    unsigned tid = THREAD_ID;
+    unsigned total = n_tokens * embed_dim;
+    if (tid >= total) return;
+    unsigned tok = tid / embed_dim;
+    unsigned dim = tid % embed_dim;
+    unsigned idx = (unsigned)indices[tok];
+    out[tid] = weight[idx * embed_dim + dim];
+}
+
 "#;
 
-// Total: 42 kernels (14 unary + 4 binary + 3 scalar + 1 transpose + 1 matmul + 3 reduction) x 2 types
+// Total: 62 kernels (19 unary + 4 binary + 3 scalar + 1 transpose + 1 matmul + 3 reduction) x 2 types
+//        + 2 softmax + 2 layer_norm + 2 rms_norm + 4 axis_reduce + 2 embedding
 
 // ── WMMA tensor-core matmul ─────────────────────────────────────────────────
 // Separate compilation unit — requires <mma.h> (CUDA) or rocWMMA (HIP).

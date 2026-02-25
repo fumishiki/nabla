@@ -270,6 +270,180 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     /// `(row, col)` of the element with the minimum value (or magnitude for complex types).
     fn argmin_all<T: Scalar>(a: &Self::Storage<T>) -> (usize, usize);
 
+    // --- Activation ops (GPU-accelerable) ---
+
+    /// SiLU activation: x * sigmoid(x)
+    fn silu<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T> {
+        let nrows = Self::nrows(a);
+        let ncols = Self::ncols(a);
+        Self::from_fn(nrows, ncols, |r, c| {
+            let x = Self::get(a, r, c);
+            let s = T::one() / (T::one() + (T::zero() - x).math_exp());
+            x * s
+        })
+    }
+
+    /// Mish activation: x * tanh(softplus(x))
+    fn mish<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T> {
+        let nrows = Self::nrows(a);
+        let ncols = Self::ncols(a);
+        Self::from_fn(nrows, ncols, |r, c| {
+            let x = Self::get(a, r, c);
+            let sp = (T::one() + x.math_exp()).math_ln();
+            x * sp.math_tanh()
+        })
+    }
+
+    /// Leaky ReLU: max(0, x) + negative_slope * min(0, x)
+    fn leaky_relu<T: Scalar>(a: &Self::Storage<T>, negative_slope: T) -> Self::Storage<T> {
+        let nrows = Self::nrows(a);
+        let ncols = Self::ncols(a);
+        Self::from_fn(nrows, ncols, |r, c| {
+            let x = Self::get(a, r, c);
+            let ax = x.math_abs();
+            let pos = (x + ax) * T::from_f64(0.5);
+            let neg = (x - ax) * T::from_f64(0.5);
+            pos + neg * negative_slope
+        })
+    }
+
+    /// ELU: x if x > 0, alpha*(exp(x)-1) otherwise
+    fn elu<T: Scalar>(a: &Self::Storage<T>, alpha: T) -> Self::Storage<T> {
+        let nrows = Self::nrows(a);
+        let ncols = Self::ncols(a);
+        Self::from_fn(nrows, ncols, |r, c| {
+            let x = Self::get(a, r, c);
+            let ax = x.math_abs();
+            let eps = T::from_f64(1e-30);
+            let denom = if ax.to_f64() > eps.to_f64() { ax } else { eps };
+            let sp = (x + ax) / (T::from_f64(2.0) * denom);
+            let sp = if sp.to_f64() > 1.0 { T::one() } else { sp };
+            sp * x + (T::one() - sp) * alpha * (x.math_exp() - T::one())
+        })
+    }
+
+    /// HardSwish: x * min(max(x+3, 0), 6) / 6
+    fn hardswish<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T> {
+        let nrows = Self::nrows(a);
+        let ncols = Self::ncols(a);
+        let three = T::from_f64(3.0);
+        let six = T::from_f64(6.0);
+        Self::from_fn(nrows, ncols, |r, c| {
+            let x = Self::get(a, r, c);
+            let v = x + three;
+            let v = if v.to_f64() < 0.0 { T::zero() } else if v.to_f64() > 6.0 { six } else { v };
+            x * v / six
+        })
+    }
+
+    // --- Softmax (GPU-accelerable) ---
+
+    /// Row-wise softmax. Input/output shape: (nrows, ncols).
+    fn softmax<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T> {
+        let nrows = Self::nrows(a);
+        let ncols = Self::ncols(a);
+        Self::from_fn(nrows, ncols, |r, c| {
+            let mut max = Self::get(a, r, 0);
+            for j in 1..ncols {
+                let v = Self::get(a, r, j);
+                if v.to_f64() > max.to_f64() { max = v; }
+            }
+            let mut sum = T::zero();
+            for j in 0..ncols {
+                sum = sum + (Self::get(a, r, j) - max).math_exp();
+            }
+            (Self::get(a, r, c) - max).math_exp() / sum
+        })
+    }
+
+    // --- Layer norm / RMS norm (GPU-accelerable) ---
+
+    /// Fused layer normalization: (x - mean) / sqrt(var + eps) * gamma + beta.
+    /// Input/gamma/beta shape: (nrows, ncols). One normalization per row.
+    fn layer_norm<T: Scalar>(
+        a: &Self::Storage<T>,
+        gamma: &Self::Storage<T>,
+        beta: &Self::Storage<T>,
+        eps: T,
+    ) -> Self::Storage<T> {
+        let nrows = Self::nrows(a);
+        let ncols = Self::ncols(a);
+        let ncols_f = T::from_f64(ncols as f64);
+        Self::from_fn(nrows, ncols, |r, c| {
+            let mut sum = T::zero();
+            for j in 0..ncols { sum = sum + Self::get(a, r, j); }
+            let mean = sum / ncols_f;
+            let mut var_sum = T::zero();
+            for j in 0..ncols {
+                let d = Self::get(a, r, j) - mean;
+                var_sum = var_sum + d * d;
+            }
+            let inv_std = T::one() / (var_sum / ncols_f + eps).math_sqrt();
+            (Self::get(a, r, c) - mean) * inv_std * Self::get(gamma, 0, c) + Self::get(beta, 0, c)
+        })
+    }
+
+    /// Fused RMS normalization: x / sqrt(mean(x^2) + eps) * gamma.
+    fn rms_norm<T: Scalar>(
+        a: &Self::Storage<T>,
+        gamma: &Self::Storage<T>,
+        eps: T,
+    ) -> Self::Storage<T> {
+        let nrows = Self::nrows(a);
+        let ncols = Self::ncols(a);
+        let ncols_f = T::from_f64(ncols as f64);
+        Self::from_fn(nrows, ncols, |r, c| {
+            let mut sq_sum = T::zero();
+            for j in 0..ncols {
+                let v = Self::get(a, r, j);
+                sq_sum = sq_sum + v * v;
+            }
+            let inv_rms = T::one() / (sq_sum / ncols_f + eps).math_sqrt();
+            Self::get(a, r, c) * inv_rms * Self::get(gamma, 0, c)
+        })
+    }
+
+    // --- Axis reductions (GPU-accelerable) ---
+
+    /// Sum along axis=1 (columns): (nrows, ncols) → (nrows, 1).
+    fn sum_axis1<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T> {
+        let nrows = Self::nrows(a);
+        let ncols = Self::ncols(a);
+        Self::from_fn(nrows, 1, |r, _c| {
+            let mut acc = T::zero();
+            for j in 0..ncols { acc = acc + Self::get(a, r, j); }
+            acc
+        })
+    }
+
+    /// Max along axis=1: (nrows, ncols) → (nrows, 1).
+    fn max_axis1<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T> {
+        let nrows = Self::nrows(a);
+        let ncols = Self::ncols(a);
+        Self::from_fn(nrows, 1, |r, _c| {
+            let mut acc = Self::get(a, r, 0);
+            for j in 1..ncols {
+                let v = Self::get(a, r, j);
+                if v.to_f64() > acc.to_f64() { acc = v; }
+            }
+            acc
+        })
+    }
+
+    /// Embedding gather: indices (n_tokens, 1) float-encoded, weight (vocab, embed_dim).
+    /// Output: (n_tokens, embed_dim).
+    fn embedding<T: Scalar>(
+        indices: &Self::Storage<T>,
+        weight: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
+        let n_tokens = Self::nrows(indices) * Self::ncols(indices);
+        let embed_dim = Self::ncols(weight);
+        Self::from_fn(n_tokens, embed_dim, |r, c| {
+            let idx = Self::get(indices, r / Self::ncols(indices), r % Self::ncols(indices)).to_f64() as usize;
+            Self::get(weight, idx, c)
+        })
+    }
+
     /// Launch a fused element-wise kernel.
     ///
     /// GPU backends JIT-compile `gpu_expr` (a CUDA/HIP C expression over
