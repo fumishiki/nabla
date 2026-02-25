@@ -12,39 +12,58 @@ Legend: ✅ Implemented | ❌ Not possible (language constraint)
 Proc macros (`mat![]`, `map!{}`, `einsum!{}`) combined with self-contained pure-Rust kernels (CPU) and GPU compute shaders across three backends: wgpu (WGSL), CUDA (nvrtc), HIP (hiprtc).
 Exactly one backend is selected via feature flags at build time — no implicit CPU fallback, no cross-backend runtime dispatch.
 
+### Position — computation engine, not framework
+
+nabla は **計算エンジン** であり、フレームワークではない。
+
+- **nabla の責務**: 数学的に不変な計算プリミティブを、極限まで高速に提供する。matmul, conv, softmax, cross_entropy — これらの *計算そのもの* は定義が固定されており、誰が書いても同じ数式になる。nabla はこの計算を CPU/GPU で最速に実行する。
+- **ユーザーの責務**: アーキテクチャ設計、モデル構成、学習ループ、最適化戦略。これらは問題ごとに異なり、nabla が決めるべきではない。
+
+ユーザーは nabla の計算プリミティブを自由に組み合わせて、任意のアーキテクチャを構築する。エッジケースが発生しても、プリミティブが十分に汎用的であれば、ユーザーは最小限の変更で高速計算を実現できる。
+
+> **Goal**: PyTorch の `torch.*` / `torch.nn.functional.*` が提供する計算プリミティブを、ピュア Rust + GPU カーネルで網羅する。ユーザーが「この計算は nabla にない」と思う場面をゼロにする。
+
 ### Fixed Rule Principle
 
-nabla's scope is limited to **mathematically invariant rules**. User-customizable domains are never provided.
+nabla's scope is limited to **mathematically invariant computations**. Architecture decisions are never provided.
 
-| Category | nabla provides (CPU/GPU) | User implements |
-|---|---|---|
-| Tensor ops | matmul, conv, exp, sin, reduction, etc. | — |
-| Tensor manipulation | reshape, permute, cat, pad, gather, scatter, etc. | — |
-| Activations | relu, gelu, silu, sigmoid, softmax, log_softmax, etc. | — |
-| Normalization | layer_norm, rms_norm, batch_norm, group_norm | — |
-| Loss functions | cross_entropy, mse, l1, huber, nll, kl_div, etc. | — |
-| Autodiff | reverse-mode AD (chain rule) | — |
-| CAS | diff, simplify, eval | — |
-| ODE | euler, rk4, dormand_prince (Butcher tableau) | — |
-| Optimizer | — | SGD, Adam, LAMB, schedule, etc. |
-| Model architecture | — | layers, forward pass, modules |
-| Training loop | — | epoch, batch, logging, checkpointing |
+| nabla provides (computation) | User decides (architecture) |
+|---|---|
+| matmul, conv2d, bmm, addmm | which layers to stack, skip connections |
+| exp, sin, cos, tanh, sqrt, log | custom activation compositions |
+| relu, gelu, silu, sigmoid, softmax | which activation to use where |
+| layer_norm, rms_norm, batch_norm | where to place normalization |
+| cross_entropy, mse, l1, kl_div | which loss function to optimize |
+| sum, max, mean, var along any axis | aggregation strategy |
+| reshape, permute, cat, pad, gather, scatter | data flow topology |
+| SDPA (FlashAttention-2), embedding | attention architecture design |
+| reverse-mode AD, forward-mode AD | what to differentiate |
+| ODE solvers (RK4, BDF, Parareal) | which solver fits the problem |
+| CAS (diff, simplify, eval) | symbolic model construction |
+| — | optimizer (SGD, Adam, LAMB, schedule) |
+| — | model architecture (layers, forward, modules) |
+| — | training loop (epoch, batch, logging, checkpoint) |
+| — | data loading, preprocessing pipeline |
 
-**Criterion**: "Will users need to customize this in the future?" → Yes: not provided. No (mathematically fixed): provided with CPU/GPU support.
+**Criterion**: "Is this a fixed mathematical computation, or an architecture decision?"
+- Fixed computation → nabla provides it, optimized for CPU and GPU.
+- Architecture decision → user implements it by composing nabla primitives.
 
-> **Scope expansion rationale**: Loss functions (cross-entropy, MSE, etc.) are mathematically fixed — the formula is $-\sum y \log p$ regardless of the model or task. The *choice* of which loss to use is user-decided, but each individual loss function's computation is invariant. Same for normalization layers (batch norm formula is fixed), convolutions (definition is fixed), and activations (ReLU = max(0,x) is fixed). nabla provides the *computation*; users choose *which* computation to compose.
+> **Why loss functions, normalizations, activations are nabla's job**: Cross-entropy is always $-\sum y_i \log p_i$. Layer norm is always $\frac{x-\mu}{\sqrt{\sigma^2+\epsilon}} \gamma + \beta$. The formula never changes — only the *choice* of which formula to use is the user's decision. nabla provides every formula; users choose which to compose.
 
 ### Design principles
 
-1. **Zero-GC, zero-copy** — ownership = automatic memory management without GC. `Drop` = deterministic deallocation. `&` = zero-copy borrow. `_into(out: &mut)` = zero-allocation in-place
-2. **Python's ease, C's speed** — PyTorch-familiar API (`loss.backward()`, `.exp()`, `.sum()`) with NumPy-like broadcasting (`map!`), delivered at native speed
-3. **Macros = notation layer** — proc macros for concise syntax, type-safe Rust underneath
-4. **trait = dispatch** — trait-based multiple dispatch (Python duck-typing composability without runtime cost)
-5. **Self-contained LA** — row-major CpuStorage, 9 dense factorizations, CSC sparse. Zero external LA deps
-6. **Build-time exclusive backend** — `cpu`/`wgpu`/`cuda`/`hip` feature flags, exactly one active. `compile_error!` on multi-select. No implicit CPU fallback
-7. **Two kernel codebases** — WGSL (wgpu) + CUDA/HIP shared C source. ❌CubeCL. Fixed-rule 32 ops → manageable dual maintenance
-8. **Fixed-rule principle** — only mathematically invariant rules. User-customizable domains excluded
-9. **Adjoint ≠ Transpose** — correct complex LA semantics
+1. **Computation engine, not framework** — nabla provides optimized computation primitives; users compose them into any architecture. No opinions on model structure, training loop, or optimizer
+2. **Zero-GC, zero-copy** — ownership = automatic memory management without GC. `Drop` = deterministic deallocation. `&` = zero-copy borrow. `_into(out: &mut)` = zero-allocation in-place
+3. **Python's ease, C's speed** — PyTorch-familiar API (`loss.backward()`, `.exp()`, `.sum()`) with NumPy-like broadcasting (`map!`), delivered at native speed
+4. **Macros = notation layer** — proc macros for concise syntax, type-safe Rust underneath
+5. **trait = dispatch** — trait-based multiple dispatch (Python duck-typing composability without runtime cost)
+6. **Self-contained LA** — row-major CpuStorage, 9 dense factorizations, CSC sparse. Zero external LA deps
+7. **Build-time exclusive backend** — `cpu`/`wgpu`/`cuda`/`hip` feature flags, exactly one active. `compile_error!` on multi-select. No implicit CPU fallback
+8. **Two kernel codebases** — WGSL (wgpu) + CUDA/HIP shared C source. ❌CubeCL. Fixed-rule ops → manageable dual maintenance
+9. **Fixed-rule principle** — only mathematically invariant computations. Architecture decisions excluded
+10. **Adjoint ≠ Transpose** — correct complex LA semantics
+11. **Maximum primitive coverage** — every computation a user might need is provided. Edge cases require minimal user-side extension, never reimplementation
 
 ---
 
@@ -1475,12 +1494,14 @@ let normed = &x / &x.sum_axis_keepdim(1);   // softmax denominator pattern
 
 ## 14. Roadmap
 
-### 14.1 PyTorch computational parity — 必須計算オペレーション
+### 14.1 PyTorch computational parity — 計算プリミティブの完全網羅
 
-PyTorchエコシステムの中で「計算」部分だけをピュアRustで高速化する。Fixed Rule Principleに基づき、数学的に不変な計算はすべてnablaが提供する。
+nabla は計算エンジンとして、ユーザーが「この計算がない」と思う場面をゼロにする。PyTorch の `torch.*` / `torch.nn.functional.*` が提供する数学的に固定された計算を、すべてピュア Rust + GPU カーネルで実装する。
+
+**目的**: 汎用性の極限。ユーザーは任意のアーキテクチャを nabla のプリミティブの組み合わせだけで構築できる。エッジケースでも、プリミティブの組み合わせか最小限の拡張で対応可能。
 
 **現状のカバレッジ**: ✅ 70+ ops (element-wise, matmul, reduction, activations, basic manipulation)
-**目標**: PyTorch `torch.*` / `torch.nn.functional.*` の必須計算を網羅
+**目標**: CNN / Transformer / GAN / Diffusion — あらゆるアーキテクチャに必要な計算プリミティブを網羅
 
 #### A. Convolution（畳み込み）— 🔴 必須・未実装
 

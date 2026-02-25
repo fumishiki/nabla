@@ -4,7 +4,9 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
-**Zero-GC, zero-copy linear algebra DSL for Rust** — proc-macro notation, four GPU backends (cpu / wgpu / cuda / hip), reverse-mode + forward-mode autodiff, symbolic CAS, ODE solvers. Zero external LA dependencies.
+**Zero-GC, zero-copy computation engine for Rust** — not a framework. nabla provides every mathematically fixed computation primitive (matmul, conv, softmax, cross_entropy, …) optimized for CPU/GPU. Users compose these primitives into any architecture they want. Edge cases need minimal extension, never reimplementation.
+
+Four backends (cpu / wgpu / cuda / hip), reverse-mode + forward-mode autodiff, symbolic CAS, ODE solvers. Zero external LA dependencies.
 
 ```rust
 use nabla::prelude::*;
