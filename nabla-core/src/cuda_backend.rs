@@ -321,6 +321,12 @@ struct SyncFn(CUfunction);
 unsafe impl Send for SyncFn {}
 unsafe impl Sync for SyncFn {}
 
+// Wrapper for pinned host pointer (thread-safe — single-writer access by design)
+#[derive(Clone, Copy)]
+struct SyncHostPtr(*mut u8);
+unsafe impl Send for SyncHostPtr {}
+unsafe impl Sync for SyncHostPtr {}
+
 // ── CudaCtx singleton ────────────────────────────────────────────────────────
 
 struct CudaCtx {
@@ -335,6 +341,8 @@ struct CudaCtx {
     graphs: Mutex<HashMap<String, Arc<NablaCudaGraph>>>,
     /// Pre-allocated scratch for reductions (REDUCE_GRID_CAP * 8 + 16 bytes).
     reduce_scratch: CUdeviceptr,
+    /// Pinned host memory for async D2H result readback (8 bytes for f64).
+    reduce_host_ptr: SyncHostPtr,
     /// Cached reduction kernel function pointers [sum_f32, max_f32, min_f32, sum_f64, max_f64, min_f64]
     reduce_funcs: [SyncFn; 6],
 }
@@ -398,6 +406,13 @@ fn get_ctx() -> &'static CudaCtx {
             result::malloc_async(stream.cu_stream(), reduce_scratch_size)
                 .expect("CUDA reduce scratch alloc failed")
         };
+        // Pinned host memory for async D2H result readback
+        let reduce_host_ptr = unsafe {
+            let mut ptr: *mut c_void = std::ptr::null_mut();
+            let r = cudarc::driver::sys::cuMemAllocHost_v2(&mut ptr, 8);
+            assert_eq!(r, cudarc::driver::sys::CUresult::CUDA_SUCCESS, "cuMemAllocHost failed");
+            ptr as *mut u8
+        };
         // Use a null placeholder for reduce_funcs; we'll fill them after compilation.
         let cuda_ctx = CudaCtx {
             stream,
@@ -408,6 +423,7 @@ fn get_ctx() -> &'static CudaCtx {
             blas: CublasHandle(blas_raw),
             graphs: Mutex::new(HashMap::new()),
             reduce_scratch,
+            reduce_host_ptr: SyncHostPtr(reduce_host_ptr),
             reduce_funcs: [SyncFn(std::ptr::null_mut()); 6],
         };
         // Pre-compile all kernels from the combined source
@@ -873,6 +889,16 @@ fn reduce_func_idx<T: Scalar>(base: usize) -> usize {
     if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() { base } else { base + 3 }
 }
 
+/// Read back a scalar from device to host using pinned memory + async copy.
+#[inline]
+unsafe fn reduce_readback<T: Scalar>(ctx: &CudaCtx, src: CUdeviceptr) -> T {
+    let host = ctx.reduce_host_ptr.0;
+    let elem = core::mem::size_of::<T>();
+    cudarc::driver::sys::cuMemcpyDtoHAsync_v2(host as *mut c_void, src, elem, ctx.stream.cu_stream());
+    cudarc::driver::sys::cuStreamSynchronize(ctx.stream.cu_stream());
+    core::ptr::read(host as *const T)
+}
+
 pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
     let ctx = get_ctx();
     let n = a.n();
@@ -893,9 +919,7 @@ pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
         ).unwrap_or_else(|e| panic!("CUDA launch reduce: {e}"));
     }
 
-    let mut out = [T::zero()];
-    unsafe { result::memcpy_dtoh_sync(&mut out, scratch).unwrap_or_else(|e| panic!("CUDA D2H: {e}")); }
-    out[0]
+    unsafe { reduce_readback::<T>(ctx, scratch) }
 }
 
 pub(crate) fn cuda_max_all<T: Scalar>(a: &CudaStorage<T>) -> T {
@@ -925,9 +949,7 @@ fn cuda_reduce_minmax<T: Scalar>(a: &CudaStorage<T>, func_base: usize) -> T {
         ).unwrap_or_else(|e| panic!("CUDA launch reduce: {e}"));
     }
 
-    let mut out = [T::zero()];
-    unsafe { result::memcpy_dtoh_sync(&mut out, scratch).unwrap_or_else(|e| panic!("CUDA D2H: {e}")); }
-    out[0]
+    unsafe { reduce_readback::<T>(ctx, scratch) }
 }
 pub(crate) fn cuda_argmax_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmax_all(a) }
 pub(crate) fn cuda_argmin_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmin_all(a) }
