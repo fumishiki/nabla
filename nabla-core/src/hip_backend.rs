@@ -159,6 +159,7 @@ impl HipBuffer {
     fn copy_to_host<T: Scalar>(&self, out: &mut [T]) -> HipResult<()> {
         let bytes = core::mem::size_of_val(out);
         if bytes > 0 {
+            // hipMemcpy D2H is synchronous — implicitly waits for all prior ops.
             // SAFETY: out is properly sized and T is POD.
             check(unsafe {
                 hip::hipMemcpy(
@@ -170,6 +171,22 @@ impl HipBuffer {
             })?;
         }
         Ok(())
+    }
+
+    /// Copy a single element at byte offset from device to host.
+    fn copy_element<T: Scalar>(&self, byte_offset: usize) -> HipResult<T> {
+        let mut val = T::zero();
+        // SAFETY: reading sizeof::<T> bytes from device at ptr+offset.
+        let src = unsafe { self.ptr.byte_add(byte_offset) };
+        check(unsafe {
+            hip::hipMemcpy(
+                (&mut val as *mut T).cast(),
+                src,
+                core::mem::size_of::<T>(),
+                hip::hipMemcpyKind::hipMemcpyDeviceToHost,
+            )
+        })?;
+        Ok(val)
     }
 }
 
@@ -438,7 +455,17 @@ pub(crate) fn hip_from_fn<T: Scalar>(
 }
 
 pub(crate) fn hip_get<T: Scalar>(s: &HipStorage<T>, r: usize, c: usize) -> T {
-    s.cached_get(r * s.ncols + c)
+    // Fast path: if host cache exists, read from it.
+    {
+        let guard = lock_or_recover(&s.host_cache);
+        if let Some(cache) = guard.as_ref() {
+            return cache[r * s.ncols + c];
+        }
+    }
+    // Slow path: single-element D2H (avoid copying entire tensor).
+    let byte_offset = (r * s.ncols + c) * core::mem::size_of::<T>();
+    s.buf.copy_element::<T>(byte_offset)
+        .unwrap_or_else(|e| panic!("HIP single-element readback: {e}"))
 }
 
 pub(crate) fn hip_set<T: Scalar>(s: &mut HipStorage<T>, r: usize, c: usize, v: T) {

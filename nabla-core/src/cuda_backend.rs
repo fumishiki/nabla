@@ -191,11 +191,26 @@ impl CuBuffer {
     fn copy_to_host<T: Scalar>(&self, stream: &Arc<CudaStream>, out: &mut [T]) -> CudaResult<()> {
         let bytes = core::mem::size_of_val(out);
         if bytes > 0 {
-            stream.synchronize()?;
+            // memcpy_dtoh_sync is synchronous and waits for all prior stream ops.
             // SAFETY: out is properly sized and T is POD.
             unsafe { result::memcpy_dtoh_sync(out, self.ptr)? };
         }
         Ok(())
+    }
+
+    /// Copy a single element at byte offset from device to host.
+    fn copy_element<T: Scalar>(&self, stream: &Arc<CudaStream>, byte_offset: usize) -> CudaResult<T> {
+        let mut val = T::zero();
+        // Sync stream first so the GPU data is ready, then copy 1 element.
+        stream.synchronize()?;
+        // SAFETY: reading sizeof::<T> bytes from device at ptr+offset into &mut val.
+        unsafe {
+            result::memcpy_dtoh_sync(
+                core::slice::from_mut(&mut val),
+                self.ptr + byte_offset as u64,
+            )?;
+        }
+        Ok(val)
     }
 }
 
@@ -534,7 +549,18 @@ pub(crate) fn cuda_from_fn<T: Scalar>(
 }
 
 pub(crate) fn cuda_get<T: Scalar>(s: &CudaStorage<T>, r: usize, c: usize) -> T {
-    s.cached_get(r * s.ncols + c)
+    // Fast path: if host cache exists, read from it.
+    {
+        let guard = lock_or_recover(&s.host_cache);
+        if let Some(cache) = guard.as_ref() {
+            return cache[r * s.ncols + c];
+        }
+    }
+    // Slow path: single-element D2H (avoid copying entire tensor).
+    let ctx = get_ctx();
+    let byte_offset = (r * s.ncols + c) * core::mem::size_of::<T>();
+    s.buf.copy_element::<T>(&ctx.stream, byte_offset)
+        .unwrap_or_else(|e| panic!("CUDA single-element readback: {e}"))
 }
 
 pub(crate) fn cuda_set<T: Scalar>(s: &mut CudaStorage<T>, r: usize, c: usize, v: T) {
