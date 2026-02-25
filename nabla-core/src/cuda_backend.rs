@@ -62,12 +62,6 @@ type CudaResult<T> = Result<T, CudaError>;
 
 type CudaPool = MemoryPool<CUdeviceptr>;
 
-impl Drop for CudaPool {
-    fn drop(&mut self) {
-        self.drain_all(|ptr, _| unsafe { let _ = result::free_sync(ptr); });
-    }
-}
-
 pub struct CuBuffer {
     pub(crate) ptr: CUdeviceptr,
     size: usize,       // requested size
@@ -298,7 +292,7 @@ struct CudaCtx {
     /// Separate stream for H2D/D2H transfers (multi-stream pipeline).
     copy_stream: Arc<CudaStream>,
     kernels: Mutex<HashMap<String, KernelEntry>>,
-    pool: Mutex<MemoryPool>,
+    pool: Mutex<CudaPool>,
     has_wmma: bool,
     blas: CublasHandle,
     /// Cached CUDA graphs keyed by user-provided name for deduplication.
@@ -362,7 +356,7 @@ fn get_ctx() -> &'static CudaCtx {
             stream,
             copy_stream,
             kernels: Mutex::new(HashMap::new()),
-            pool: Mutex::new(MemoryPool::new()),
+            pool: Mutex::new(CudaPool::new()),
             has_wmma,
             blas: CublasHandle(blas_raw),
             graphs: Mutex::new(HashMap::new()),
