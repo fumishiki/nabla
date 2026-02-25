@@ -294,6 +294,60 @@ impl HipBuffer {
         })?;
         Ok(val)
     }
+
+    /// Non-blocking H2D: allocate normally, copy on separate copy stream,
+    /// synchronize via HIP event so the default stream waits for the transfer.
+    fn from_host_nonblocking<T: Scalar>(copy_stream: hip::hipStream_t, data: &[T]) -> HipResult<Self> {
+        let bytes = core::mem::size_of_val(data);
+        if bytes == 0 {
+            return Ok(Self { ptr: core::ptr::null_mut(), size: 0, alloc_size: 0, pooled: false });
+        }
+        // Allocate buffer from pool (same as from_host)
+        let ctx = get_ctx();
+        let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (ptr, alloc_size) = if let Some((p, sc)) = pool.try_alloc(bytes) {
+            (p, sc)
+        } else {
+            let rounded = round_size(bytes);
+            let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
+                rounded.max(SMALL_ALLOC_SIZE)
+            } else {
+                rounded.max(LARGE_ALLOC_SIZE)
+            };
+            drop(pool);
+            let mut ptr: *mut c_void = core::ptr::null_mut();
+            check(unsafe { hip::hipMalloc(&mut ptr, alloc_sz) })?;
+            if alloc_sz > rounded {
+                let split_ptr = unsafe { ptr.byte_add(rounded) };
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.release(split_ptr, alloc_sz - rounded);
+                pool.allocated_bytes += rounded;
+            } else {
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.allocated_bytes += alloc_sz;
+            }
+            (ptr, rounded)
+        };
+        // Copy on the copy stream (non-blocking w.r.t. default stream)
+        check(unsafe {
+            hip::hipMemcpyAsync(
+                ptr,
+                data.as_ptr().cast(),
+                bytes,
+                hip::hipMemcpyKind::hipMemcpyHostToDevice,
+                copy_stream,
+            )
+        })?;
+        // Record event on copy stream, make default stream wait
+        let mut event: hip::hipEvent_t = core::ptr::null_mut();
+        check(unsafe { hip::hipEventCreateWithFlags(&mut event, 0x02 /* hipEventDisableTiming */) })?;
+        check(unsafe { hip::hipEventRecord(event, copy_stream) })?;
+        // Default stream (null) waits on the event
+        check(unsafe { hip::hipStreamWaitEvent(core::ptr::null_mut(), event, 0) })?;
+        // Destroy event — safe because hipStreamWaitEvent captures the dependency
+        unsafe { let _ = hip::hipEventDestroy(event); }
+        Ok(Self { ptr, size: bytes, alloc_size, pooled: true })
+    }
 }
 
 impl Drop for HipBuffer {
@@ -353,7 +407,14 @@ unsafe impl Sync for KernelEntry {}
 struct HipCtx {
     kernels: Mutex<HashMap<String, KernelEntry>>,
     pool: Mutex<HipMemoryPool>,
+    /// Separate stream for H2D/D2H transfers (multi-stream pipeline).
+    copy_stream: hip::hipStream_t,
 }
+
+// SAFETY: hipStream_t is an opaque handle to a HIP stream. HIP API calls
+// are thread-safe, and the stream handle is only passed to HIP functions.
+unsafe impl Send for HipCtx {}
+unsafe impl Sync for HipCtx {}
 
 fn get_ctx() -> &'static HipCtx {
     static CTX: OnceLock<HipCtx> = OnceLock::new();
@@ -363,9 +424,15 @@ fn get_ctx() -> &'static HipCtx {
         if err != hip::hipError_t::hipSuccess {
             panic!("HIP device 0 init failed: {err:?}");
         }
+        let mut copy_stream: hip::hipStream_t = core::ptr::null_mut();
+        let err = unsafe { hip::hipStreamCreate(&mut copy_stream) };
+        if err != hip::hipError_t::hipSuccess {
+            panic!("HIP copy stream creation failed: {err:?}");
+        }
         let hip_ctx = HipCtx {
             kernels: Mutex::new(HashMap::new()),
             pool: Mutex::new(HipMemoryPool::new()),
+            copy_stream,
         };
         if let Err(e) = compile_all_kernels(&hip_ctx) {
             panic!("HIP kernel compilation failed: {e}");
@@ -557,6 +624,14 @@ pub(crate) fn hip_from_fn<T: Scalar>(
         }
     }
     let buf = HipBuffer::from_host(&data).unwrap_or_else(|e| panic!("HIP upload: {e}"));
+    HipStorage::new_cached(nrows, ncols, buf, data)
+}
+
+/// Non-blocking H2D upload: data transfer on copy stream overlaps with compute.
+pub(crate) fn hip_from_vec_async<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> HipStorage<T> {
+    let ctx = get_ctx();
+    let buf = HipBuffer::from_host_nonblocking(ctx.copy_stream, &data)
+        .unwrap_or_else(|e| panic!("HIP async upload: {e}"));
     HipStorage::new_cached(nrows, ncols, buf, data)
 }
 
@@ -888,6 +963,210 @@ fn hip_fuse_launch<T: Scalar>(
     HipStorage::new(nrows, ncols, out_buf)
 }
 
+// ── Mega-fused element-wise kernel (multi-op single launch) ──────────────────
+
+/// Descriptor for one operation in a mega-fused kernel launch.
+pub(crate) struct MegaFuseOp {
+    /// Raw pointers to input HipStorage buffers (as `*const u8`).
+    pub inputs: Vec<*const u8>,
+    /// GPU C expression, using `inN[i]` placeholders.
+    pub gpu_expr: String,
+    /// Number of inputs for this operation.
+    pub n_inputs: usize,
+}
+
+/// Generate a mega-kernel that fuses multiple element-wise operations into a
+/// single launch (HIP variant — no `__ldg`, uses direct float4 loads).
+fn mega_fuse_kernel_source(
+    ops: &[(String, usize)],
+    type_name: &str,
+    kernel_name: &str,
+) -> String {
+    let is_f32 = type_name == "float";
+    let mut src = String::with_capacity(2048);
+
+    src.push_str("extern \"C\" __global__ void ");
+    src.push_str(kernel_name);
+    src.push('(');
+    let mut first = true;
+    for (op_idx, (_expr, n_in)) in ops.iter().enumerate() {
+        for j in 0..*n_in {
+            if !first { src.push_str(", "); }
+            first = false;
+            src.push_str(&format!("const {type_name}* op{op_idx}_in{j}"));
+        }
+        if !first { src.push_str(", "); }
+        first = false;
+        src.push_str(&format!("{type_name}* op{op_idx}_out"));
+    }
+    src.push_str(", unsigned n) {\n");
+
+    if is_f32 {
+        src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
+        src.push_str("    unsigned i = i4 * 4;\n");
+        src.push_str("    if (i + 3 < n) {\n");
+
+        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
+            src.push_str(&format!("        // Op {op_idx}\n"));
+            for j in 0..*n_in {
+                src.push_str(&format!(
+                    "        float4 op{op_idx}_v{j} = reinterpret_cast<const float4*>(op{op_idx}_in{j})[i4];\n"
+                ));
+            }
+            src.push_str(&format!("        float4 op{op_idx}_r;\n"));
+            for comp in &["x", "y", "z", "w"] {
+                let mut comp_expr = gpu_expr.clone();
+                for j in (0..*n_in).rev() {
+                    comp_expr = comp_expr.replace(
+                        &format!("in{j}[i]"),
+                        &format!("op{op_idx}_v{j}.{comp}"),
+                    );
+                }
+                src.push_str(&format!("        op{op_idx}_r.{comp} = {comp_expr};\n"));
+            }
+            src.push_str(&format!(
+                "        reinterpret_cast<float4*>(op{op_idx}_out)[i4] = op{op_idx}_r;\n"
+            ));
+        }
+
+        src.push_str("    } else {\n");
+        src.push_str("        for (unsigned j = i; j < n && j < i + 4; j++) {\n");
+        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
+            let mut tail_expr = gpu_expr.clone();
+            for j in (0..*n_in).rev() {
+                tail_expr = tail_expr.replace(
+                    &format!("in{j}[i]"),
+                    &format!("op{op_idx}_in{j}[j]"),
+                );
+            }
+            src.push_str(&format!("            op{op_idx}_out[j] = {tail_expr};\n"));
+        }
+        src.push_str("        }\n");
+        src.push_str("    }\n}\n");
+    } else {
+        src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
+        src.push_str("    if (i < n) {\n");
+        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
+            let mut expr = gpu_expr.clone();
+            for j in (0..*n_in).rev() {
+                expr = expr.replace(
+                    &format!("in{j}[i]"),
+                    &format!("op{op_idx}_in{j}[i]"),
+                );
+            }
+            src.push_str(&format!("        op{op_idx}_out[i] = {expr};\n"));
+        }
+        src.push_str("    }\n}\n");
+    }
+    src
+}
+
+/// Launch a mega-kernel that executes multiple fused element-wise operations
+/// in a single GPU kernel launch (HIP backend).
+pub(crate) fn hip_mega_fuse_launch<T: Scalar>(
+    ops: &[MegaFuseOp],
+    nrows: usize,
+    ncols: usize,
+    kernel_hash: &str,
+) -> Vec<HipStorage<T>> {
+    let ctx = get_ctx();
+    let n = nrows * ncols;
+    let tsuf = type_suffix::<T>();
+    let kernel_name = format!("k_mega_{kernel_hash}_{tsuf}");
+
+    // Compile mega-kernel (JIT + cache)
+    {
+        let map = ctx.kernels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !map.contains_key(&kernel_name) {
+            drop(map);
+            let type_name = if tsuf == "f32" { "float" } else { "double" };
+            let op_descs: Vec<(String, usize)> = ops.iter()
+                .map(|op| (op.gpu_expr.clone(), op.n_inputs))
+                .collect();
+            let src_str = mega_fuse_kernel_source(&op_descs, type_name, &kernel_name);
+            let c_src = CString::new(src_str).unwrap_or_else(|_| panic!("null in source"));
+            let prog_name = CString::new("nabla_mega_fuse").unwrap_or_else(|_| panic!("null"));
+
+            let mut prog: hip::hiprtcProgram = core::ptr::null_mut();
+            let err = unsafe {
+                hip::hiprtcCreateProgram(
+                    &mut prog, c_src.as_ptr(), prog_name.as_ptr(),
+                    0, core::ptr::null_mut(), core::ptr::null_mut(),
+                )
+            };
+            if err != hip::hiprtcResult::HIPRTC_SUCCESS {
+                panic!("hiprtcCreateProgram for mega-fuse: {err:?}");
+            }
+            let err = unsafe { hip::hiprtcCompileProgram(prog, 0, core::ptr::null_mut()) };
+            if err != hip::hiprtcResult::HIPRTC_SUCCESS {
+                panic!("hiprtcCompileProgram for mega-fuse: {err:?}");
+            }
+            let mut code_size: usize = 0;
+            let err = unsafe { hip::hiprtcGetCodeSize(prog, &mut code_size) };
+            if err != hip::hiprtcResult::HIPRTC_SUCCESS {
+                panic!("hiprtcGetCodeSize: {err:?}");
+            }
+            let mut code = vec![0u8; code_size];
+            let err = unsafe { hip::hiprtcGetCode(prog, code.as_mut_ptr().cast()) };
+            if err != hip::hiprtcResult::HIPRTC_SUCCESS {
+                panic!("hiprtcGetCode: {err:?}");
+            }
+            unsafe { hip::hiprtcDestroyProgram(&mut prog) };
+
+            let mut module: hip::hipModule_t = core::ptr::null_mut();
+            check(unsafe { hip::hipModuleLoadData(&mut module, code.as_ptr().cast()) })
+                .unwrap_or_else(|e| panic!("HIP module load: {e}"));
+            let c_fn = CString::new(kernel_name.as_str()).unwrap_or_else(|_| panic!("null"));
+            let mut func: hip::hipFunction_t = core::ptr::null_mut();
+            check(unsafe { hip::hipModuleGetFunction(&mut func, module, c_fn.as_ptr()) })
+                .unwrap_or_else(|e| panic!("HIP get_function: {e}"));
+
+            let mut map = ctx.kernels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.insert(kernel_name.clone(), KernelEntry { func, _module: module });
+        }
+    }
+
+    let func = get_kernel(ctx, &kernel_name).unwrap_or_else(|e| panic!("{e}"));
+
+    // Allocate output buffers
+    let out_bufs: Vec<HipBuffer> = (0..ops.len())
+        .map(|_| HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
+            .unwrap_or_else(|e| panic!("HIP alloc: {e}")))
+        .collect();
+
+    let n_u32 = n as u32;
+    let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
+        grid_1d((n + 3) / 4)
+    } else {
+        grid_1d(n)
+    };
+
+    // Collect input device pointers
+    let input_ptrs: Vec<Vec<*mut c_void>> = ops.iter().map(|op| {
+        op.inputs.iter().map(|&p| {
+            let storage = unsafe { &*(p as *const HipStorage<T>) };
+            storage.buf.ptr
+        }).collect()
+    }).collect();
+
+    // Build kernel argument array
+    let total_args = ops.iter().map(|op| op.n_inputs + 1).sum::<usize>() + 1;
+    let mut args: Vec<*mut c_void> = Vec::with_capacity(total_args);
+    for (op_idx, op) in ops.iter().enumerate() {
+        for j in 0..op.n_inputs {
+            args.push(&input_ptrs[op_idx][j] as *const *mut c_void as *mut c_void);
+        }
+        args.push(&out_bufs[op_idx].ptr as *const *mut c_void as *mut c_void);
+    }
+    args.push((&n_u32 as *const u32).cast_mut().cast());
+
+    hip_launch(func, [grid, 1, 1], [BLOCK_SIZE, 1, 1], &mut args);
+
+    out_bufs.into_iter()
+        .map(|buf| HipStorage::new(nrows, ncols, buf))
+        .collect()
+}
+
 // ── Backend impl ─────────────────────────────────────────────────────────────
 
 impl crate::backend::private::Sealed for crate::backend::Hip {}
@@ -915,6 +1194,11 @@ impl crate::backend::Backend for crate::backend::Hip {
     fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> HipStorage<T> {
         let buf = HipBuffer::from_host(&data).unwrap_or_else(|e| panic!("HIP upload: {e}"));
         HipStorage::new_cached(nrows, ncols, buf, data)
+    }
+
+    #[inline]
+    fn from_vec_async<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> HipStorage<T> {
+        hip_from_vec_async(nrows, ncols, data)
     }
 
     #[inline]
@@ -999,5 +1283,18 @@ impl crate::backend::Backend for crate::backend::Hip {
         reg_estimate: usize,
     ) -> HipStorage<T> {
         hip_fuse_launch::<T>(inputs, nrows, ncols, gpu_expr, kernel_hash, n_inputs, reg_estimate)
+    }
+
+    fn mega_fuse_launch<T: Scalar>(
+        ops: &[(Vec<*const u8>, String, usize)],
+        nrows: usize,
+        ncols: usize,
+        _cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,
+        kernel_hash: &str,
+    ) -> Vec<HipStorage<T>> {
+        let mega_ops: Vec<MegaFuseOp> = ops.iter().map(|(inputs, expr, n_in)| {
+            MegaFuseOp { inputs: inputs.clone(), gpu_expr: expr.clone(), n_inputs: *n_in }
+        }).collect();
+        hip_mega_fuse_launch::<T>(&mega_ops, nrows, ncols, kernel_hash)
     }
 }

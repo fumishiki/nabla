@@ -1240,7 +1240,7 @@ nabla's fuse 4-op (0.080ms) vs PyTorch compile (0.041ms) gap analysis:
 | `.cpu()` / `.numpy()` | Sync stream + copy full tensor | Full tensor D2H via `ensure_cache` | Same (correct behavior) |
 | Between ops | **Never syncs** — stream ordering guarantees correctness | ✅ No inter-op sync (W20) | ✅ Done |
 | Backward pass | Async kernel chain, sync only at optimizer step | Not yet applicable | Future: GpuTape batch |
-| `non_blocking=True` | H2D transfer on separate stream, overlap with compute | Not supported | Multi-stream pipeline |
+| `non_blocking=True` | H2D transfer on separate stream, overlap with compute | ✅ Multi-stream pipeline | Multi-stream pipeline |
 
 Key insight: PyTorch's `.item()` copies only **1 scalar** (4 bytes), not the entire tensor. nabla's old `cached_get()` copied the **entire tensor** (64MB for 4096²) — 16 million× more data. The `copy_element()` fix eliminates this.
 
@@ -1278,10 +1278,15 @@ nabla now achieves **58–83%** of peak bandwidth (up from 22–46% pre-W20). si
 | 2. Best-fit allocator with splitting | ✅ W20 | Dual-pool, 512B-aligned, over-alloc, GC 0.9 | PyTorch CUDACachingAllocator |
 | 3. Prefetch hints (`__ldg`) | ✅ W20 | `__ldg()` in fuse codegen (float4/scalar/f64) | CUDA `__ldg()` intrinsic |
 | 4. Fusion cost model | ✅ W20 | `estimate_register_pressure()`, `maxrregcount=120` | TorchInductor heuristics |
-| 5. Auto-tune BLOCK_SIZE | ⏸ Tested | `cuOccupancyMaxPotentialBlockSize` regressed 2–3× — fixed 256 is optimal | Triton auto-tuner |
-| 6. Persistent grid-stride kernels | ⏸ Tested | Grid capping regressed perf — original if/else pattern is optimal for n≥4096² | PyTorch ATen kernels |
-| 7. Multi-stream pipeline | 🔲 | — | PyTorch DataLoader pattern |
-| 8. Mega-kernel fusion (L4) | 🔲 | — | MPK [2512.22219], FlashFuser [2512.12949] |
+| 5. Multi-stream pipeline | ✅ | `copy_stream` + CUDA events for H2D/compute overlap | PyTorch DataLoader pattern |
+| 6. Mega-kernel fusion (L4) | 🔲 | — | MPK [2512.22219], FlashFuser [2512.12949] |
+
+**効果なし（実装・ベンチマーク済、リバート）:**
+
+| Optimization | Result | 理由 |
+|---|---|---|
+| Auto-tune BLOCK_SIZE | `cuOccupancyMaxPotentialBlockSize` → 2–3× 性能悪化 | GH200では固定 BLOCK_SIZE=256 が最適。Occupancy APIの推奨値は本ワークロード（float4 element-wise）に不適合 |
+| Persistent grid-stride kernels | Grid capping (`sm_count×4`) → 2–3× 性能悪化 | n≥4096² では全SM飽和済。Grid-stride ループのオーバーヘッドが if/else 分岐パターンを上回る |
 
 ---
 
@@ -1463,8 +1468,10 @@ let normed = &x / &x.sum_axis_keepdim(1);   // softmax denominator pattern
 - ✅ CUDA Graph capture/replay → `NablaCudaGraph` API (`begin_capture` / `end_capture` / `launch`)
 - ✅ Best-fit allocator + splitting → Dual-pool (small/large), 512B-aligned, over-alloc 2/20MB, GC 0.9
 - ✅ `__ldg` prefetch hints → float4 + scalar + f64 paths in fuse codegen
-- ⏸ Auto-tune BLOCK_SIZE → `cuOccupancyMaxPotentialBlockSize` tested, regressed 2–3× — fixed 256 optimal
-- ⏸ Persistent grid-stride → grid capping regressed perf — original if/else pattern optimal for n≥4096²
+
+**効果なし（実装・ベンチマーク済、リバート）:**
+- ✗ Auto-tune BLOCK_SIZE → `cuOccupancyMaxPotentialBlockSize` が 2–3× 性能悪化。固定256が最適
+- ✗ Persistent grid-stride → Grid capping が 2–3× 性能悪化。if/else パターンが n≥4096² で最適
 
 ### 14.2 Implemented
 

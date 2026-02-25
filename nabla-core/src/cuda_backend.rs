@@ -11,7 +11,7 @@ use std::ffi::{c_void, CString};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cudarc::cublas::{result as cublas_result, sys as cublas_sys};
-use cudarc::driver::sys::{CUdeviceptr, CUfunction, CUmodule, CUstreamCaptureMode};
+use cudarc::driver::sys::{CUdeviceptr, CUevent, CUfunction, CUmodule, CUstreamCaptureMode};
 use cudarc::driver::{result, CudaContext as CudarcContext, CudaGraph as CudarcCudaGraph, CudaStream};
 use cudarc::nvrtc;
 
@@ -338,6 +338,40 @@ impl CuBuffer {
         }
         Ok(val)
     }
+
+    /// Non-blocking H2D: allocate on compute stream, copy on separate copy stream,
+    /// synchronize via CUDA event so compute stream waits for the transfer to finish.
+    /// This allows the compute stream to run kernels on other data while the copy is in flight.
+    fn from_host_nonblocking<T: Scalar>(
+        compute_stream: &Arc<CudaStream>,
+        copy_stream: &Arc<CudaStream>,
+        data: &[T],
+    ) -> CudaResult<Self> {
+        let bytes = core::mem::size_of_val(data);
+        if bytes == 0 {
+            return Ok(Self { ptr: 0, size: 0, alloc_size: 0, pooled: false });
+        }
+        // Allocate buffer (from pool or cudaMallocAsync on compute stream)
+        let buf = Self::alloc_async(compute_stream, bytes)?;
+        // Copy on the copy stream (non-blocking w.r.t. compute stream)
+        unsafe { result::memcpy_htod_async(buf.ptr, data, copy_stream.cu_stream())? };
+        // Record event on copy stream, make compute stream wait
+        let event = result::event::create(
+            cudarc::driver::sys::CUevent_flags::CU_EVENT_DISABLE_TIMING,
+        )?;
+        unsafe { result::event::record(event, copy_stream.cu_stream())? };
+        unsafe {
+            result::stream::wait_event(
+                compute_stream.cu_stream(),
+                event,
+                cudarc::driver::sys::CUevent_wait_flags::CU_EVENT_WAIT_DEFAULT,
+            )?;
+        }
+        // Destroy the event — safe because cuStreamWaitEvent captures the dependency,
+        // and cuEventDestroy is valid even before the event completes.
+        unsafe { result::event::destroy(event)? };
+        Ok(buf)
+    }
 }
 
 impl Drop for CuBuffer {
@@ -404,6 +438,8 @@ unsafe impl Sync for CublasHandle {}
 
 struct CudaCtx {
     stream: Arc<CudaStream>,
+    /// Separate stream for H2D/D2H transfers (multi-stream pipeline).
+    copy_stream: Arc<CudaStream>,
     kernels: Mutex<HashMap<String, KernelEntry>>,
     pool: Mutex<MemoryPool>,
     has_wmma: bool,
@@ -456,6 +492,7 @@ fn get_ctx() -> &'static CudaCtx {
     CTX.get_or_init(|| {
         let ctx = CudarcContext::new(0).expect("CUDA device 0 init failed");
         let stream = ctx.default_stream();
+        let copy_stream = ctx.new_stream().expect("CUDA copy stream creation failed");
         let (major, minor) = query_compute_capability();
         let arch: &'static str = nvrtc_arch(major, minor);
         let has_wmma = major >= 7;
@@ -466,6 +503,7 @@ fn get_ctx() -> &'static CudaCtx {
         unsafe { let _ = cublas_sys::cublasSetMathMode(blas_raw, cublas_sys::cublasMath_t::CUBLAS_TF32_TENSOR_OP_MATH); }
         let cuda_ctx = CudaCtx {
             stream,
+            copy_stream,
             kernels: Mutex::new(HashMap::new()),
             pool: Mutex::new(MemoryPool::new()),
             has_wmma,
@@ -674,6 +712,14 @@ pub(crate) fn cuda_from_fn<T: Scalar>(
     }
     let buf = CuBuffer::from_host(&ctx.stream, &data)
         .unwrap_or_else(|e| panic!("CUDA upload: {e}"));
+    CudaStorage::new_cached(nrows, ncols, buf, data)
+}
+
+/// Non-blocking H2D upload: data transfer on copy stream overlaps with compute.
+pub(crate) fn cuda_from_vec_async<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> CudaStorage<T> {
+    let ctx = get_ctx();
+    let buf = CuBuffer::from_host_nonblocking(&ctx.stream, &ctx.copy_stream, &data)
+        .unwrap_or_else(|e| panic!("CUDA async upload: {e}"));
     CudaStorage::new_cached(nrows, ncols, buf, data)
 }
 
@@ -1198,6 +1244,208 @@ fn cuda_fuse_launch<T: Scalar>(
     CudaStorage::new(nrows, ncols, out_buf)
 }
 
+// ── Mega-fused element-wise kernel (multi-op single launch) ──────────────────
+
+/// Descriptor for one operation in a mega-fused kernel launch.
+pub(crate) struct MegaFuseOp {
+    /// Raw pointers to input CudaStorage buffers (as `*const u8`).
+    pub inputs: Vec<*const u8>,
+    /// GPU C expression, using `opK_inN[i]` placeholders.
+    pub gpu_expr: String,
+    /// Number of inputs for this operation.
+    pub n_inputs: usize,
+}
+
+/// Generate a mega-kernel that fuses multiple element-wise operations into a
+/// single launch.  Each op reads from its own input buffers and writes to its
+/// own output buffer.  Ops execute sequentially within the same thread so
+/// later ops can read from earlier outputs if the caller arranges the
+/// pointers accordingly.
+fn mega_fuse_kernel_source(
+    ops: &[(String, usize)], // (gpu_expr, n_inputs)
+    type_name: &str,
+    kernel_name: &str,
+) -> String {
+    let is_f32 = type_name == "float";
+    let mut src = String::with_capacity(2048);
+
+    // Build per-op parameter names: opK_in0 .. opK_inN, opK_out
+    // Signature
+    src.push_str("extern \"C\" __global__ void ");
+    src.push_str(kernel_name);
+    src.push('(');
+    let mut first = true;
+    for (op_idx, (_expr, n_in)) in ops.iter().enumerate() {
+        for j in 0..*n_in {
+            if !first { src.push_str(", "); }
+            first = false;
+            src.push_str(&format!("const {type_name}* op{op_idx}_in{j}"));
+        }
+        if !first { src.push_str(", "); }
+        first = false;
+        src.push_str(&format!("{type_name}* op{op_idx}_out"));
+    }
+    src.push_str(", unsigned n) {\n");
+
+    if is_f32 {
+        src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
+        src.push_str("    unsigned i = i4 * 4;\n");
+        src.push_str("    if (i + 3 < n) {\n");
+
+        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
+            src.push_str(&format!("        // Op {op_idx}\n"));
+            // Load float4 for each input
+            for j in 0..*n_in {
+                src.push_str(&format!(
+                    "        float4 op{op_idx}_v{j} = __ldg(reinterpret_cast<const float4*>(op{op_idx}_in{j}) + i4);\n"
+                ));
+            }
+            src.push_str(&format!("        float4 op{op_idx}_r;\n"));
+            for comp in &["x", "y", "z", "w"] {
+                // Replace inN[i] → opK_vN.comp
+                let mut comp_expr = gpu_expr.clone();
+                for j in (0..*n_in).rev() {
+                    comp_expr = comp_expr.replace(
+                        &format!("in{j}[i]"),
+                        &format!("op{op_idx}_v{j}.{comp}"),
+                    );
+                }
+                src.push_str(&format!("        op{op_idx}_r.{comp} = {comp_expr};\n"));
+            }
+            src.push_str(&format!(
+                "        reinterpret_cast<float4*>(op{op_idx}_out)[i4] = op{op_idx}_r;\n"
+            ));
+        }
+
+        src.push_str("    } else {\n");
+        src.push_str("        for (unsigned j = i; j < n && j < i + 4; j++) {\n");
+        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
+            let mut tail_expr = gpu_expr.clone();
+            for j in (0..*n_in).rev() {
+                tail_expr = tail_expr.replace(
+                    &format!("in{j}[i]"),
+                    &format!("__ldg(&op{op_idx}_in{j}[j])"),
+                );
+            }
+            src.push_str(&format!("            op{op_idx}_out[j] = {tail_expr};\n"));
+        }
+        src.push_str("        }\n");
+        src.push_str("    }\n}\n");
+    } else {
+        // f64 scalar kernel
+        src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
+        src.push_str("    if (i < n) {\n");
+        for (op_idx, (gpu_expr, n_in)) in ops.iter().enumerate() {
+            let mut ldg_expr = gpu_expr.clone();
+            for j in (0..*n_in).rev() {
+                ldg_expr = ldg_expr.replace(
+                    &format!("in{j}[i]"),
+                    &format!("__ldg(&op{op_idx}_in{j}[i])"),
+                );
+            }
+            src.push_str(&format!("        op{op_idx}_out[i] = {ldg_expr};\n"));
+        }
+        src.push_str("    }\n}\n");
+    }
+    src
+}
+
+/// Launch a mega-kernel that executes multiple fused element-wise operations
+/// in a single GPU kernel launch, eliminating inter-op launch overhead.
+///
+/// All operations must have the same tensor dimensions (nrows × ncols).
+pub(crate) fn cuda_mega_fuse_launch<T: Scalar>(
+    ops: &[MegaFuseOp],
+    nrows: usize,
+    ncols: usize,
+    kernel_hash: &str,
+) -> Vec<CudaStorage<T>> {
+    let ctx = get_ctx();
+    let n = nrows * ncols;
+    let tsuf = type_suffix::<T>();
+    let kernel_name = format!("k_mega_{kernel_hash}_{tsuf}");
+
+    // Compile mega-kernel (JIT + cache)
+    {
+        let map = ctx.kernels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !map.contains_key(&kernel_name) {
+            drop(map);
+            let type_name = if tsuf == "f32" { "float" } else { "double" };
+            let op_descs: Vec<(String, usize)> = ops.iter()
+                .map(|op| (op.gpu_expr.clone(), op.n_inputs))
+                .collect();
+            let src = mega_fuse_kernel_source(&op_descs, type_name, &kernel_name);
+            let (major, minor) = query_compute_capability();
+            let arch: &'static str = nvrtc_arch(major, minor);
+            let ptx = nvrtc::compile_ptx_with_opts(
+                &src,
+                nvrtc::CompileOptions { arch: Some(arch), ..Default::default() },
+            ).unwrap_or_else(|e| panic!("NVRTC mega-fuse compile failed: {e}"));
+            let ptx_src = ptx.to_src();
+            let c_ptx = CString::new(ptx_src).unwrap_or_else(|_| panic!("null in PTX"));
+            let module = unsafe {
+                result::module::load_data(c_ptx.as_ptr().cast::<c_void>())
+            }.unwrap_or_else(|e| panic!("CUDA module load: {e}"));
+            let c_fn = CString::new(kernel_name.as_str()).unwrap_or_else(|_| panic!("null in kernel name"));
+            let func = unsafe {
+                result::module::get_function(module, c_fn)
+            }.unwrap_or_else(|e| panic!("CUDA get_function: {e}"));
+            let mut map = ctx.kernels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.insert(kernel_name.clone(), KernelEntry { func, _module: module });
+        }
+    }
+
+    let func = get_kernel(ctx, &kernel_name).unwrap_or_else(|e| panic!("{e}"));
+
+    // Allocate output buffers
+    let out_bufs: Vec<CuBuffer> = (0..ops.len())
+        .map(|_| CuBuffer::alloc_async(&ctx.stream, n * core::mem::size_of::<T>())
+            .unwrap_or_else(|e| panic!("CUDA alloc: {e}")))
+        .collect();
+
+    let n_u32 = n as u32;
+    let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
+        grid_1d((n + 3) / 4)
+    } else {
+        grid_1d(n)
+    };
+
+    // Collect input device pointers and output device pointers
+    let input_ptrs: Vec<Vec<CUdeviceptr>> = ops.iter().map(|op| {
+        op.inputs.iter().map(|&p| {
+            let storage = unsafe { &*(p as *const CudaStorage<T>) };
+            storage.buf.ptr
+        }).collect()
+    }).collect();
+
+    // Build kernel argument array: op0_in0, op0_in1, ..., op0_out, op1_in0, ..., op1_out, ..., n
+    let total_args = ops.iter().map(|op| op.n_inputs + 1).sum::<usize>() + 1;
+    let mut args: Vec<*mut c_void> = Vec::with_capacity(total_args);
+    for (op_idx, op) in ops.iter().enumerate() {
+        for j in 0..op.n_inputs {
+            args.push(&input_ptrs[op_idx][j] as *const CUdeviceptr as *mut c_void);
+        }
+        args.push(&out_bufs[op_idx].ptr as *const CUdeviceptr as *mut c_void);
+    }
+    args.push(&n_u32 as *const u32 as *mut c_void);
+
+    // SAFETY: launching mega-fused kernel with correct argument layout.
+    unsafe {
+        result::launch_kernel(
+            func,
+            (grid, 1, 1),
+            (BLOCK_SIZE, 1, 1),
+            0,
+            ctx.stream.cu_stream(),
+            &mut args,
+        ).unwrap_or_else(|e| panic!("CUDA launch {kernel_name}: {e}"));
+    }
+
+    out_bufs.into_iter()
+        .map(|buf| CudaStorage::new(nrows, ncols, buf))
+        .collect()
+}
+
 // ── Backend impl ─────────────────────────────────────────────────────────────
 
 impl crate::backend::private::Sealed for crate::backend::Cuda {}
@@ -1235,6 +1483,11 @@ impl crate::backend::Backend for crate::backend::Cuda {
         let buf = CuBuffer::from_host(&ctx.stream, &data)
             .unwrap_or_else(|e| panic!("CUDA upload: {e}"));
         CudaStorage::new_cached(nrows, ncols, buf, data)
+    }
+
+    #[inline]
+    fn from_vec_async<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> CudaStorage<T> {
+        cuda_from_vec_async(nrows, ncols, data)
     }
 
     #[inline]
@@ -1360,6 +1613,19 @@ impl crate::backend::Backend for crate::backend::Cuda {
         reg_estimate: usize,
     ) -> CudaStorage<T> {
         cuda_fuse_launch::<T>(inputs, nrows, ncols, gpu_expr, kernel_hash, n_inputs, reg_estimate)
+    }
+
+    fn mega_fuse_launch<T: Scalar>(
+        ops: &[(Vec<*const u8>, String, usize)],
+        nrows: usize,
+        ncols: usize,
+        _cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,
+        kernel_hash: &str,
+    ) -> Vec<CudaStorage<T>> {
+        let mega_ops: Vec<MegaFuseOp> = ops.iter().map(|(inputs, expr, n_in)| {
+            MegaFuseOp { inputs: inputs.clone(), gpu_expr: expr.clone(), n_inputs: *n_in }
+        }).collect();
+        cuda_mega_fuse_launch::<T>(&mega_ops, nrows, ncols, kernel_hash)
     }
 }
 

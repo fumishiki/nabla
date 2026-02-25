@@ -125,6 +125,44 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ) -> Self {
         Self::from_storage(B::fuse_launch(inputs, nrows, ncols, cpu_fn, gpu_expr, kernel_hash, n_inputs, reg_estimate))
     }
+
+    /// Execute multiple fused element-wise operations as a **single** GPU
+    /// kernel launch (mega-kernel fusion).
+    ///
+    /// All operations must have the same tensor dimensions and element type.
+    /// On GPU backends this emits one mega-kernel that processes every op
+    /// sequentially within a single launch, eliminating all inter-op kernel
+    /// launch overhead.  On the CPU backend each operation is executed
+    /// independently via `from_fn`.
+    ///
+    /// # Arguments
+    ///
+    /// * `ops` — per-op descriptors: `(input_ptrs, gpu_expr, n_inputs)`.
+    /// * `nrows`, `ncols` — shared dimensions for all ops.
+    /// * `cpu_fns` — per-op CPU closures (used only on CPU backend).
+    /// * `kernel_hash` — cache key for the compiled mega-kernel.
+    ///
+    /// # Example (internal codegen helper)
+    ///
+    /// ```ignore
+    /// let results = Tensor::<f32>::__mega_fuse_elementwise(
+    ///     &ops, nrows, ncols, cpu_fns, "hash123",
+    /// );
+    /// ```
+    #[doc(hidden)]
+    #[inline]
+    pub fn __mega_fuse_elementwise(
+        ops: &[(Vec<*const u8>, String, usize)],
+        nrows: usize,
+        ncols: usize,
+        cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,
+        kernel_hash: &str,
+    ) -> Vec<Self> {
+        B::mega_fuse_launch::<T>(ops, nrows, ncols, cpu_fns, kernel_hash)
+            .into_iter()
+            .map(Self::from_storage)
+            .collect()
+    }
 }
 
 /// Sealed module for `MatmulCompat`.
@@ -297,6 +335,15 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::from_fn(indices.len(), n_classes, |r, c| {
             if c == indices[r] { T::one() } else { T::zero() }
         })
+    }
+
+    /// Create tensor from slice with non-blocking H2D transfer.
+    /// The transfer happens on a separate copy stream and can overlap with compute.
+    /// On CPU backend this is identical to the synchronous path.
+    #[must_use]
+    pub fn from_slice_async(data: &[T], nrows: usize, ncols: usize) -> Self {
+        assert_eq!(data.len(), nrows * ncols, "from_slice_async: data.len() must equal nrows * ncols");
+        Self::from_storage(B::from_vec_async(nrows, ncols, data.to_vec()))
     }
 
     /// Copy a submatrix into a fresh tensor.

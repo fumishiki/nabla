@@ -147,6 +147,13 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
         })
     }
 
+    /// Non-blocking H2D upload: data transfer on a separate copy stream overlaps with compute.
+    /// Default falls back to synchronous `from_vec`. GPU backends override for overlap.
+    #[must_use]
+    fn from_vec_async<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> Self::Storage<T> {
+        Self::from_vec(nrows, ncols, data)
+    }
+
     /// Row count of `storage`.
     fn nrows<T: Scalar>(storage: &Self::Storage<T>) -> usize;
 
@@ -271,6 +278,26 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
         _reg_estimate: usize,
     ) -> Self::Storage<T> {
         Self::from_fn(nrows, ncols, cpu_fn)
+    }
+
+    /// Launch a mega-fused kernel: multiple element-wise operations in a
+    /// single GPU kernel launch, eliminating inter-op launch overhead.
+    ///
+    /// `ops` is a slice of `(inputs, gpu_expr, n_inputs, cpu_fn)` tuples.
+    /// All operations must share the same `(nrows, ncols)` dimensions.
+    ///
+    /// GPU backends emit a single mega-kernel; the CPU fallback runs each
+    /// `cpu_fn` independently via `from_fn`.
+    fn mega_fuse_launch<T: Scalar>(
+        ops: &[(Vec<*const u8>, String, usize)],
+        nrows: usize,
+        ncols: usize,
+        cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,
+        _kernel_hash: &str,
+    ) -> Vec<Self::Storage<T>> {
+        cpu_fns.into_iter()
+            .map(|mut f| Self::from_fn(nrows, ncols, |r, c| f(r, c)))
+            .collect()
     }
 }
 
