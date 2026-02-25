@@ -1189,13 +1189,13 @@ PyTorch's GPU performance leadership stems from 5 interlocking subsystems. nabla
 
 | Parameter | PyTorch value | nabla current | nabla target |
 |---|---|---|---|
-| Allocation algorithm | Best-fit `std::set<Block*>` ordered by (stream, size, addr) | Power-of-2 size class `HashMap` | Best-fit ordered set |
-| Rounding | 512B default, configurable `roundup_power2_divisions` | Power-of-2 (over-allocates 2×) | 512B rounding |
-| Pool boundary | Small (<1MB) / Large (≥1MB) dual pools | Single pool | Dual pool |
-| New block from CUDA | 2MB (small) / 20MB (large) | Exact size | Over-allocate + split |
-| Block splitting | Threshold: 512B (small pool), 1MB (large pool) | No splitting | Split at threshold |
-| Block coalescing | Address-ordered linked list, merge on free | No coalescing | Coalesce adjacent |
-| GC threshold | 0.9 (free when 90% used) | None | GC at 0.9 |
+| Allocation algorithm | Best-fit `std::set<Block*>` ordered by (stream, size, addr) | ✅ Best-fit dual-pool (W20) | ✅ Done |
+| Rounding | 512B default, configurable `roundup_power2_divisions` | ✅ 512B-aligned (W20) | ✅ Done |
+| Pool boundary | Small (<1MB) / Large (≥1MB) dual pools | ✅ Dual pool (W20) | ✅ Done |
+| New block from CUDA | 2MB (small) / 20MB (large) | ✅ Over-allocate + split (W20) | ✅ Done |
+| Block splitting | Threshold: 512B (small pool), 1MB (large pool) | ✅ Split at threshold (W20) | ✅ Done |
+| Block coalescing | Address-ordered linked list, merge on free | Size-sorted insert | Coalesce adjacent |
+| GC threshold | 0.9 (free when 90% used) | ✅ GC at 0.9 (W20) | ✅ Done |
 | Expandable segments | CUDA VMM (`cuMemAddressReserve` + `cuMemMap`) | Not supported | VMM if available |
 | Stream ordering | Per-stream free lists, CUDA events for cross-stream | Default stream only | Stream-aware pools |
 | Overhead | 2–3% vs raw cudaMalloc | ~10% (mutex + size-class waste) | ≤3% |
@@ -1250,12 +1250,12 @@ Key insight: PyTorch's `.item()` copies only **1 scalar** (4 bytes), not the ent
 |---|---|---|---|
 | Vectorized loads (float4) | `tl.load` with 128-bit alignment | ✅ fuse! float4 (W20) | 4× memory throughput |
 | Coalesced access | Guaranteed by contiguous layout | ✅ Row-major contiguous | Required for bandwidth |
-| Persistent kernels | Grid-stride loop, launch ~SM count blocks | 🔲 Not implemented | 1.5–2× for small tensors |
+| Persistent kernels | Grid-stride loop, launch ~SM count blocks | ⏸ Tested, reverted (regressed) | Original if/else optimal |
 | Memory coalescing | 32-thread warp accesses 128 consecutive bytes | ✅ Implicit (contiguous) | 90% peak bandwidth |
 | Shared memory tiling | 32–64KB tiles, bank-conflict-free padding | ✅ matmul only | Element-wise: not needed |
 | Register blocking | 2–8 elements/thread in registers | ✅ float4 = 4 elem/thread | 80–90% bandwidth util. |
 | `channels_last` layout | NHWC for conv kernels | N/A (no conv) | — |
-| Prefetch / eviction | `tl.load(eviction_policy='evict_first')` | 🔲 Not implemented | 5–15% for streaming |
+| Prefetch / eviction | `tl.load(eviction_policy='evict_first')` | ✅ `__ldg` in fuse codegen (W20) | 5–15% cache improvement |
 
 Bandwidth utilization analysis (GH200, theoretical peak ~4000 GB/s):
 
@@ -1453,16 +1453,18 @@ let normed = &x / &x.sum_axis_keepdim(1);   // softmax denominator pattern
 
 ### 14.1 Remaining
 
-| Item | Priority | Rationale | Paper / Source |
+| Item | Priority | Status | Rationale |
 |---|---|---|---|
-| Auto-fusion cost model | 🔴 High | Prevent register pressure regressions in complex fuse chains | TorchInductor heuristics |
-| CUDA Graph capture/replay | 🔴 High | 90–95% launch overhead reduction for repeated patterns | PyGraph [2503.19779], PyTorch `CUDAGraph` |
-| Auto-tune BLOCK_SIZE | 🔴 High | Fixed 256 suboptimal; search 64/128/256/512 at JIT time | Triton auto-tuner |
-| Best-fit allocator + splitting | 🟡 Medium | Power-of-2 wastes 50%; PyTorch uses 512B-rounded best-fit | PyTorch CUDACachingAllocator |
-| Persistent grid-stride kernels | 🟡 Medium | Small tensors don't saturate SMs; launch ~SM count blocks | PyTorch ATen kernels |
-| Multi-stream pipeline | 🟡 Medium | Overlap H2D transfer + compute on separate streams | PyTorch DataLoader pattern |
-| Mega-kernel fusion (L4) | 🔵 Low | SM-level persistent mega-kernel for cross-op pipelining | MPK [2512.22219], FlashFuser [2512.12949] |
-| Prefetch hints (`__ldg`) | 🔵 Low | Cache-line prefetch for streaming access patterns | CUDA `__ldg()` intrinsic |
+| Multi-stream pipeline | 🟡 Medium | 🔲 | Overlap H2D transfer + compute on separate streams |
+| Mega-kernel fusion (L4) | 🔵 Low | 🔲 | SM-level persistent mega-kernel for cross-op pipelining (MPK [2512.22219]) |
+
+**Completed in W20:**
+- ✅ Auto-fusion cost model → `estimate_register_pressure()` in proc macro, `maxrregcount=120`
+- ✅ CUDA Graph capture/replay → `NablaCudaGraph` API (`begin_capture` / `end_capture` / `launch`)
+- ✅ Best-fit allocator + splitting → Dual-pool (small/large), 512B-aligned, over-alloc 2/20MB, GC 0.9
+- ✅ `__ldg` prefetch hints → float4 + scalar + f64 paths in fuse codegen
+- ⏸ Auto-tune BLOCK_SIZE → `cuOccupancyMaxPotentialBlockSize` tested, regressed 2–3× — fixed 256 optimal
+- ⏸ Persistent grid-stride → grid capping regressed perf — original if/else pattern optimal for n≥4096²
 
 ### 14.2 Implemented
 
@@ -1484,7 +1486,7 @@ let normed = &x / &x.sum_axis_keepdim(1);   // softmax denominator pattern
 | W17 | `LinearLayout<N>` F₂ binary matrix swizzle (`identity`/`compose`/`apply`/`swizzle_for_tile`/`to_wgsl_swizzle_fn`, LinearLayout16/32/64), `fuse!` L3 GEMM+activation fusion (`detect_gemm_activation`, `GEMM_ACTIVATIONS`, `Tensor::map`, `Tensor::matmul_fused`) |
 | W18 | `PararealConfig` + `parareal_solve` CPU parallel-in-time (rayon fine propagator), `#[nabla_grad]` source-transform AD (Dual<T> lifting, forward-mode), `Dual` convenience methods (exp/ln/sin/cos/tanh/sqrt/abs/recip + mixed arithmetic), wgpu 2D register-tile software MMA (`gen_matmul_register_tile`, `select_register_tile_params`, `MatmulRegTile` dispatch ≥64³) |
 | W19 | GPU kernel fusion L1 JIT (`cuda_expr()` compile-time codegen → NVRTC/hiprtc runtime JIT → hash-based cache), `Backend::fuse_launch` trait method + `Tensor::__fuse_elementwise`, f32 float4 vectorized memory access in pre-compiled kernels (128-bit `LDG.E.128`, fast math `__expf`/`__logf`/`__sinf`/`__cosf`), GH200 benchmarks (3.8× fusion speedup, 30× gap vs PyTorch identified) |
-| W20 | GPU caching memory allocator (`MemoryPool` power-of-2 bins, RAII `Drop` → pool return, `malloc_async` fallback), float4 vectorized fuse codegen (`fuse_kernel_source()` emits `float4` loads/stores with scalar tail), async execution (removed `hipDeviceSynchronize` per-kernel, removed 3 unnecessary `stream.synchronize()`), single-element D2H readback (`copy_element()` — 4 bytes instead of full tensor). **Results: sin/tanh/add match PyTorch (0.040ms), fuse exp+sin 2× faster than PyTorch eager, exp+readback 0.052ms ≈ PyTorch 0.053ms, gap reduced from 46× to ≈ parity** |
+| W20 | GPU caching memory allocator (best-fit dual-pool, 512B-aligned, block splitting, over-alloc 2/20MB, GC 0.9), float4 vectorized fuse codegen (`fuse_kernel_source()` emits `float4` + `__ldg` prefetch + scalar tail), async execution (removed all unnecessary syncs), single-element D2H readback (`copy_element()` — 4 bytes instead of full tensor), fusion cost model (`estimate_register_pressure()` proc macro + `maxrregcount=120`), CUDA Graph capture/replay (`NablaCudaGraph` API). **Results: sin/tanh/add match PyTorch (0.040ms), fuse exp+sin 2× faster than PyTorch eager, exp+readback 0.053ms ≈ PyTorch 0.053ms, gap reduced from 46× to ≈ parity** |
 
 ---
 
