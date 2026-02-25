@@ -48,9 +48,61 @@ fn check(err: hip::hipError_t) -> HipResult<()> {
 
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
+// Round up to next power-of-2 (minimum 256 bytes).
+fn hip_size_class(size: usize) -> usize {
+    let min = 256;
+    if size <= min { return min; }
+    size.next_power_of_two()
+}
+
+/// Block-based caching memory pool for HIP (mirrors CUDA MemoryPool).
+struct HipMemoryPool {
+    bins: HashMap<usize, Vec<*mut c_void>>,
+    cached_bytes: usize,
+}
+
+impl HipMemoryPool {
+    fn new() -> Self {
+        Self { bins: HashMap::new(), cached_bytes: 0 }
+    }
+
+    fn try_alloc(&mut self, size_bytes: usize) -> Option<(*mut c_void, usize)> {
+        let sc = hip_size_class(size_bytes);
+        if let Some(bin) = self.bins.get_mut(&sc) {
+            if let Some(ptr) = bin.pop() {
+                self.cached_bytes -= sc;
+                return Some((ptr, sc));
+            }
+        }
+        None
+    }
+
+    fn release(&mut self, ptr: *mut c_void, allocated_size: usize) {
+        let sc = hip_size_class(allocated_size);
+        self.bins.entry(sc).or_default().push(ptr);
+        self.cached_bytes += sc;
+    }
+}
+
+impl Drop for HipMemoryPool {
+    fn drop(&mut self) {
+        for (_, ptrs) in self.bins.drain() {
+            for ptr in ptrs {
+                unsafe { let _ = hip::hipFree(ptr); }
+            }
+        }
+    }
+}
+
+// SAFETY: HipMemoryPool stores raw GPU device pointers that are not
+// dereferenced on the host. HIP API calls are thread-safe.
+unsafe impl Send for HipMemoryPool {}
+
 pub struct HipBuffer {
     pub(crate) ptr: *mut c_void,
     size: usize,
+    alloc_size: usize,
+    pooled: bool,
 }
 
 // SAFETY: HipBuffer wraps a raw GPU device pointer. The pointer is not
@@ -63,28 +115,45 @@ unsafe impl Sync for HipBuffer {}
 impl HipBuffer {
     fn alloc_zeros(size_bytes: usize) -> HipResult<Self> {
         if size_bytes == 0 {
-            return Ok(Self { ptr: core::ptr::null_mut(), size: 0 });
+            return Ok(Self { ptr: core::ptr::null_mut(), size: 0, alloc_size: 0, pooled: false });
         }
-        let mut ptr: *mut c_void = core::ptr::null_mut();
-        // SAFETY: hipMalloc allocates device memory; ptr is output parameter.
-        check(unsafe { hip::hipMalloc(&mut ptr, size_bytes) })?;
+        let ctx = get_ctx();
+        let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (ptr, alloc_size) = if let Some((p, sc)) = pool.try_alloc(size_bytes) {
+            (p, sc)
+        } else {
+            drop(pool);
+            let sc = hip_size_class(size_bytes);
+            let mut ptr: *mut c_void = core::ptr::null_mut();
+            check(unsafe { hip::hipMalloc(&mut ptr, sc) })?;
+            (ptr, sc)
+        };
         // SAFETY: zeroing allocated device memory.
-        check(unsafe { hip::hipMemset(ptr, 0, size_bytes) })?;
-        Ok(Self { ptr, size: size_bytes })
+        check(unsafe { hip::hipMemset(ptr, 0, alloc_size) })?;
+        Ok(Self { ptr, size: size_bytes, alloc_size, pooled: true })
     }
 
     fn from_host<T: Scalar>(data: &[T]) -> HipResult<Self> {
         let bytes = core::mem::size_of_val(data);
         if bytes == 0 {
-            return Ok(Self { ptr: core::ptr::null_mut(), size: 0 });
+            return Ok(Self { ptr: core::ptr::null_mut(), size: 0, alloc_size: 0, pooled: false });
         }
-        let mut ptr: *mut c_void = core::ptr::null_mut();
-        check(unsafe { hip::hipMalloc(&mut ptr, bytes) })?;
+        let ctx = get_ctx();
+        let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (ptr, alloc_size) = if let Some((p, sc)) = pool.try_alloc(bytes) {
+            (p, sc)
+        } else {
+            drop(pool);
+            let sc = hip_size_class(bytes);
+            let mut ptr: *mut c_void = core::ptr::null_mut();
+            check(unsafe { hip::hipMalloc(&mut ptr, sc) })?;
+            (ptr, sc)
+        };
         // SAFETY: T is POD (Scalar: Copy); uploading raw bytes to GPU.
         check(unsafe {
             hip::hipMemcpy(ptr, data.as_ptr().cast(), bytes, hip::hipMemcpyKind::hipMemcpyHostToDevice)
         })?;
-        Ok(Self { ptr, size: bytes })
+        Ok(Self { ptr, size: bytes, alloc_size, pooled: true })
     }
 
     fn copy_to_host<T: Scalar>(&self, out: &mut [T]) -> HipResult<()> {
@@ -107,8 +176,15 @@ impl HipBuffer {
 impl Drop for HipBuffer {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            // SAFETY: freeing device memory allocated by hipMalloc.
-            unsafe { let _ = hip::hipFree(self.ptr); }
+            if self.pooled {
+                // Return buffer to pool for reuse instead of freeing.
+                let ctx = get_ctx();
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.release(self.ptr, self.alloc_size);
+            } else {
+                // SAFETY: freeing device memory not managed by pool.
+                unsafe { let _ = hip::hipFree(self.ptr); }
+            }
         }
     }
 }
@@ -153,6 +229,7 @@ unsafe impl Sync for KernelEntry {}
 
 struct HipCtx {
     kernels: Mutex<HashMap<String, KernelEntry>>,
+    pool: Mutex<HipMemoryPool>,
 }
 
 fn get_ctx() -> &'static HipCtx {
@@ -165,6 +242,7 @@ fn get_ctx() -> &'static HipCtx {
         }
         let hip_ctx = HipCtx {
             kernels: Mutex::new(HashMap::new()),
+            pool: Mutex::new(HipMemoryPool::new()),
         };
         if let Err(e) = compile_all_kernels(&hip_ctx) {
             panic!("HIP kernel compilation failed: {e}");
@@ -278,11 +356,9 @@ fn hip_launch(
     if err != hip::hipError_t::hipSuccess {
         panic!("HIP launch failed: {err:?}");
     }
-    // SAFETY: synchronizing the default stream.
-    let sync = unsafe { hip::hipDeviceSynchronize() };
-    if sync != hip::hipError_t::hipSuccess {
-        panic!("HIP sync failed: {sync:?}");
-    }
+    // No sync here — let kernels run asynchronously on the default stream.
+    // Ordering is guaranteed within the same stream; host readback (hipMemcpy D2H)
+    // implicitly synchronizes.
 }
 
 // ── Launch helpers ───────────────────────────────────────────────────────────
@@ -517,25 +593,72 @@ pub(crate) fn hip_argmin_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) { g
 // ── Fused element-wise kernel launch ────────────────────────────────────────
 
 fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_name: &str) -> String {
-    let mut src = String::with_capacity(512);
-    src.push_str("extern \"C\" __global__ void ");
-    src.push_str(kernel_name);
-    src.push('(');
-    for i in 0..n_inputs {
-        src.push_str("const ");
+    let is_f32 = type_name == "float";
+    let mut src = String::with_capacity(if is_f32 { 1536 } else { 512 });
+
+    if is_f32 {
+        let scalar_expr = gpu_expr.to_string();
+        src.push_str("extern \"C\" __global__ void ");
+        src.push_str(kernel_name);
+        src.push('(');
+        for i in 0..n_inputs {
+            src.push_str("const float* in");
+            src.push_str(&i.to_string());
+            src.push_str(", ");
+        }
+        src.push_str("float* out, unsigned n) {\n");
+        src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
+        src.push_str("    unsigned i = i4 * 4;\n");
+        src.push_str("    if (i + 3 < n) {\n");
+        for j in 0..n_inputs {
+            src.push_str(&format!(
+                "        float4 v{j} = reinterpret_cast<const float4*>(in{j})[i4];\n"
+            ));
+        }
+        src.push_str("        float4 r;\n");
+        for comp in &["x", "y", "z", "w"] {
+            let mut comp_expr = scalar_expr.clone();
+            for j in (0..n_inputs).rev() {
+                comp_expr = comp_expr.replace(
+                    &format!("in{j}[i]"),
+                    &format!("v{j}.{comp}"),
+                );
+            }
+            src.push_str(&format!("        r.{comp} = {comp_expr};\n"));
+        }
+        src.push_str("        reinterpret_cast<float4*>(out)[i4] = r;\n");
+        src.push_str("    } else {\n");
+        src.push_str("        for (unsigned j = i; j < n && j < i + 4; j++) {\n");
+        let mut tail_expr = scalar_expr;
+        for j in (0..n_inputs).rev() {
+            tail_expr = tail_expr.replace(
+                &format!("in{j}[i]"),
+                &format!("in{j}[j]"),
+            );
+        }
+        src.push_str(&format!("            out[j] = {tail_expr};\n"));
+        src.push_str("        }\n");
+        src.push_str("    }\n}\n");
+    } else {
+        src.push_str("extern \"C\" __global__ void ");
+        src.push_str(kernel_name);
+        src.push('(');
+        for i in 0..n_inputs {
+            src.push_str("const ");
+            src.push_str(type_name);
+            src.push_str("* in");
+            src.push_str(&i.to_string());
+            src.push_str(", ");
+        }
         src.push_str(type_name);
-        src.push_str("* in");
-        src.push_str(&i.to_string());
-        src.push_str(", ");
+        src.push_str("* out, unsigned n) {\n");
+        src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
+        src.push_str("    if (i < n) {\n");
+        src.push_str("        out[i] = ");
+        src.push_str(gpu_expr);
+        src.push_str(";\n");
+        src.push_str("    }\n}\n");
     }
-    src.push_str(type_name);
-    src.push_str("* out, unsigned n) {\n");
-    src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
-    src.push_str("    if (i < n) {\n");
-    src.push_str("        out[i] = ");
-    src.push_str(gpu_expr);
-    src.push_str(";\n");
-    src.push_str("    }\n}\n");
     src
 }
 
@@ -605,7 +728,11 @@ fn hip_fuse_launch<T: Scalar>(
     let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let n_u32 = n as u32;
-    let grid = grid_1d(n);
+    let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
+        grid_1d((n + 3) / 4)
+    } else {
+        grid_1d(n)
+    };
 
     // SAFETY: input pointers are valid HipStorage<T>
     let input_ptrs: Vec<*mut c_void> = inputs.iter().map(|&p| {

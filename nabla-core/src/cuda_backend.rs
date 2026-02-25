@@ -56,41 +56,136 @@ type CudaResult<T> = Result<T, CudaError>;
 
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
+// Round up to next power-of-2 (minimum 256 bytes).
+fn size_class(size: usize) -> usize {
+    let min = 256;
+    if size <= min { return min; }
+    size.next_power_of_two()
+}
+
+/// Block-based caching memory pool. Eliminates cudaMalloc overhead by
+/// reusing freed GPU buffers keyed by size class (power-of-2).
+struct MemoryPool {
+    bins: HashMap<usize, Vec<CUdeviceptr>>,
+    cached_bytes: usize,
+}
+
+impl MemoryPool {
+    fn new() -> Self {
+        Self { bins: HashMap::new(), cached_bytes: 0 }
+    }
+
+    /// Try to pop a free block from the pool. Returns None on miss.
+    fn try_alloc(&mut self, size_bytes: usize) -> Option<(CUdeviceptr, usize)> {
+        let sc = size_class(size_bytes);
+        if let Some(bin) = self.bins.get_mut(&sc) {
+            if let Some(ptr) = bin.pop() {
+                self.cached_bytes -= sc;
+                return Some((ptr, sc));
+            }
+        }
+        None
+    }
+
+    /// Return a block to the pool for reuse.
+    fn release(&mut self, ptr: CUdeviceptr, allocated_size: usize) {
+        let sc = size_class(allocated_size);
+        self.bins.entry(sc).or_default().push(ptr);
+        self.cached_bytes += sc;
+    }
+
+    /// Free cached blocks until pool size ≤ target_bytes. Returns bytes freed.
+    fn trim(&mut self, target_bytes: usize) -> usize {
+        let mut freed = 0usize;
+        while self.cached_bytes > target_bytes {
+            // Find any non-empty bin and free one block
+            let sc = match self.bins.iter().find(|(_, v)| !v.is_empty()) {
+                Some((&sc, _)) => sc,
+                None => break,
+            };
+            if let Some(ptr) = self.bins.get_mut(&sc).and_then(|v| v.pop()) {
+                // SAFETY: freeing GPU memory that was previously allocated.
+                unsafe { let _ = result::free_sync(ptr); }
+                self.cached_bytes -= sc;
+                freed += sc;
+            }
+        }
+        freed
+    }
+}
+
+impl Drop for MemoryPool {
+    fn drop(&mut self) {
+        for (_, ptrs) in self.bins.drain() {
+            for ptr in ptrs {
+                unsafe { let _ = result::free_sync(ptr); }
+            }
+        }
+    }
+}
+
 pub struct CuBuffer {
     pub(crate) ptr: CUdeviceptr,
-    size: usize,
-    stream_ordered: bool,
+    size: usize,       // requested size
+    alloc_size: usize,  // actual allocated size (size_class rounded)
+    pooled: bool,       // true = return to pool on Drop; false = direct free
 }
 
 impl CuBuffer {
     fn alloc_zeros(stream: &Arc<CudaStream>, size_bytes: usize) -> CudaResult<Self> {
         if size_bytes == 0 {
-            return Ok(Self { ptr: 0, size: 0, stream_ordered: false });
+            return Ok(Self { ptr: 0, size: 0, alloc_size: 0, pooled: false });
         }
-        // SAFETY: cudarc result-level API for raw memory alloc + memset.
-        let dptr = unsafe { result::malloc_sync(size_bytes)? };
-        unsafe { result::memset_d8_async(dptr, 0, size_bytes, stream.cu_stream())? };
-        Ok(Self { ptr: dptr, size: size_bytes, stream_ordered: false })
+        let ctx = get_ctx();
+        let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (dptr, alloc_size) = if let Some((ptr, sc)) = pool.try_alloc(size_bytes) {
+            (ptr, sc)
+        } else {
+            drop(pool);
+            let sc = size_class(size_bytes);
+            // SAFETY: stream-ordered async allocation for new blocks.
+            let dptr = unsafe { result::malloc_async(stream.cu_stream(), sc)? };
+            (dptr, sc)
+        };
+        // SAFETY: zeroing allocated device memory.
+        unsafe { result::memset_d8_async(dptr, 0, alloc_size, stream.cu_stream())? };
+        Ok(Self { ptr: dptr, size: size_bytes, alloc_size, pooled: true })
     }
 
     fn alloc_async(stream: &Arc<CudaStream>, size_bytes: usize) -> CudaResult<Self> {
         if size_bytes == 0 {
-            return Ok(Self { ptr: 0, size: 0, stream_ordered: true });
+            return Ok(Self { ptr: 0, size: 0, alloc_size: 0, pooled: false });
         }
-        // SAFETY: stream-ordered malloc — freed via free_async on same stream in Drop.
-        let dptr = unsafe { result::malloc_async(stream.cu_stream(), size_bytes)? };
-        Ok(Self { ptr: dptr, size: size_bytes, stream_ordered: true })
+        let ctx = get_ctx();
+        let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((ptr, sc)) = pool.try_alloc(size_bytes) {
+            return Ok(Self { ptr, size: size_bytes, alloc_size: sc, pooled: true });
+        }
+        drop(pool);
+        let sc = size_class(size_bytes);
+        // SAFETY: stream-ordered async allocation for new blocks.
+        let dptr = unsafe { result::malloc_async(stream.cu_stream(), sc)? };
+        Ok(Self { ptr: dptr, size: size_bytes, alloc_size: sc, pooled: true })
     }
 
     fn from_host<T: Scalar>(stream: &Arc<CudaStream>, data: &[T]) -> CudaResult<Self> {
         let bytes = core::mem::size_of_val(data);
         if bytes == 0 {
-            return Ok(Self { ptr: 0, size: 0, stream_ordered: false });
+            return Ok(Self { ptr: 0, size: 0, alloc_size: 0, pooled: false });
         }
-        let dptr = unsafe { result::malloc_sync(bytes)? };
+        let ctx = get_ctx();
+        let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (dptr, alloc_size) = if let Some((ptr, sc)) = pool.try_alloc(bytes) {
+            (ptr, sc)
+        } else {
+            drop(pool);
+            let sc = size_class(bytes);
+            let dptr = unsafe { result::malloc_async(stream.cu_stream(), sc)? };
+            (dptr, sc)
+        };
         // SAFETY: T is POD (Scalar: Copy + Send + Sync); uploading raw bytes to GPU.
         unsafe { result::memcpy_htod_async(dptr, data, stream.cu_stream())? };
-        Ok(Self { ptr: dptr, size: bytes, stream_ordered: false })
+        Ok(Self { ptr: dptr, size: bytes, alloc_size, pooled: true })
     }
 
     fn copy_to_host<T: Scalar>(&self, stream: &Arc<CudaStream>, out: &mut [T]) -> CudaResult<()> {
@@ -107,12 +202,13 @@ impl CuBuffer {
 impl Drop for CuBuffer {
     fn drop(&mut self) {
         if self.ptr != 0 {
-            if self.stream_ordered {
-                // SAFETY: free on the same stream as malloc_async.
+            if self.pooled {
+                // Return buffer to pool for reuse instead of freeing.
                 let ctx = get_ctx();
-                unsafe { let _ = result::free_async(self.ptr, ctx.stream.cu_stream()); }
+                let mut pool = ctx.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                pool.release(self.ptr, self.alloc_size);
             } else {
-                // SAFETY: freeing GPU memory allocated with malloc_sync.
+                // SAFETY: freeing GPU memory not managed by pool.
                 unsafe { let _ = result::free_sync(self.ptr); }
             }
         }
@@ -168,6 +264,7 @@ unsafe impl Sync for CublasHandle {}
 struct CudaCtx {
     stream: Arc<CudaStream>,
     kernels: Mutex<HashMap<String, KernelEntry>>,
+    pool: Mutex<MemoryPool>,
     has_wmma: bool,
     blas: CublasHandle,
 }
@@ -227,6 +324,7 @@ fn get_ctx() -> &'static CudaCtx {
         let cuda_ctx = CudaCtx {
             stream,
             kernels: Mutex::new(HashMap::new()),
+            pool: Mutex::new(MemoryPool::new()),
             has_wmma,
             blas: CublasHandle(blas_raw),
         };
@@ -452,10 +550,8 @@ pub(crate) fn cuda_set<T: Scalar>(s: &mut CudaStorage<T>, r: usize, c: usize, v:
             ctx.stream.cu_stream(),
         );
     }
-    ctx.stream.synchronize().unwrap_or_else(|e| panic!("CUDA sync: {e}"));
-}
-
-pub(crate) fn cuda_clone<T: Scalar>(s: &CudaStorage<T>) -> CudaStorage<T> {
+    // Async upload — stream ordering guarantees correctness for subsequent GPU ops.
+}pub(crate) fn cuda_clone<T: Scalar>(s: &CudaStorage<T>) -> CudaStorage<T> {
     let ctx = get_ctx();
     let bytes = s.n() * core::mem::size_of::<T>();
     let new_buf = CuBuffer::alloc_async(&ctx.stream, bytes)
@@ -679,27 +775,83 @@ pub(crate) fn cuda_argmin_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) {
 // ── Fused element-wise kernel launch ────────────────────────────────────────
 
 /// Generate full CUDA C kernel source from a fused expression body.
+/// For f32: generates float4-vectorized kernel with scalar tail.
+/// For f64: generates scalar kernel (double2 shows minimal benefit).
 fn fuse_kernel_source(gpu_expr: &str, n_inputs: usize, type_name: &str, kernel_name: &str) -> String {
-    let mut src = String::with_capacity(512);
-    // Kernel signature: k_fused_HASH_TYPE(const TYPE* in0, ..., TYPE* out, unsigned n)
-    src.push_str("extern \"C\" __global__ void ");
-    src.push_str(kernel_name);
-    src.push('(');
-    for i in 0..n_inputs {
-        src.push_str("const ");
+    let is_f32 = type_name == "float";
+    let mut src = String::with_capacity(if is_f32 { 1536 } else { 512 });
+
+    if is_f32 {
+        // float4-vectorized kernel: each thread processes 4 elements
+        // Replace `inN[i]` with scalar variable `v_inN` in the expression
+        let scalar_expr = gpu_expr.to_string(); // uses inN[i] pattern
+
+        src.push_str("extern \"C\" __global__ void ");
+        src.push_str(kernel_name);
+        src.push('(');
+        for i in 0..n_inputs {
+            src.push_str("const float* in");
+            src.push_str(&i.to_string());
+            src.push_str(", ");
+        }
+        src.push_str("float* out, unsigned n) {\n");
+        src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
+        src.push_str("    unsigned i = i4 * 4;\n");
+        src.push_str("    if (i + 3 < n) {\n");
+        // Load float4 for each input
+        for j in 0..n_inputs {
+            src.push_str(&format!(
+                "        float4 v{j} = reinterpret_cast<const float4*>(in{j})[i4];\n"
+            ));
+        }
+        // Apply expression to each component (.x, .y, .z, .w)
+        src.push_str("        float4 r;\n");
+        for comp in &["x", "y", "z", "w"] {
+            // Replace inN[i] with vN.comp
+            let mut comp_expr = scalar_expr.clone();
+            for j in (0..n_inputs).rev() {
+                comp_expr = comp_expr.replace(
+                    &format!("in{j}[i]"),
+                    &format!("v{j}.{comp}"),
+                );
+            }
+            src.push_str(&format!("        r.{comp} = {comp_expr};\n"));
+        }
+        src.push_str("        reinterpret_cast<float4*>(out)[i4] = r;\n");
+        src.push_str("    } else {\n");
+        src.push_str("        for (unsigned j = i; j < n && j < i + 4; j++) {\n");
+        // Scalar tail: replace inN[i] with inN[j]
+        let mut tail_expr = scalar_expr;
+        for j in (0..n_inputs).rev() {
+            tail_expr = tail_expr.replace(
+                &format!("in{j}[i]"),
+                &format!("in{j}[j]"),
+            );
+        }
+        src.push_str(&format!("            out[j] = {tail_expr};\n"));
+        src.push_str("        }\n");
+        src.push_str("    }\n}\n");
+    } else {
+        // f64 scalar kernel
+        src.push_str("extern \"C\" __global__ void ");
+        src.push_str(kernel_name);
+        src.push('(');
+        for i in 0..n_inputs {
+            src.push_str("const ");
+            src.push_str(type_name);
+            src.push_str("* in");
+            src.push_str(&i.to_string());
+            src.push_str(", ");
+        }
         src.push_str(type_name);
-        src.push_str("* in");
-        src.push_str(&i.to_string());
-        src.push_str(", ");
+        src.push_str("* out, unsigned n) {\n");
+        src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
+        src.push_str("    if (i < n) {\n");
+        src.push_str("        out[i] = ");
+        src.push_str(gpu_expr);
+        src.push_str(";\n");
+        src.push_str("    }\n}\n");
     }
-    src.push_str(type_name);
-    src.push_str("* out, unsigned n) {\n");
-    src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
-    src.push_str("    if (i < n) {\n");
-    src.push_str("        out[i] = ");
-    src.push_str(gpu_expr);
-    src.push_str(";\n");
-    src.push_str("    }\n}\n");
     src
 }
 
@@ -749,7 +901,12 @@ fn cuda_fuse_launch<T: Scalar>(
     let out_buf = CuBuffer::alloc_async(&ctx.stream, n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let n_u32 = n as u32;
-    let grid = grid_1d(n);
+    // f32 fused kernels use float4: 4 elements per thread
+    let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
+        grid_1d((n + 3) / 4)
+    } else {
+        grid_1d(n)
+    };
 
     // Build kernel argument array: in0_ptr, in1_ptr, ..., out_ptr, n
     // SAFETY: input pointers are valid CudaStorage<T> — cast back to extract .buf.ptr
@@ -1021,7 +1178,7 @@ fn trsm_base_host<T: Scalar>(l: &CudaStorage<T>, b: &mut CudaStorage<T>) {
     unsafe {
         let _ = result::memcpy_htod_async(b.buf.ptr, &b_host, ctx.stream.cu_stream());
     }
-    ctx.stream.synchronize().unwrap_or_else(|e| panic!("TRSM upload: {e}"));
+    // Async upload — stream ordering handles correctness.
 }
 
 /// Extract a sub-matrix from GPU storage (host round-trip).
@@ -1082,7 +1239,7 @@ fn cuda_write_submatrix<T: Scalar>(
     unsafe {
         let _ = result::memcpy_htod_async(dst.buf.ptr, &dst_host, ctx.stream.cu_stream());
     }
-    ctx.stream.synchronize().unwrap_or_else(|e| panic!("write_submatrix upload: {e}"));
+    // Async upload — stream ordering handles correctness.
 }
 
 // ── GPU-resident AD tape ─────────────────────────────────────────────────────
