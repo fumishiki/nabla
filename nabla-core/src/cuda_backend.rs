@@ -327,6 +327,8 @@ struct CudaCtx {
     blas: CublasHandle,
     /// Cached CUDA graphs keyed by user-provided name for deduplication.
     graphs: Mutex<HashMap<String, Arc<NablaCudaGraph>>>,
+    /// Pre-allocated scratch for reductions (REDUCE_GRID_CAP * 8 bytes for f64).
+    reduce_scratch: CUdeviceptr,
 }
 
 // Returns (major, minor) compute capability of device 0.
@@ -382,6 +384,12 @@ fn get_ctx() -> &'static CudaCtx {
         unsafe { cublas_result::set_stream(blas_raw, stream.cu_stream() as cublas_sys::cudaStream_t).expect("cuBLAS set_stream failed") };
         // TF32 tensor cores on Ampere+ (sm_80+, including GH200 sm_90a) for ~15x FP32 speedup.
         unsafe { let _ = cublas_sys::cublasSetMathMode(blas_raw, cublas_sys::cublasMath_t::CUBLAS_TF32_TENSOR_OP_MATH); }
+        // Pre-allocate reduction scratch: REDUCE_GRID_CAP*8 + 16 bytes for init/final slots
+        let reduce_scratch_size = REDUCE_GRID_CAP as usize * 8 + 16;
+        let reduce_scratch = unsafe {
+            result::malloc_async(stream.cu_stream(), reduce_scratch_size)
+                .expect("CUDA reduce scratch alloc failed")
+        };
         let cuda_ctx = CudaCtx {
             stream,
             copy_stream,
@@ -390,6 +398,7 @@ fn get_ctx() -> &'static CudaCtx {
             has_wmma,
             blas: CublasHandle(blas_raw),
             graphs: Mutex::new(HashMap::new()),
+            reduce_scratch,
         };
         // Pre-compile all kernels from the combined source
         if let Err(e) = compile_all_kernels(&cuda_ctx, &arch) {
@@ -835,84 +844,109 @@ pub(crate) fn cuda_matmul<T: Scalar>(
 }
 
 // Reductions — GPU-side two-pass kernels (grid-stride + vectorized + warp-shuffle)
+// Uses pre-allocated reduce_scratch to avoid per-call allocations.
 
 use crate::kernels_cu::{REDUCE_BLOCK, REDUCE_GRID_CAP};
 
-/// Two-pass reduction: pass 1 reduces n elements to REDUCE_GRID_CAP partial results,
-/// pass 2 reduces those to a single scalar. Grid-stride loop + float4/double2 vectorized loads.
-fn cuda_reduce_two_pass<T: Scalar>(a: &CudaStorage<T>, kernel_name: &str, needs_init: bool) -> T {
+pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
     let ctx = get_ctx();
     let n = a.n();
-    assert!(n > 0, "reduction on empty");
-
-    let func = get_kernel(ctx, kernel_name).unwrap_or_else(|e| panic!("{e}"));
+    if n == 0 { return T::zero(); }
+    let name = format!("k_sum_{}", type_suffix::<T>());
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let elem = core::mem::size_of::<T>();
-    let grid1 = (REDUCE_GRID_CAP).min(((n as u32) + REDUCE_BLOCK - 1) / REDUCE_BLOCK);
-
-    // Init buffer for max/min (first element value)
-    let init_buf = if needs_init {
-        let b = CuBuffer::alloc_async(&ctx.stream, elem)
-            .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
-        unsafe { let _ = result::memcpy_dtod_async(b.ptr, a.buf.ptr, elem, ctx.stream.cu_stream()); }
-        Some(b)
-    } else { None };
-
-    // Pass 1: n → grid1 partial results
-    let partial_buf = CuBuffer::alloc_zeros(&ctx.stream, (grid1 as usize) * elem)
-        .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
+    let grid1 = REDUCE_GRID_CAP.min(((n as u32) + REDUCE_BLOCK - 1) / REDUCE_BLOCK);
+    let scratch = ctx.reduce_scratch;
     let n_u32 = n as u32;
+
+    // Zero scratch for pass-1 output
+    unsafe { let _ = result::memset_d8_async(scratch, 0, (grid1 as usize) * elem, ctx.stream.cu_stream()); }
+
+    // Pass 1: n → grid1 partial sums
     unsafe {
-        let mut args: Vec<*mut c_void> = vec![
-            &a.buf.ptr as *const CUdeviceptr as *mut c_void,
-            &partial_buf.ptr as *const CUdeviceptr as *mut c_void,
-            &n_u32 as *const u32 as *mut c_void,
-        ];
-        if let Some(ref ib) = init_buf {
-            args.push(&ib.ptr as *const CUdeviceptr as *mut c_void);
-        }
         result::launch_kernel(
             func, (grid1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
-            &mut args,
-        ).unwrap_or_else(|e| panic!("CUDA launch {kernel_name} pass1: {e}"));
+            &mut [
+                &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                &scratch as *const CUdeviceptr as *mut c_void,
+                &n_u32 as *const u32 as *mut c_void,
+            ],
+        ).unwrap_or_else(|e| panic!("CUDA launch {name} pass1: {e}"));
     }
 
-    // Pass 2: grid1 → 1
-    let final_buf = CuBuffer::alloc_zeros(&ctx.stream, elem)
-        .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
-    let grid1_u32 = grid1;
+    // Pass 2: grid1 → 1 (reuse scratch offset for final result)
+    let final_ptr = scratch + (REDUCE_GRID_CAP as u64) * 8; // after scratch area
+    unsafe { let _ = result::memset_d8_async(final_ptr, 0, elem, ctx.stream.cu_stream()); }
     unsafe {
-        let mut args: Vec<*mut c_void> = vec![
-            &partial_buf.ptr as *const CUdeviceptr as *mut c_void,
-            &final_buf.ptr as *const CUdeviceptr as *mut c_void,
-            &grid1_u32 as *const u32 as *mut c_void,
-        ];
-        if let Some(ref ib) = init_buf {
-            args.push(&ib.ptr as *const CUdeviceptr as *mut c_void);
-        }
         result::launch_kernel(
             func, (1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
-            &mut args,
-        ).unwrap_or_else(|e| panic!("CUDA launch {kernel_name} pass2: {e}"));
+            &mut [
+                &scratch as *const CUdeviceptr as *mut c_void,
+                &final_ptr as *const CUdeviceptr as *mut c_void,
+                &grid1 as *const u32 as *mut c_void,
+            ],
+        ).unwrap_or_else(|e| panic!("CUDA launch {name} pass2: {e}"));
     }
 
     let mut out = [T::zero()];
-    final_buf.copy_to_host::<T>(&ctx.stream, &mut out)
-        .unwrap_or_else(|e| panic!("CUDA D2H: {e}"));
+    unsafe { result::memcpy_dtoh_sync(&mut out, final_ptr).unwrap_or_else(|e| panic!("CUDA D2H: {e}")); }
     out[0]
 }
 
-pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    if a.n() == 0 { return T::zero(); }
-    let name = format!("k_sum_{}", type_suffix::<T>());
-    cuda_reduce_two_pass(a, &name, false)
-}
 pub(crate) fn cuda_max_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    let name = format!("k_max_{}", type_suffix::<T>());
-    cuda_reduce_two_pass(a, &name, true)
+    cuda_reduce_minmax(a, "max")
 }
 pub(crate) fn cuda_min_all<T: Scalar>(a: &CudaStorage<T>) -> T {
-    let name = format!("k_min_{}", type_suffix::<T>());
-    cuda_reduce_two_pass(a, &name, true)
+    cuda_reduce_minmax(a, "min")
+}
+
+fn cuda_reduce_minmax<T: Scalar>(a: &CudaStorage<T>, op: &str) -> T {
+    let ctx = get_ctx();
+    let n = a.n();
+    assert!(n > 0, "reduction on empty");
+    let name = format!("k_{op}_{}", type_suffix::<T>());
+    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let elem = core::mem::size_of::<T>();
+    let grid1 = REDUCE_GRID_CAP.min(((n as u32) + REDUCE_BLOCK - 1) / REDUCE_BLOCK);
+    let scratch = ctx.reduce_scratch;
+
+    // Use end of scratch as init value (copy first element)
+    let init_ptr = scratch + (REDUCE_GRID_CAP as u64) * 8;
+    unsafe { let _ = result::memcpy_dtod_async(init_ptr, a.buf.ptr, elem, ctx.stream.cu_stream()); }
+
+    // Pass 1: n → grid1
+    let n_u32 = n as u32;
+    unsafe {
+        result::launch_kernel(
+            func, (grid1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
+            &mut [
+                &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                &scratch as *const CUdeviceptr as *mut c_void,
+                &n_u32 as *const u32 as *mut c_void,
+                &init_ptr as *const CUdeviceptr as *mut c_void,
+            ],
+        ).unwrap_or_else(|e| panic!("CUDA launch {name} pass1: {e}"));
+    }
+
+    // Pass 2: grid1 → 1 (write final to init_ptr, reusing that slot)
+    let final_ptr = init_ptr + elem as u64;
+    // Copy init from scratch[0] for pass 2
+    unsafe { let _ = result::memcpy_dtod_async(final_ptr, scratch, elem, ctx.stream.cu_stream()); }
+    unsafe {
+        result::launch_kernel(
+            func, (1, 1, 1), (REDUCE_BLOCK, 1, 1), 0, ctx.stream.cu_stream(),
+            &mut [
+                &scratch as *const CUdeviceptr as *mut c_void,
+                &init_ptr as *const CUdeviceptr as *mut c_void,
+                &grid1 as *const u32 as *mut c_void,
+                &final_ptr as *const CUdeviceptr as *mut c_void,
+            ],
+        ).unwrap_or_else(|e| panic!("CUDA launch {name} pass2: {e}"));
+    }
+
+    let mut out = [T::zero()];
+    unsafe { result::memcpy_dtoh_sync(&mut out, init_ptr).unwrap_or_else(|e| panic!("CUDA D2H: {e}")); }
+    out[0]
 }
 pub(crate) fn cuda_argmax_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmax_all(a) }
 pub(crate) fn cuda_argmin_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) { gpu_common::rtc_argmin_all(a) }
