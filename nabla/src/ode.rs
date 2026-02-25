@@ -144,6 +144,15 @@ fn sc<T: Scalar>(v: f64) -> T {
     T::from_f64(v)
 }
 
+/// `lincomb!(base; c1, k1; c2, k2; ...)` = `base + c1*k1 + c2*k2 + ...`
+macro_rules! lincomb {
+    ($base:expr; $($c:expr, $k:expr);+ $(;)?) => {{
+        let mut _acc = $base.clone();
+        $( _acc = &_acc + &(&$k * sc::<T>($c)); )+
+        _acc
+    }};
+}
+
 /// Mixed absolute/relative error norm over all elements.
 ///
 /// `max_i |err_i| / (atol + rtol * max(|y_i|, |y_new_i|))`
@@ -366,46 +375,29 @@ where
         let h = dt.min(t_span.1 - t);
 
         // Stage 2: t + h/5
-        let y2 = &y + &(&k1 * sc::<T>(h * A21));
-        let k2 = f(t + h / 5.0, &y2)?;
+        let k2 = f(t + h / 5.0, &lincomb!(y; h * A21, k1))?;
 
         // Stage 3: t + 3h/10
-        let y3 = &(&y + &(&k1 * sc::<T>(h * A31))) + &(&k2 * sc::<T>(h * A32));
-        let k3 = f(t + 3.0 * h / 10.0, &y3)?;
+        let k3 = f(t + 3.0 * h / 10.0, &lincomb!(y; h * A31, k1; h * A32, k2))?;
 
         // Stage 4: t + 4h/5
-        let y4 = &(&(&y + &(&k1 * sc::<T>(h * A41))) + &(&k2 * sc::<T>(h * A42)))
-            + &(&k3 * sc::<T>(h * A43));
-        let k4 = f(t + 4.0 * h / 5.0, &y4)?;
+        let k4 = f(t + 4.0 * h / 5.0, &lincomb!(y; h * A41, k1; h * A42, k2; h * A43, k3))?;
 
         // Stage 5: t + 8h/9
-        let y5 = &(&(&(&y + &(&k1 * sc::<T>(h * A51))) + &(&k2 * sc::<T>(h * A52)))
-            + &(&k3 * sc::<T>(h * A53)))
-            + &(&k4 * sc::<T>(h * A54));
-        let k5 = f(t + 8.0 * h / 9.0, &y5)?;
+        let k5 = f(t + 8.0 * h / 9.0, &lincomb!(y; h * A51, k1; h * A52, k2; h * A53, k3; h * A54, k4))?;
 
         // Stage 6: t + h
-        let y6 = &(&(&(&(&y + &(&k1 * sc::<T>(h * A61))) + &(&k2 * sc::<T>(h * A62)))
-            + &(&k3 * sc::<T>(h * A63)))
-            + &(&k4 * sc::<T>(h * A64)))
-            + &(&k5 * sc::<T>(h * A65));
-        let k6 = f(t + h, &y6)?;
+        let k6 = f(t + h, &lincomb!(y; h * A61, k1; h * A62, k2; h * A63, k3; h * A64, k4; h * A65, k5))?;
 
         // 5th-order solution.
-        let y_new = &(&(&(&(&y + &(&k1 * sc::<T>(h * B1))) + &(&k3 * sc::<T>(h * B3)))
-            + &(&k4 * sc::<T>(h * B4)))
-            + &(&k5 * sc::<T>(h * B5)))
-            + &(&k6 * sc::<T>(h * B6));
+        let y_new = lincomb!(y; h * B1, k1; h * B3, k3; h * B4, k4; h * B5, k5; h * B6, k6);
 
         // Stage 7 (FSAL): evaluate at t + h with the 5th-order solution.
         let k7 = f(t + h, &y_new)?;
 
         // Error estimate: h * Σ_i e_i * k_i  (e_i = b_i - b*_i).
-        let err = &(&(&(&(&(&k1 * sc::<T>(h * E1)) + &(&k3 * sc::<T>(h * E3)))
-            + &(&k4 * sc::<T>(h * E4)))
-            + &(&k5 * sc::<T>(h * E5)))
-            + &(&k6 * sc::<T>(h * E6)))
-            + &(&k7 * sc::<T>(h * E7));
+        let err_base = &k1 * sc::<T>(h * E1);
+        let err = lincomb!(err_base; h * E3, k3; h * E4, k4; h * E5, k5; h * E6, k6; h * E7, k7);
 
         let err_norm = error_norm(&err, &y, &y_new, config.atol, config.rtol);
 

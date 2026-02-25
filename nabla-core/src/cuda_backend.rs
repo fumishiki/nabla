@@ -473,6 +473,14 @@ fn get_kernel(ctx: &CudaCtx, name: &str) -> CudaResult<CUfunction> {
 // SAFETY for all launch_* functions: kernel arguments are raw pointers to GPU
 // memory or scalar values. Caller guarantees buffers are valid and sized correctly.
 
+fn cuda_grid_1d<T: Scalar>(n: usize) -> u32 {
+    if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
+        grid_1d((n + 3) / 4)
+    } else {
+        grid_1d(n)
+    }
+}
+
 fn launch_unary<T: Scalar>(a: &CudaStorage<T>, op: &str) -> CudaStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
@@ -481,20 +489,9 @@ fn launch_unary<T: Scalar>(a: &CudaStorage<T>, op: &str) -> CudaStorage<T> {
     let out_buf = CuBuffer::alloc_async(&ctx.stream, n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let n_u32 = n as u32;
-    // f32 kernels use float4: 4 elements per thread
-    let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        grid_1d((n + 3) / 4)
-    } else {
-        grid_1d(n)
-    };
-    // SAFETY: launching CUDA kernel with correct argument pointers.
     unsafe {
         result::launch_kernel(
-            func,
-            (grid, 1, 1),
-            (BLOCK_SIZE, 1, 1),
-            0,
-            ctx.stream.cu_stream(),
+            func, (cuda_grid_1d::<T>(n), 1, 1), (BLOCK_SIZE, 1, 1), 0, ctx.stream.cu_stream(),
             &mut [
                 &a.buf.ptr as *const CUdeviceptr as *mut c_void,
                 &out_buf.ptr as *const CUdeviceptr as *mut c_void,
@@ -513,18 +510,9 @@ fn launch_binary<T: Scalar>(a: &CudaStorage<T>, b: &CudaStorage<T>, op: &str) ->
     let out_buf = CuBuffer::alloc_async(&ctx.stream, n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let n_u32 = n as u32;
-    let grid = if core::any::TypeId::of::<T>() == core::any::TypeId::of::<f32>() {
-        grid_1d((n + 3) / 4)
-    } else {
-        grid_1d(n)
-    };
     unsafe {
         result::launch_kernel(
-            func,
-            (grid, 1, 1),
-            (BLOCK_SIZE, 1, 1),
-            0,
-            ctx.stream.cu_stream(),
+            func, (cuda_grid_1d::<T>(n), 1, 1), (BLOCK_SIZE, 1, 1), 0, ctx.stream.cu_stream(),
             &mut [
                 &a.buf.ptr as *const CUdeviceptr as *mut c_void,
                 &b.buf.ptr as *const CUdeviceptr as *mut c_void,

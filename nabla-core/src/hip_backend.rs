@@ -430,46 +430,37 @@ fn hip_launch(
 
 // ── Launch helpers ───────────────────────────────────────────────────────────
 
-fn launch_unary<T: Scalar>(a: &HipStorage<T>, op: &str) -> HipStorage<T> {
+fn hip_prepare_launch<T: Scalar>(
+    n: usize, op: &str,
+) -> (hip::hipFunction_t, HipBuffer, u32) {
     let ctx = get_ctx();
-    let n = a.n();
     let name = format!("k_{op}_{}", type_suffix::<T>());
     let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
     let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
-    let n_u32 = n as u32;
-    hip_launch(
-        func,
-        [grid_1d(n), 1, 1],
-        [BLOCK_SIZE, 1, 1],
-        &mut [
-            (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
-            (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
-            (&n_u32 as *const u32).cast_mut().cast(),
-        ],
-    );
+    (func, out_buf, n as u32)
+}
+
+fn launch_unary<T: Scalar>(a: &HipStorage<T>, op: &str) -> HipStorage<T> {
+    let n = a.n();
+    let (func, out_buf, n_u32) = hip_prepare_launch::<T>(n, op);
+    hip_launch(func, [grid_1d(n), 1, 1], [BLOCK_SIZE, 1, 1], &mut [
+        (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+        (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+        (&n_u32 as *const u32).cast_mut().cast(),
+    ]);
     HipStorage::new(a.nrows, a.ncols, out_buf)
 }
 
 fn launch_binary<T: Scalar>(a: &HipStorage<T>, b: &HipStorage<T>, op: &str) -> HipStorage<T> {
-    let ctx = get_ctx();
     let n = a.n();
-    let name = format!("k_{op}_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
-    let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
-        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
-    let n_u32 = n as u32;
-    hip_launch(
-        func,
-        [grid_1d(n), 1, 1],
-        [BLOCK_SIZE, 1, 1],
-        &mut [
-            (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
-            (&b.buf.ptr as *const *mut c_void).cast_mut().cast(),
-            (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
-            (&n_u32 as *const u32).cast_mut().cast(),
-        ],
-    );
+    let (func, out_buf, n_u32) = hip_prepare_launch::<T>(n, op);
+    hip_launch(func, [grid_1d(n), 1, 1], [BLOCK_SIZE, 1, 1], &mut [
+        (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+        (&b.buf.ptr as *const *mut c_void).cast_mut().cast(),
+        (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+        (&n_u32 as *const u32).cast_mut().cast(),
+    ]);
     HipStorage::new(a.nrows, a.ncols, out_buf)
 }
 
