@@ -245,13 +245,11 @@ fn canonicalize(input: &mut EinsumInput) {
                 && seen.insert(old.clone())
                 && contraction_pos < CONTRACTION_NAMES.len()
             {
-                rename
-                    .entry(old)
-                    .or_insert_with(|| {
-                        let ident = Ident::new(CONTRACTION_NAMES[contraction_pos], idx.span());
-                        contraction_pos += 1;
-                        ident
-                    });
+                rename.entry(old).or_insert_with(|| {
+                    let ident = Ident::new(CONTRACTION_NAMES[contraction_pos], idx.span());
+                    contraction_pos += 1;
+                    ident
+                });
             }
         }
     }
@@ -784,14 +782,8 @@ fn build_accumulator(
         let dim = dim_expr_for_index_any_pos(cidx, rhs_terms)?;
         if loop_i == 0 && n >= 1 {
             // Innermost contraction: tile with block size 64
-            let block_var = Ident::new(
-                &format!("__{}_blk", cidx),
-                cidx.span(),
-            );
-            let end_var = Ident::new(
-                &format!("__{}_end", cidx),
-                cidx.span(),
-            );
+            let block_var = Ident::new(&format!("__{}_blk", cidx), cidx.span());
+            let end_var = Ident::new(&format!("__{}_end", cidx), cidx.span());
             loops = quote! {
                 {
                     let __dim = #dim;
@@ -942,9 +934,7 @@ fn greedy_contraction_order(
 
     let n = terms.len();
     for _ in 0..n - 1 {
-        let alive: Vec<usize> = (0..slot_indices.len())
-            .filter(|&i| slot_alive[i])
-            .collect();
+        let alive: Vec<usize> = (0..slot_indices.len()).filter(|&i| slot_alive[i]).collect();
 
         let mut best_pair = (alive[0], alive[1]);
         let mut best_cost = usize::MAX;
@@ -1037,11 +1027,7 @@ struct IntermediateTensor {
 /// At each step, contracts the pair of remaining tensors whose binary
 /// contraction produces the fewest intermediate indices.
 fn codegen_sequential_contraction(input: &EinsumInput) -> Result<TokenStream2> {
-    let output_names: HashSet<String> = input
-        .output_indices
-        .iter()
-        .map(Ident::to_string)
-        .collect();
+    let output_names: HashSet<String> = input.output_indices.iter().map(Ident::to_string).collect();
 
     // Compute greedy contraction order.
     let contraction_order = greedy_contraction_order(&input.rhs_terms, &input.output_indices);
@@ -1192,14 +1178,8 @@ fn codegen_sequential_contraction(input: &EinsumInput) -> Result<TokenStream2> {
             let dim = dim_for_binary_index(cidx, &acc, &right_tensor)?;
             if loop_i == 0 && n_contr >= 1 {
                 // L1 tiling on innermost contraction index (block size 64)
-                let block_var = Ident::new(
-                    &format!("__{}_blk", cidx),
-                    cidx.span(),
-                );
-                let end_var = Ident::new(
-                    &format!("__{}_end", cidx),
-                    cidx.span(),
-                );
+                let block_var = Ident::new(&format!("__{}_blk", cidx), cidx.span());
+                let end_var = Ident::new(&format!("__{}_end", cidx), cidx.span());
                 loops = quote! {
                     {
                         let __dim = #dim;

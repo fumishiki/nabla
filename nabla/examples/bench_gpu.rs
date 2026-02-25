@@ -11,9 +11,13 @@ const WARMUP: usize = 20;
 const ITERS: usize = 100;
 
 fn bench<F: FnMut() -> Tensor<f32>>(name: &str, mut f: F) {
-    for _ in 0..WARMUP { f().sync(); }
+    for _ in 0..WARMUP {
+        f().sync();
+    }
     let start = Instant::now();
-    for _ in 0..ITERS { f().sync(); }
+    for _ in 0..ITERS {
+        f().sync();
+    }
     let elapsed = start.elapsed();
     let per_iter_us = elapsed.as_micros() as f64 / ITERS as f64;
     let per_iter_ms = per_iter_us / 1000.0;
@@ -23,9 +27,13 @@ fn bench<F: FnMut() -> Tensor<f32>>(name: &str, mut f: F) {
 }
 
 fn bench_scalar<F: FnMut() -> f32>(name: &str, mut f: F) {
-    for _ in 0..WARMUP { let _ = f(); }
+    for _ in 0..WARMUP {
+        let _ = f();
+    }
     let start = Instant::now();
-    for _ in 0..ITERS { let _ = f(); }
+    for _ in 0..ITERS {
+        let _ = f();
+    }
     let elapsed = start.elapsed();
     let per_iter_us = elapsed.as_micros() as f64 / ITERS as f64;
     let per_iter_ms = per_iter_us / 1000.0;
@@ -37,10 +45,13 @@ fn bench_scalar<F: FnMut() -> f32>(name: &str, mut f: F) {
 fn rand_tensor(rows: usize, cols: usize) -> Tensor<f32> {
     use std::cell::Cell;
     // Simple LCG for reproducible pseudo-random data
-    thread_local! { static SEED: Cell<u64> = Cell::new(42); }
+    thread_local! { static SEED: Cell<u64> = const { Cell::new(42) }; }
     Tensor::from_fn(rows, cols, |_, _| {
         SEED.with(|s| {
-            let x = s.get().wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let x = s
+                .get()
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             s.set(x);
             (x >> 33) as f32 / (1u64 << 31) as f32 - 1.0
         })

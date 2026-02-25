@@ -2,13 +2,7 @@
 
 /// Generate WGSL software MMA shader: each thread computes TR x TC output tile.
 /// Workgroup: (BN/TC) x (BM/TR) threads, each holding TR x TC registers.
-pub fn gen_matmul_register_tile(
-    tr: u32,
-    tc: u32,
-    bm: u32,
-    bn: u32,
-    bk: u32,
-) -> String {
+pub fn gen_matmul_register_tile(tr: u32, tc: u32, bm: u32, bn: u32, bk: u32) -> String {
     let wg_x = bn / tc;
     let wg_y = bm / tr;
     let smem_a = bm * bk;
@@ -17,7 +11,8 @@ pub fn gen_matmul_register_tile(
     let total_threads = wg_x * wg_y;
     let a_loads = smem_a.div_ceil(total_threads);
     let b_loads = smem_b.div_ceil(total_threads);
-    format!(r"
+    format!(
+        r"
 var<workgroup> smem_a: array<f32, {smem_a}>;
 var<workgroup> smem_b: array<f32, {smem_b}>;
 @group(0) @binding(0) var<storage, read> mat_a: array<f32>;
@@ -95,7 +90,8 @@ fn main(
         }}
     }}
 }}
-")
+"
+    )
 }
 
 /// Select register tile params based on matrix dimensions.

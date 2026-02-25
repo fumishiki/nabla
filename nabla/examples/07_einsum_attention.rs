@@ -20,7 +20,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // scores = Q * K^T / sqrt(d)
     let scale = 1.0 / (d as f64).sqrt();
-    let scores: Tensor<f64> = einsum!(s[i,j] = q[i,k] * k[j,k]);  // Q * K^T
+    let scores: Tensor<f64> = einsum!(s[i,j] = q[i,k] * k[j,k]); // Q * K^T
     let scores = &scores * scale;
 
     // Row-wise softmax
@@ -35,7 +35,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     println!("Attention weights (softmax):");
     for i in 0..seq {
-        let row: Vec<String> = (0..seq).map(|j| format!("{:.4}", softmax.get(i, j))).collect();
+        let row: Vec<String> = (0..seq)
+            .map(|j| format!("{:.4}", softmax.get(i, j)))
+            .collect();
         println!("  [{}]", row.join(", "));
     }
     println!("Output shape: {:?}", out.shape());

@@ -12,14 +12,14 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // capacity hints
 #![allow(clippy::missing_errors_doc)]
 
+#[cfg(feature = "cpu")]
+use crate::linalg::LinalgExt;
 use nabla_core::backend::Backend;
 #[cfg(feature = "cpu")]
 use nabla_core::backend::Cpu;
 use nabla_core::error::{Error, Result};
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
-#[cfg(feature = "cpu")]
-use crate::linalg::LinalgExt;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -381,13 +381,22 @@ where
         let k3 = f(t + 3.0 * h / 10.0, &lincomb!(y; h * A31, k1; h * A32, k2))?;
 
         // Stage 4: t + 4h/5
-        let k4 = f(t + 4.0 * h / 5.0, &lincomb!(y; h * A41, k1; h * A42, k2; h * A43, k3))?;
+        let k4 = f(
+            t + 4.0 * h / 5.0,
+            &lincomb!(y; h * A41, k1; h * A42, k2; h * A43, k3),
+        )?;
 
         // Stage 5: t + 8h/9
-        let k5 = f(t + 8.0 * h / 9.0, &lincomb!(y; h * A51, k1; h * A52, k2; h * A53, k3; h * A54, k4))?;
+        let k5 = f(
+            t + 8.0 * h / 9.0,
+            &lincomb!(y; h * A51, k1; h * A52, k2; h * A53, k3; h * A54, k4),
+        )?;
 
         // Stage 6: t + h
-        let k6 = f(t + h, &lincomb!(y; h * A61, k1; h * A62, k2; h * A63, k3; h * A64, k4; h * A65, k5))?;
+        let k6 = f(
+            t + h,
+            &lincomb!(y; h * A61, k1; h * A62, k2; h * A63, k3; h * A64, k4; h * A65, k5),
+        )?;
 
         // 5th-order solution.
         let y_new = lincomb!(y; h * B1, k1; h * B3, k3; h * B4, k4; h * B5, k5; h * B6, k6);
@@ -500,11 +509,15 @@ where
 
     // exp_ha = V * diag(exp_diag) * V^T
     let exp_ha = Tensor::<f64, Cpu>::from_fn(n, n, |i, j| {
-        (0..n).map(|k| v.get(i, k) * exp_diag[k] * v.get(j, k)).sum()
+        (0..n)
+            .map(|k| v.get(i, k) * exp_diag[k] * v.get(j, k))
+            .sum()
     });
     // phi1_ha = V * diag(phi1_diag) * V^T
     let phi1_ha = Tensor::<f64, Cpu>::from_fn(n, n, |i, j| {
-        (0..n).map(|k| v.get(i, k) * phi1_diag[k] * v.get(j, k)).sum()
+        (0..n)
+            .map(|k| v.get(i, k) * phi1_diag[k] * v.get(j, k))
+            .sum()
     });
 
     let (mut times, mut states) = alloc_trajectory(t_span, dt, y0);
@@ -555,7 +568,11 @@ pub struct Bdf1Config {
 
 impl Default for Bdf1Config {
     fn default() -> Self {
-        Self { dt: 1e-3, tol: 1e-8, max_iter: 50 }
+        Self {
+            dt: 1e-3,
+            tol: 1e-8,
+            max_iter: 50,
+        }
     }
 }
 
@@ -566,10 +583,7 @@ fn diff_inf_norm<T: Scalar>(a: &Tensor<T, Cpu>, b: &Tensor<T, Cpu>) -> f64 {
     let mut mx = 0.0_f64;
     for i in 0..rows {
         for j in 0..cols {
-            let d: f64 = nabla_core::scalar::math_utils::abs(
-                &(a.get(i, j) - b.get(i, j)),
-            )
-            .into();
+            let d: f64 = nabla_core::scalar::math_utils::abs(&(a.get(i, j) - b.get(i, j))).into();
             if d > mx {
                 mx = d;
             }
@@ -652,7 +666,11 @@ pub struct DaeConfig {
 
 impl Default for DaeConfig {
     fn default() -> Self {
-        Self { dt: 0.01, tol: 1e-8, max_iter: 50 }
+        Self {
+            dt: 0.01,
+            tol: 1e-8,
+            max_iter: 50,
+        }
     }
 }
 
@@ -777,7 +795,10 @@ pub struct IfEulerScalarConfig {
 
 impl Default for IfEulerScalarConfig {
     fn default() -> Self {
-        Self { dt: 1e-3, stiffness: 1.0 }
+        Self {
+            dt: 1e-3,
+            stiffness: 1.0,
+        }
     }
 }
 
@@ -807,7 +828,7 @@ impl Default for MetdConfig {
 fn phi1_matrix(z: &Tensor<f64, Cpu>, order: usize) -> Tensor<f64, Cpu> {
     let n = z.nrows();
     let mut result = Tensor::<f64, Cpu>::identity(n); // k=0 term: I / 1!
-    let mut zk = Tensor::<f64, Cpu>::identity(n);     // Z^0
+    let mut zk = Tensor::<f64, Cpu>::identity(n); // Z^0
 
     let mut factorial = 1.0_f64; // (k+1)! accumulator
     for k in 1..=order {
@@ -900,7 +921,10 @@ pub struct StormerVerletConfig {
 
 impl Default for StormerVerletConfig {
     fn default() -> Self {
-        Self { dt: 0.01, mass: 1.0 }
+        Self {
+            dt: 0.01,
+            mass: 1.0,
+        }
     }
 }
 
@@ -986,7 +1010,11 @@ pub struct PararealConfig {
 
 impl Default for PararealConfig {
     fn default() -> Self {
-        Self { n_intervals: 8, max_iter: 10, tol: 1e-6 }
+        Self {
+            n_intervals: 8,
+            max_iter: 10,
+            tol: 1e-6,
+        }
     }
 }
 

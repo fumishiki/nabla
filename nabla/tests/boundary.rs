@@ -266,7 +266,7 @@ fn map_shape_mismatch_panics() {
 
 #[test]
 #[should_panic(expected = "map_! shape mismatch")]
-fn map__shape_mismatch_panics() {
+fn map_inplace_shape_mismatch_panics() {
     let a: Tensor<f64> = Tensor::zeros(2, 3);
     let mut out: Tensor<f64> = Tensor::zeros(2, 2);
     nabla::map_!(out, |x| x, &a);
@@ -410,7 +410,9 @@ fn cas_eval_tensor_roundtrip() {
 fn ode_rk4_accuracy() {
     let y0: Tensor<f64> = Tensor::from_fn(1, 1, |_, _| 1.0_f64);
     let sol = rk4(|_t, y| Ok(-y), &y0, (0.0, 1.0), 0.01).expect("rk4 failed");
-    assert!((sol.final_state().expect("final_state failed").get(0, 0) - (-1.0_f64).exp()).abs() < 1e-6);
+    assert!(
+        (sol.final_state().expect("final_state failed").get(0, 0) - (-1.0_f64).exp()).abs() < 1e-6
+    );
 }
 
 #[test]
@@ -420,8 +422,11 @@ fn ode_dormand_prince_adaptive() {
         dt_init: 0.1,
         ..Default::default()
     };
-    let sol = dormand_prince(|_t, y| Ok(-y), &y0, (0.0, 1.0), &config).expect("dormand_prince failed");
-    assert!((sol.final_state().expect("final_state failed").get(0, 0) - (-1.0_f64).exp()).abs() < 1e-4);
+    let sol =
+        dormand_prince(|_t, y| Ok(-y), &y0, (0.0, 1.0), &config).expect("dormand_prince failed");
+    assert!(
+        (sol.final_state().expect("final_state failed").get(0, 0) - (-1.0_f64).exp()).abs() < 1e-4
+    );
     assert!(sol.len() < 100);
 }
 
@@ -448,7 +453,9 @@ fn cas_eval_tensor_generic_type() {
 fn ode_rk4_generic_type() {
     let y0: Tensor<f64> = Tensor::from_fn(1, 1, |_, _| 1.0_f64);
     let sol = rk4(|_t, y| Ok(-y), &y0, (0.0, 0.5), 0.01).expect("rk4 failed");
-    assert!((sol.final_state().expect("final_state failed").get(0, 0) - (-0.5_f64).exp()).abs() < 1e-5);
+    assert!(
+        (sol.final_state().expect("final_state failed").get(0, 0) - (-0.5_f64).exp()).abs() < 1e-5
+    );
 }
 
 #[test]
@@ -551,9 +558,15 @@ fn einsum_canon_index_rename() {
 fn cas_simplify_constant_folding() {
     use nabla::cas::{Expr, simplify};
     // 2 + 3 = 5
-    assert_eq!(format!("{}", simplify(&(&Expr::lit(2.0) + &Expr::lit(3.0)))), "5");
+    assert_eq!(
+        format!("{}", simplify(&(&Expr::lit(2.0) + &Expr::lit(3.0)))),
+        "5"
+    );
     // 2 * 3 = 6
-    assert_eq!(format!("{}", simplify(&(&Expr::lit(2.0) * &Expr::lit(3.0)))), "6");
+    assert_eq!(
+        format!("{}", simplify(&(&Expr::lit(2.0) * &Expr::lit(3.0)))),
+        "6"
+    );
 }
 
 #[test]
@@ -569,14 +582,19 @@ fn cas_simplify_eqsat_exp_ln() {
 #[test]
 fn bdf1_linear_decay() {
     // dy/dt = -100y, y(0) = 1 => y(t) = exp(-100t)
-    use nabla::ode::{bdf1, Bdf1Config};
+    use nabla::ode::{Bdf1Config, bdf1};
     let y0 = Tensor::<f64>::fill(1, 1, 1.0);
     let sol = bdf1(
         |_t, y| Ok(y * (-100.0_f64)),
         &y0,
         (0.0, 0.1),
-        &Bdf1Config { dt: 0.001, tol: 1e-10, max_iter: 100 },
-    ).expect("bdf1 should converge");
+        &Bdf1Config {
+            dt: 0.001,
+            tol: 1e-10,
+            max_iter: 100,
+        },
+    )
+    .expect("bdf1 should converge");
     let y_final = sol.final_state().expect("final_state").get(0, 0);
     let expected = (-100.0_f64 * 0.1).exp();
     assert!(
@@ -619,7 +637,7 @@ fn multi_dual_batch_jacobian() {
 
 #[test]
 fn cas_diff_simplify_matches_diff_simplify() {
-    use nabla::cas::{diff, diff_simplify, eval, simplify, Expr};
+    use nabla::cas::{Expr, diff, diff_simplify, eval, simplify};
     // Verify diff_simplify matches diff().simplify() numerically
     let x = Expr::var("x");
     let expr = &x * &Expr::sin(&x);
@@ -636,7 +654,7 @@ fn cas_diff_simplify_matches_diff_simplify() {
 
 #[test]
 fn cas_diff_multivar_product_rule() {
-    use nabla::cas::{diff_simplify, eval, Expr};
+    use nabla::cas::{Expr, diff_simplify, eval};
     // d(x*y)/dx = y
     let expr = &Expr::var("x") * &Expr::var("y");
     let d = diff_simplify(&expr, "x");
@@ -649,7 +667,7 @@ fn cas_diff_multivar_product_rule() {
 
 #[test]
 fn cas_diff_multivar_other_var() {
-    use nabla::cas::{diff_simplify, eval, Expr};
+    use nabla::cas::{Expr, diff_simplify, eval};
     // d(x^2)/dy = 0
     let expr = Expr::pow(&Expr::var("x"), &Expr::lit(2.0));
     let d = diff_simplify(&expr, "y");
@@ -662,7 +680,7 @@ fn cas_diff_multivar_other_var() {
 
 #[test]
 fn cas_diff_chain_rule_exp() {
-    use nabla::cas::{diff_simplify, eval, Expr};
+    use nabla::cas::{Expr, diff_simplify, eval};
     // d(exp(x^2))/dx = 2*x*exp(x^2)
     let x = Expr::var("x");
     let x2 = Expr::pow(&x, &Expr::lit(2.0));
@@ -673,7 +691,10 @@ fn cas_diff_chain_rule_exp() {
     let mut vars = HashMap::new();
     vars.insert("x", xv);
     let val = eval(&d, &vars).expect("eval");
-    assert!((val - expected).abs() < 1e-6, "got {val}, expected {expected}");
+    assert!(
+        (val - expected).abs() < 1e-6,
+        "got {val}, expected {expected}"
+    );
 }
 
 #[test]
@@ -727,11 +748,8 @@ fn ndtensor_index_bracket() {
 fn grad_quadratic() {
     // f(x) = sum(x^2), df/dx = 2x; at x=[[3.0]] => grad = [[6.0]]
     let x = mat![[3.0_f64]];
-    let g = grad(
-        |xv: &Variable<f64, Cpu>| xv.emul(xv).sum_all_var(),
-        &x,
-    )
-    .expect("grad returned None");
+    let g =
+        grad(|xv: &Variable<f64, Cpu>| xv.emul(xv).sum_all_var(), &x).expect("grad returned None");
     assert!((g[(0, 0)] - 6.0).abs() < 1e-10);
 }
 
@@ -784,7 +802,10 @@ fn expm_diagonal() {
 fn if_euler_scalar_stiff_stable() {
     // lambda=100, dt=0.1 — forward Euler diverges but IF Euler stays stable
     let y0 = mat![[1.0_f64]];
-    let config = IfEulerScalarConfig { dt: 0.1, stiffness: 100.0 };
+    let config = IfEulerScalarConfig {
+        dt: 0.1,
+        stiffness: 100.0,
+    };
     let sol = if_euler_scalar(
         |_t, _y| Ok(Tensor::<f64>::zeros(1, 1)),
         &y0,
@@ -805,12 +826,13 @@ fn if_euler_scalar_stiff_stable() {
 fn dae_simple_constraint() {
     // x' = 1, 0 = z - x  =>  x(t) = t, z(t) = t
     // x0 = 0, z0 = 0, t ∈ [0, 1]
-    use nabla::ode::{dae_solve, DaeConfig};
+    use nabla::ode::{DaeConfig, dae_solve};
     let x0 = Tensor::<f64>::fill(1, 1, 0.0);
     let z0 = Tensor::<f64>::fill(1, 1, 0.0);
     let sol = dae_solve(
-        |_x, _z, _t| Tensor::<f64>::fill(1, 1, 1.0),  // f: x' = 1
-        |x, z, _t| {                                     // g: 0 = z - x
+        |_x, _z, _t| Tensor::<f64>::fill(1, 1, 1.0), // f: x' = 1
+        |x, z, _t| {
+            // g: 0 = z - x
             let zv = z.get(0, 0);
             let xv = x.get(0, 0);
             Tensor::<f64>::fill(1, 1, zv - xv)
@@ -818,7 +840,11 @@ fn dae_simple_constraint() {
         x0,
         z0,
         (0.0, 1.0),
-        DaeConfig { dt: 0.01, tol: 1e-10, max_iter: 50 },
+        DaeConfig {
+            dt: 0.01,
+            tol: 1e-10,
+            max_iter: 50,
+        },
     )
     .expect("dae_solve failed");
     let x_final = sol.final_state().expect("no final state").get(0, 0);
@@ -832,19 +858,24 @@ fn dae_simple_constraint() {
 fn dae_quadratic_constraint() {
     // x' = z, 0 = z - 2*t  =>  z(t) = 2t, x(t) = t^2
     // x0 = 0, z0 = 0
-    use nabla::ode::{dae_solve, DaeConfig};
+    use nabla::ode::{DaeConfig, dae_solve};
     let x0 = Tensor::<f64>::fill(1, 1, 0.0);
     let z0 = Tensor::<f64>::fill(1, 1, 0.0);
     let sol = dae_solve(
-        |_x, z, _t| z.clone(),              // f: x' = z
-        |_x, z, t| {                         // g: 0 = z - 2t
+        |_x, z, _t| z.clone(), // f: x' = z
+        |_x, z, t| {
+            // g: 0 = z - 2t
             let zv = z.get(0, 0);
             Tensor::<f64>::fill(1, 1, zv - 2.0 * t)
         },
         x0,
         z0,
         (0.0, 1.0),
-        DaeConfig { dt: 0.01, tol: 1e-10, max_iter: 50 },
+        DaeConfig {
+            dt: 0.01,
+            tol: 1e-10,
+            max_iter: 50,
+        },
     )
     .expect("dae_solve failed");
     let x_final = sol.final_state().expect("no final state").get(0, 0);
@@ -906,7 +937,7 @@ fn vcat_macro_two_tensors() {
 fn static_matrix_matmul_shape() {
     let a: StaticMatrix<f64, 2, 3> = StaticMatrix::from_fn(|r, c| (r * 3 + c) as f64);
     let b: StaticMatrix<f64, 3, 2> = StaticMatrix::from_fn(|r, c| (r * 2 + c) as f64);
-    let c: StaticMatrix<f64, 2, 2> = &a * &b;
+    let c: StaticMatrix<f64, 2, 2> = a * b;
     // row0 of a = [0,1,2], col0 of b = [0,2,4] => 0+2+8 = 10
     assert!((c[(0, 0)] - 10.0).abs() < 1e-10);
 }
@@ -914,7 +945,7 @@ fn static_matrix_matmul_shape() {
 #[test]
 fn static_matrix_add_and_neg() {
     let a: StaticMatrix<f64, 2, 2> = StaticMatrix::from_fn(|r, c| (r + c) as f64);
-    let b = &a + &a;
+    let b = a + a;
     assert!((b[(0, 1)] - 2.0).abs() < 1e-10);
     let neg = -&a;
     assert!((neg[(0, 1)] - (-1.0)).abs() < 1e-10);
@@ -925,7 +956,7 @@ fn static_matrix_typed_matmul() {
     // 3x4 * 4x2 -> 3x2, compile-time shape checked
     let a = StaticMatrix::<f64, 3, 4>::from_fn(|r, c| (r * 4 + c) as f64);
     let b = StaticMatrix::<f64, 4, 2>::from_fn(|r, c| (r * 2 + c) as f64);
-    let c: StaticMatrix<f64, 3, 2> = &a * &b;
+    let c: StaticMatrix<f64, 3, 2> = a * b;
     assert_eq!(c.shape(), (3, 2));
     // (0,0): row0=[0,1,2,3] dot col0=[0,2,4,6] = 0+2+8+18 = 28
     assert!((c.get(0, 0) - 28.0).abs() < 1e-10);
@@ -943,7 +974,7 @@ fn static_matrix_typed_transpose() {
 fn static_matrix_sub_ref() {
     let a = StaticMatrix::<f64, 2, 3>::from_fn(|r, c| (r * 3 + c + 1) as f64);
     let b = StaticMatrix::<f64, 2, 3>::from_fn(|r, c| (r * 3 + c) as f64);
-    let d = &a - &b;
+    let d = a - b;
     // Every element should be 1.0
     for r in 0..2 {
         for c in 0..3 {
@@ -956,7 +987,7 @@ fn static_matrix_sub_ref() {
 fn metd_linear_decay() {
     // dy/dt = -y  →  L = [-1] (1x1 matrix), N = 0
     // y(0) = 1, exact: y(t) = exp(-t), so y(1) ≈ 0.3679
-    use nabla::ode::{metd_solve, MetdConfig};
+    use nabla::ode::{MetdConfig, metd_solve};
     let l: Tensor<f64> = mat![[-1.0_f64]];
     let y0: Tensor<f64> = mat![[1.0_f64]];
     let cfg = MetdConfig { dt: 0.01, order: 8 };
@@ -982,8 +1013,11 @@ fn stormer_verlet_harmonic() {
     // Simple harmonic oscillator: V(q) = q^2/2, grad_V(q) = q
     // H = p^2/2 + q^2/2 conserved
     // q(0)=1, p(0)=0, exact: q(t)=cos(t), p(t)=-sin(t), H=0.5
-    use nabla::ode::{stormer_verlet, StormerVerletConfig};
-    let cfg = StormerVerletConfig { dt: 0.01, mass: 1.0 };
+    use nabla::ode::{StormerVerletConfig, stormer_verlet};
+    let cfg = StormerVerletConfig {
+        dt: 0.01,
+        mass: 1.0,
+    };
     let (_, qs, ps) = stormer_verlet(
         |q| q.clone(), // grad_V(q) = q
         mat![[1.0_f64]],
@@ -1055,7 +1089,9 @@ fn svd_tall_3x2_reconstruction() {
     assert_eq!(s.len(), 2);
     let (m, n) = a.shape();
     let recon = Tensor::from_fn(m, n, |i, j| {
-        (0..s.len()).map(|r| u.get(i, r) * s[r] * vt.get(r, j)).sum::<f64>()
+        (0..s.len())
+            .map(|r| u.get(i, r) * s[r] * vt.get(r, j))
+            .sum::<f64>()
     });
     let err = (&a - &recon).abs().sum_all();
     assert!(err < 1e-12, "reconstruction error: {err}");
@@ -1074,7 +1110,12 @@ fn svd_rank_deficient() {
 
 #[test]
 fn svd_singular_values_descending() {
-    let a = mat![[4.0_f64, 2.0, 1.0], [2.0, 5.0, 3.0], [1.0, 3.0, 6.0], [0.0, 1.0, 0.0]];
+    let a = mat![
+        [4.0_f64, 2.0, 1.0],
+        [2.0, 5.0, 3.0],
+        [1.0, 3.0, 6.0],
+        [0.0, 1.0, 0.0]
+    ];
     let svd = a.svd().expect("SVD failed");
     let s = svd.s();
     for w in s.windows(2) {
@@ -1084,7 +1125,12 @@ fn svd_singular_values_descending() {
 
 #[test]
 fn svd_reconstruct_rank_1_reduces_error() {
-    let a = mat![[1.0_f64, 2.0, 0.0], [0.0, 1.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 0.0]];
+    let a = mat![
+        [1.0_f64, 2.0, 0.0],
+        [0.0, 1.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0]
+    ];
     let svd = a.svd().expect("SVD failed");
     let rank1 = svd.reconstruct_rank(1);
     let rank2 = svd.reconstruct_rank(2);
@@ -1099,7 +1145,11 @@ fn svd_reconstruct_rank_1_reduces_error() {
 fn norm_3_4_5_triangle() {
     let a: Tensor<f64> = mat![[3.0_f64, 4.0]];
     assert!((a.norm() - 5.0).abs() < 1e-10, "norm={}", a.norm());
-    assert!((a.norm_sq() - 25.0).abs() < 1e-10, "norm_sq={}", a.norm_sq());
+    assert!(
+        (a.norm_sq() - 25.0).abs() < 1e-10,
+        "norm_sq={}",
+        a.norm_sq()
+    );
 }
 
 #[test]
@@ -1169,7 +1219,10 @@ fn cross_entropy_loss_one_hot() {
     let loss = log_probs.cross_entropy_loss(&target);
     // loss = -log(softmax(3)) = -log(e^3/(e^1+e^2+e^3))
     let expected = -(3.0_f64.exp() / (1.0_f64.exp() + 2.0_f64.exp() + 3.0_f64.exp())).ln();
-    assert!((loss - expected).abs() < 1e-10, "loss={loss}, expected={expected}");
+    assert!(
+        (loss - expected).abs() < 1e-10,
+        "loss={loss}, expected={expected}"
+    );
 }
 
 #[test]
@@ -1179,7 +1232,10 @@ fn cross_entropy_loss_perfect_prediction() {
     let log_probs = logits.log_softmax(1);
     let target: Tensor<f64> = mat![[0.0_f64, 1.0]];
     let loss = log_probs.cross_entropy_loss(&target);
-    assert!(loss < 1e-10, "loss={loss} should be near 0 for perfect prediction");
+    assert!(
+        loss < 1e-10,
+        "loss={loss} should be near 0 for perfect prediction"
+    );
 }
 
 #[test]
@@ -1340,7 +1396,10 @@ fn layer_norm_row_zero_mean() {
     let normed = a.layer_norm(1, 1e-8);
     for r in 0..2 {
         let row_mean: f64 = (0..4).map(|c| normed.get(r, c)).sum::<f64>() / 4.0;
-        assert!(row_mean.abs() < 1e-6, "row {r} mean = {row_mean}, expected ~0");
+        assert!(
+            row_mean.abs() < 1e-6,
+            "row {r} mean = {row_mean}, expected ~0"
+        );
     }
 }
 
@@ -1349,7 +1408,13 @@ fn layer_norm_row_unit_variance() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0, 3.0, 4.0], [10.0, 20.0, 30.0, 40.0]];
     let normed = a.layer_norm(1, 1e-8);
     for r in 0..2 {
-        let var: f64 = (0..4).map(|c| { let x = normed.get(r, c); x * x }).sum::<f64>() / 4.0;
+        let var: f64 = (0..4)
+            .map(|c| {
+                let x = normed.get(r, c);
+                x * x
+            })
+            .sum::<f64>()
+            / 4.0;
         assert!((var - 1.0).abs() < 0.01, "row {r} var = {var}, expected ~1");
     }
 }
@@ -1603,7 +1668,11 @@ fn linear_layout_compose() {
     // compose(A, B).apply(v) == A.apply(B.apply(v))
     let ba = b.compose(&a);
     for v in 0..32u64 {
-        assert_eq!(ba.apply(v), b.apply(a.apply(v)), "compose(B,A).apply != B(A(v)) for v={v}");
+        assert_eq!(
+            ba.apply(v),
+            b.apply(a.apply(v)),
+            "compose(B,A).apply != B(A(v)) for v={v}"
+        );
     }
 }
 
@@ -1631,7 +1700,7 @@ fn fuse_gemm_relu() {
 
 #[test]
 fn parareal_van_der_pol() {
-    use nabla::ode::{parareal_solve, PararealConfig};
+    use nabla::ode::{PararealConfig, parareal_solve};
 
     // Van der Pol oscillator: x'' - mu*(1-x^2)*x' + x = 0
     // Rewrite as system: x1' = x2, x2' = mu*(1-x1^2)*x2 - x1
@@ -1658,10 +1727,14 @@ fn parareal_van_der_pol() {
         y
     };
 
-    let config = PararealConfig { n_intervals: 8, max_iter: 5, tol: 1e-8 };
+    let config = PararealConfig {
+        n_intervals: 8,
+        max_iter: 5,
+        tol: 1e-8,
+    };
     let result = parareal_solve(t0, t1, y0, &config, coarse, fine);
     assert!(result.is_ok());
-    let vals = result.ok().expect("parareal should converge");
+    let vals = result.expect("parareal should converge");
 
     // Exact solution: y(t) = exp(-t)
     let exact_final = (-t1).exp();
@@ -1691,6 +1764,7 @@ fn parareal_van_der_pol() {
 // ---------------------------------------------------------------------------
 
 #[nabla_grad]
+#[allow(dead_code)]
 fn sigmoid(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
@@ -1699,12 +1773,19 @@ fn sigmoid(x: f64) -> f64 {
 fn nabla_grad_sigmoid() {
     let (val, grad) = sigmoid_grad(0.0);
     // sigmoid(0) = 0.5
-    assert!((val - 0.5).abs() < 1e-12, "sigmoid(0) = {val}, expected 0.5");
+    assert!(
+        (val - 0.5).abs() < 1e-12,
+        "sigmoid(0) = {val}, expected 0.5"
+    );
     // sigmoid'(0) = sigmoid(0) * (1 - sigmoid(0)) = 0.25
-    assert!((grad - 0.25).abs() < 1e-12, "sigmoid'(0) = {grad}, expected 0.25");
+    assert!(
+        (grad - 0.25).abs() < 1e-12,
+        "sigmoid'(0) = {grad}, expected 0.25"
+    );
 }
 
 #[nabla_grad]
+#[allow(dead_code)]
 fn poly(x: f64) -> f64 {
     x * x + 2.0 * x
 }
@@ -1729,17 +1810,35 @@ fn wgpu_register_tile_shader_gen() {
     assert!(shader.contains("smem_a"), "missing smem_a");
     assert!(shader.contains("smem_b"), "missing smem_b");
     assert!(shader.contains("regs"), "missing regs");
-    assert!(shader.contains("workgroupBarrier"), "missing workgroupBarrier");
+    assert!(
+        shader.contains("workgroupBarrier"),
+        "missing workgroupBarrier"
+    );
     // Workgroup dims: (64/4, 64/4) = (16, 16)
-    assert!(shader.contains("@compute @workgroup_size(16, 16, 1)"), "wrong workgroup dims");
+    assert!(
+        shader.contains("@compute @workgroup_size(16, 16, 1)"),
+        "wrong workgroup dims"
+    );
 }
 
 #[test]
 fn wgpu_select_register_tile_params() {
-    assert_eq!(nabla::wgsl::select_register_tile_params(32, 32, 32), (2, 2, 16, 16, 8));
-    assert_eq!(nabla::wgsl::select_register_tile_params(100, 100, 100), (4, 4, 32, 32, 8));
-    assert_eq!(nabla::wgsl::select_register_tile_params(256, 256, 256), (4, 4, 64, 64, 16));
-    assert_eq!(nabla::wgsl::select_register_tile_params(1024, 1024, 512), (4, 4, 64, 64, 16));
+    assert_eq!(
+        nabla::wgsl::select_register_tile_params(32, 32, 32),
+        (2, 2, 16, 16, 8)
+    );
+    assert_eq!(
+        nabla::wgsl::select_register_tile_params(100, 100, 100),
+        (4, 4, 32, 32, 8)
+    );
+    assert_eq!(
+        nabla::wgsl::select_register_tile_params(256, 256, 256),
+        (4, 4, 64, 64, 16)
+    );
+    assert_eq!(
+        nabla::wgsl::select_register_tile_params(1024, 1024, 512),
+        (4, 4, 64, 64, 16)
+    );
 }
 
 // --- Migrated from new_ops.rs ---
@@ -1976,8 +2075,8 @@ fn gradient_prep_x_squared() {
 #[test]
 fn grad_single_use() {
     let x: Tensor<f64> = mat![[3.0_f64, 4.0]];
-    let g = grad(|xv: &Variable<f64, Cpu>| xv.emul(xv).sum_all_var(), &x)
-        .expect("grad returned None");
+    let g =
+        grad(|xv: &Variable<f64, Cpu>| xv.emul(xv).sum_all_var(), &x).expect("grad returned None");
     assert!(approx_eq(g.get(0, 0), 6.0));
     assert!(approx_eq(g.get(0, 1), 8.0));
 }
@@ -2096,7 +2195,7 @@ fn smooth_l1_loss_known() {
 fn bce_with_logits_known() {
     let logits: Tensor<f64> = mat![[0.0]];
     let target: Tensor<f64> = mat![[1.0]];
-    assert!((logits.bce_with_logits(&target) - 0.6931).abs() < 1e-3);
+    assert!((logits.bce_with_logits(&target) - std::f64::consts::LN_2).abs() < 1e-3);
 }
 
 #[test]
@@ -2390,7 +2489,7 @@ fn conv1d_known() {
 fn conv2d_simple() {
     let x: Tensor<f64> = Tensor::from_fn(1, 9, |_, c| (c + 1) as f64); // 3x3
     let w: Tensor<f64> = mat![[1.0, 1.0, 1.0, 1.0]]; // 2x2 kernel
-    let y = x.conv2d(&w, None, 1, 1, 3, 3, 1, 2, 2, (1,1), (0,0), (1,1), 1);
+    let y = x.conv2d(&w, None, 1, 1, 3, 3, 1, 2, 2, (1, 1), (0, 0), (1, 1), 1);
     assert_eq!(y.shape(), (1, 4));
     assert!((y.get(0, 0) - 12.0).abs() < 1e-10);
     assert!((y.get(0, 3) - 28.0).abs() < 1e-10);
@@ -2464,7 +2563,7 @@ fn multi_head_attention_basic() {
 fn conv_transpose2d_basic() {
     let x: Tensor<f64> = mat![[1.0, 2.0, 3.0, 4.0]]; // 2x2
     let w: Tensor<f64> = mat![[1.0, 0.0, 0.0, 1.0]]; // identity-like 2x2 kernel
-    let y = x.conv_transpose2d(&w, None, 1, 1, 2, 2, 1, 2, 2, (1,1), (0,0), (0,0));
+    let y = x.conv_transpose2d(&w, None, 1, 1, 2, 2, 1, 2, 2, (1, 1), (0, 0), (0, 0));
     assert_eq!(y.shape(), (1, 9)); // 3x3 output
 }
 
@@ -2490,16 +2589,48 @@ fn conv3d_basic() {
     // 1 batch, 1 channel, 2x2x2 volume, 1 filter, 2x2x2 kernel
     let x: Tensor<f64> = Tensor::from_fn(1, 8, |_r, c| (c + 1) as f64); // 1..8
     let w: Tensor<f64> = Tensor::fill(1, 8, 1.0); // all 1s kernel
-    let out = x.conv3d(&w, None, 1, 1, 2, 2, 2, 1, 2, 2, 2, (1,1,1), (0,0,0), (1,1,1), 1);
+    let out = x.conv3d(
+        &w,
+        None,
+        1,
+        1,
+        2,
+        2,
+        2,
+        1,
+        2,
+        2,
+        2,
+        (1, 1, 1),
+        (0, 0, 0),
+        (1, 1, 1),
+        1,
+    );
     assert_eq!(out.shape(), (1, 1)); // single output voxel
     assert!((out.get(0, 0) - 36.0).abs() < 1e-6); // sum 1..8 = 36
 }
 
 #[test]
 fn conv3d_with_padding() {
-    let x: Tensor<f64> = Tensor::from_fn(1, 8, |_r, c| 1.0);
+    let x: Tensor<f64> = Tensor::from_fn(1, 8, |_r, _c| 1.0);
     let w: Tensor<f64> = Tensor::fill(1, 8, 1.0);
-    let out = x.conv3d(&w, None, 1, 1, 2, 2, 2, 1, 2, 2, 2, (1,1,1), (1,1,1), (1,1,1), 1);
+    let out = x.conv3d(
+        &w,
+        None,
+        1,
+        1,
+        2,
+        2,
+        2,
+        1,
+        2,
+        2,
+        2,
+        (1, 1, 1),
+        (1, 1, 1),
+        (1, 1, 1),
+        1,
+    );
     // with padding=1 on each side, output size = (2+2-2)/1+1 = 3 per dim
     assert_eq!(out.shape(), (1, 27));
 }
@@ -2511,7 +2642,7 @@ fn rand_shape_and_range() {
     for r in 0..3 {
         for c in 0..4 {
             let v = t.get(r, c);
-            assert!(v >= 0.0 && v <= 1.0, "rand value {v} out of range");
+            assert!((0.0..=1.0).contains(&v), "rand value {v} out of range");
         }
     }
 }
@@ -2551,11 +2682,17 @@ fn dropout_training_on() {
     let out = x.dropout(0.5, true, 42);
     let nonzero = (0..1000).filter(|&c| out.get(0, c).abs() > 1e-12).count();
     // ~50% should survive, check within reasonable range
-    assert!(nonzero > 300 && nonzero < 700, "dropout kept {nonzero}/1000");
+    assert!(
+        nonzero > 300 && nonzero < 700,
+        "dropout kept {nonzero}/1000"
+    );
     // Surviving values should be scaled by 1/(1-p) = 2.0
     for c in 0..1000 {
         let v = out.get(0, c);
-        assert!(v.abs() < 1e-12 || (v - 2.0).abs() < 1e-12, "unexpected value {v}");
+        assert!(
+            v.abs() < 1e-12 || (v - 2.0).abs() < 1e-12,
+            "unexpected value {v}"
+        );
     }
 }
 
@@ -2646,4 +2783,109 @@ fn detach_is_independent_copy() {
     assert_eq!(b.shape(), a.shape());
     assert_eq!(b.get(0, 0), a.get(0, 0));
     assert_eq!(b.get(1, 1), a.get(1, 1));
+}
+
+#[test]
+fn free_construction_aliases() {
+    let z: Tensor<f64> = zeros(2, 3);
+    assert_eq!(z.shape(), (2, 3));
+    assert!(z.as_slice().iter().all(|&v| v == 0.0));
+
+    let o: Tensor<f64> = ones(2, 3);
+    assert!(o.as_slice().iter().all(|&v| v == 1.0));
+
+    let f: Tensor<f64> = fill(2, 3, 2.5);
+    assert!(f.as_slice().iter().all(|&v| v == 2.5));
+
+    let id: Tensor<f64> = eye(3);
+    assert_eq!(id.shape(), (3, 3));
+    for r in 0..3 {
+        for c in 0..3 {
+            let expected = if r == c { 1.0 } else { 0.0 };
+            assert!(approx_eq(id.get(r, c), expected));
+        }
+    }
+
+    let made: Tensor<f64> = from_fn(2, 2, |r, c| (r * 2 + c) as f64);
+    assert!(approx_eq(made.get(1, 1), 3.0));
+
+    let nd = nd_zeros::<f64>(&[2, 3, 4]);
+    assert_eq!(nd.ndim(), 3);
+    assert_eq!(nd.dim(0), 2);
+    assert_eq!(nd.dim(1), 3);
+    assert_eq!(nd.dim(2), 4);
+    assert!(approx_eq(nd.get_nd(&[1, 2, 3]), 0.0));
+
+    let r: Tensor<f64> = arange(0.0_f64, 1.0, 0.25);
+    assert_eq!(r.shape(), (1, 4));
+    assert!(approx_eq(r.get(0, 0), 0.0));
+    assert!(approx_eq(r.get(0, 1), 0.25));
+    assert!(approx_eq(r.get(0, 2), 0.5));
+    assert!(approx_eq(r.get(0, 3), 0.75));
+}
+
+#[test]
+fn h_alias_matches_adjoint() {
+    let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let h = a.h();
+    let adj = a.adjoint();
+    assert_approx_grid(&h, &adj, 1e-12);
+
+    let s = StaticMatrix::<f64, 2, 3>::from_fn(|r, c| (r * 3 + c + 1) as f64);
+    let sh = s.h();
+    let sadj = s.adjoint();
+    let (rows, cols) = sh.shape();
+    assert_eq!((rows, cols), sadj.shape());
+    for r in 0..rows {
+        for c in 0..cols {
+            assert!(approx_eq(sh.get(r, c), sadj.get(r, c)));
+        }
+    }
+}
+
+#[test]
+fn linalg_short_aliases() -> Result<()> {
+    let a: Tensor<f64> = mat![[4.0, 1.0], [1.0, 3.0]];
+    let b: Tensor<f64> = mat![[1.0], [2.0]];
+
+    let _ = a.lu()?;
+    let _ = a.chol()?;
+    let _ = a.ldl()?;
+
+    let x_short = a.lstsq(&b)?;
+    let x_long = a.solve_lstsq(&b)?;
+    assert_approx_grid(&x_short, &x_long, 1e-10);
+
+    let sv_short = a.svdvals()?;
+    let sv_long = a.singular_values()?;
+    assert_eq!(sv_short.len(), sv_long.len());
+    for i in 0..sv_short.len() {
+        assert!(approx_eq(sv_short[i], sv_long[i]));
+    }
+
+    let eig = a.sym(Side::Lower)?.eigh()?;
+    assert_eq!(eig.values().len(), 2);
+    Ok(())
+}
+
+#[test]
+fn sparse_sugar_api() -> Result<()> {
+    let s = sparse(
+        2,
+        2,
+        &[(0, 0, 4.0_f64), (0, 1, 1.0), (1, 0, 1.0), (1, 1, 3.0)],
+    )?;
+    let b: Tensor<f64> = mat![[1.0], [2.0]];
+
+    let x_short = s.chol_solve(&b)?;
+    let x_long = s.cholesky_solve(Side::Lower, &b)?;
+    assert_approx_grid(&x_short, &x_long, 1e-10);
+
+    let d: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let y_ref = s.matmul_dense(&d)?;
+    let y_borrowed = &s * &d;
+    let y_owned = s.clone() * &d;
+    assert_approx_grid(&y_borrowed, &y_ref, 1e-10);
+    assert_approx_grid(&y_owned, &y_ref, 1e-10);
+    Ok(())
 }

@@ -31,7 +31,9 @@ pub(crate) fn type_suffix<T: Scalar>() -> &'static str {
 
 pub(crate) fn grid_1d(n: usize) -> u32 {
     #[allow(clippy::cast_possible_truncation)]
-    { n.div_ceil(BLOCK_SIZE as usize) as u32 }
+    {
+        n.div_ceil(BLOCK_SIZE as usize) as u32
+    }
 }
 
 // ── Memory pool constants & helpers ─────────────────────────────────────────
@@ -39,7 +41,9 @@ pub(crate) fn grid_1d(n: usize) -> u32 {
 /// Round up to 512-byte alignment (PyTorch-style, much less waste than power-of-2).
 pub(crate) fn round_size(size: usize) -> usize {
     const ALIGN: usize = 512;
-    if size == 0 { return ALIGN; }
+    if size == 0 {
+        return ALIGN;
+    }
     (size + ALIGN - 1) & !(ALIGN - 1)
 }
 
@@ -66,14 +70,22 @@ pub(crate) trait GpuPtr: Copy + Send + Eq {
 
 #[cfg(feature = "cuda")]
 impl GpuPtr for u64 {
-    fn null() -> Self { 0 }
-    fn offset(self, bytes: usize) -> Self { self + bytes as u64 }
+    fn null() -> Self {
+        0
+    }
+    fn offset(self, bytes: usize) -> Self {
+        self + bytes as u64
+    }
 }
 
 #[cfg(feature = "hip")]
 impl GpuPtr for *mut std::ffi::c_void {
-    fn null() -> Self { std::ptr::null_mut() }
-    fn offset(self, bytes: usize) -> Self { unsafe { self.byte_add(bytes) } }
+    fn null() -> Self {
+        std::ptr::null_mut()
+    }
+    fn offset(self, bytes: usize) -> Self {
+        unsafe { self.byte_add(bytes) }
+    }
 }
 
 // ── Generic memory pool ─────────────────────────────────────────────────────
@@ -115,7 +127,11 @@ impl<P: GpuPtr> MemoryPool<P> {
     }
 
     pub fn split_min(size: usize) -> usize {
-        if size < SMALL_LARGE_BOUNDARY { SMALL_SPLIT_MIN } else { LARGE_SPLIT_MIN }
+        if size < SMALL_LARGE_BOUNDARY {
+            SMALL_SPLIT_MIN
+        } else {
+            LARGE_SPLIT_MIN
+        }
     }
 
     /// Try to allocate from pool. Splits oversized blocks.
@@ -157,7 +173,10 @@ impl<P: GpuPtr> MemoryPool<P> {
         let (mut merged_ptr, mut merged_size) = (ptr, size);
 
         // Try coalescing with adjacent blocks in BOTH pools.
-        for pool in [&mut self.small_free as &mut Vec<FreeBlock<P>>, &mut self.large_free] {
+        for pool in [
+            &mut self.small_free as &mut Vec<FreeBlock<P>>,
+            &mut self.large_free,
+        ] {
             let mut i = 0;
             while i < pool.len() {
                 let bp = pool[i].ptr;
@@ -187,7 +206,13 @@ impl<P: GpuPtr> MemoryPool<P> {
             &mut self.large_free
         };
         let pos = pool.partition_point(|b| b.size < merged_size);
-        pool.insert(pos, FreeBlock { ptr: merged_ptr, size: merged_size });
+        pool.insert(
+            pos,
+            FreeBlock {
+                ptr: merged_ptr,
+                size: merged_size,
+            },
+        );
         self.cached_bytes += merged_size;
     }
 
@@ -195,7 +220,9 @@ impl<P: GpuPtr> MemoryPool<P> {
     /// Calls `free_fn` to actually free device memory.
     pub fn maybe_gc<F: FnMut(P, usize)>(&mut self, free_fn: F) {
         let total = self.allocated_bytes + self.cached_bytes;
-        if total == 0 { return; }
+        if total == 0 {
+            return;
+        }
         let usage_ratio = self.allocated_bytes as f64 / total as f64;
         if usage_ratio > GC_THRESHOLD && self.cached_bytes > 0 {
             self.trim(0, free_fn);
@@ -281,10 +308,7 @@ pub(crate) fn fuse_kernel_source(
         for comp in &["x", "y", "z", "w"] {
             let mut comp_expr = scalar_expr.clone();
             for j in (0..n_inputs).rev() {
-                comp_expr = comp_expr.replace(
-                    &format!("in{j}[i]"),
-                    &format!("v{j}.{comp}"),
-                );
+                comp_expr = comp_expr.replace(&format!("in{j}[i]"), &format!("v{j}.{comp}"));
             }
             src.push_str(&format!("        r.{comp} = {comp_expr};\n"));
         }
@@ -294,15 +318,9 @@ pub(crate) fn fuse_kernel_source(
         let mut tail_expr = scalar_expr;
         for j in (0..n_inputs).rev() {
             if use_ldg {
-                tail_expr = tail_expr.replace(
-                    &format!("in{j}[i]"),
-                    &format!("__ldg(&in{j}[j])"),
-                );
+                tail_expr = tail_expr.replace(&format!("in{j}[i]"), &format!("__ldg(&in{j}[j])"));
             } else {
-                tail_expr = tail_expr.replace(
-                    &format!("in{j}[i]"),
-                    &format!("in{j}[j]"),
-                );
+                tail_expr = tail_expr.replace(&format!("in{j}[i]"), &format!("in{j}[j]"));
             }
         }
         src.push_str(&format!("            out[j] = {tail_expr};\n"));
@@ -326,10 +344,7 @@ pub(crate) fn fuse_kernel_source(
         if use_ldg {
             let mut ldg_expr = gpu_expr.to_string();
             for j in (0..n_inputs).rev() {
-                ldg_expr = ldg_expr.replace(
-                    &format!("in{j}[i]"),
-                    &format!("__ldg(&in{j}[i])"),
-                );
+                ldg_expr = ldg_expr.replace(&format!("in{j}[i]"), &format!("__ldg(&in{j}[i])"));
             }
             src.push_str("        out[i] = ");
             src.push_str(&ldg_expr);
@@ -365,11 +380,15 @@ pub(crate) fn mega_fuse_kernel_source(
     let mut first = true;
     for (op_idx, (_expr, n_in)) in ops.iter().enumerate() {
         for j in 0..*n_in {
-            if !first { src.push_str(", "); }
+            if !first {
+                src.push_str(", ");
+            }
             first = false;
             src.push_str(&format!("const {type_name}* op{op_idx}_in{j}"));
         }
-        if !first { src.push_str(", "); }
+        if !first {
+            src.push_str(", ");
+        }
         first = false;
         src.push_str(&format!("{type_name}* op{op_idx}_out"));
     }
@@ -397,10 +416,8 @@ pub(crate) fn mega_fuse_kernel_source(
             for comp in &["x", "y", "z", "w"] {
                 let mut comp_expr = gpu_expr.clone();
                 for j in (0..*n_in).rev() {
-                    comp_expr = comp_expr.replace(
-                        &format!("in{j}[i]"),
-                        &format!("op{op_idx}_v{j}.{comp}"),
-                    );
+                    comp_expr =
+                        comp_expr.replace(&format!("in{j}[i]"), &format!("op{op_idx}_v{j}.{comp}"));
                 }
                 src.push_str(&format!("        op{op_idx}_r.{comp} = {comp_expr};\n"));
             }
@@ -420,10 +437,8 @@ pub(crate) fn mega_fuse_kernel_source(
                         &format!("__ldg(&op{op_idx}_in{j}[j])"),
                     );
                 } else {
-                    tail_expr = tail_expr.replace(
-                        &format!("in{j}[i]"),
-                        &format!("op{op_idx}_in{j}[j]"),
-                    );
+                    tail_expr =
+                        tail_expr.replace(&format!("in{j}[i]"), &format!("op{op_idx}_in{j}[j]"));
                 }
             }
             src.push_str(&format!("            op{op_idx}_out[j] = {tail_expr};\n"));
@@ -446,10 +461,7 @@ pub(crate) fn mega_fuse_kernel_source(
             } else {
                 let mut expr = gpu_expr.clone();
                 for j in (0..*n_in).rev() {
-                    expr = expr.replace(
-                        &format!("in{j}[i]"),
-                        &format!("op{op_idx}_in{j}[i]"),
-                    );
+                    expr = expr.replace(&format!("in{j}[i]"), &format!("op{op_idx}_in{j}[i]"));
                 }
                 src.push_str(&format!("        op{op_idx}_out[i] = {expr};\n"));
             }
@@ -474,12 +486,22 @@ pub struct RtcStorage<B, T: Scalar> {
 
 impl<B, T: Scalar> RtcStorage<B, T> {
     pub(crate) fn new(nrows: usize, ncols: usize, buf: B) -> Self {
-        Self { nrows, ncols, buf, host_cache: Mutex::new(None) }
+        Self {
+            nrows,
+            ncols,
+            buf,
+            host_cache: Mutex::new(None),
+        }
     }
 
     /// Public constructor for external buffer wrapping (e.g. GpuTensor → nabla bridge).
     pub fn from_parts(nrows: usize, ncols: usize, buf: B) -> Self {
-        Self { nrows, ncols, buf, host_cache: Mutex::new(None) }
+        Self {
+            nrows,
+            ncols,
+            buf,
+            host_cache: Mutex::new(None),
+        }
     }
 
     /// Returns a reference to the raw GPU buffer.
@@ -488,7 +510,12 @@ impl<B, T: Scalar> RtcStorage<B, T> {
     }
 
     pub(crate) fn new_cached(nrows: usize, ncols: usize, buf: B, cache: Vec<T>) -> Self {
-        Self { nrows, ncols, buf, host_cache: Mutex::new(Some(cache)) }
+        Self {
+            nrows,
+            ncols,
+            buf,
+            host_cache: Mutex::new(Some(cache)),
+        }
     }
 
     pub(crate) fn n(&self) -> usize {
@@ -532,7 +559,10 @@ where
 }
 
 // Shared helper: argext on cached host data.
-fn rtc_argext<B, T: Scalar>(a: &RtcStorage<B, T>, is_better: impl Fn(T, T) -> bool) -> (usize, usize)
+fn rtc_argext<B, T: Scalar>(
+    a: &RtcStorage<B, T>,
+    is_better: impl Fn(T, T) -> bool,
+) -> (usize, usize)
 where
     RtcStorage<B, T>: EnsureCache,
 {
@@ -541,7 +571,9 @@ where
     let data = guard.as_ref().expect("cache populated");
     let mut best = 0usize;
     for i in 1..data.len() {
-        if is_better(data[i], data[best]) { best = i; }
+        if is_better(data[i], data[best]) {
+            best = i;
+        }
     }
     (best / a.ncols, best % a.ncols)
 }
@@ -554,6 +586,16 @@ where
     let guard = lock_or_recover(&a.host_cache);
     let data = guard.as_ref().expect("cache populated");
     data.iter().fold(T::zero(), |acc, &x| acc + x)
+}
+
+pub(crate) fn rtc_fold_first_prod<B, T: Scalar>(a: &RtcStorage<B, T>) -> T
+where
+    RtcStorage<B, T>: EnsureCache,
+{
+    a.ensure_cache();
+    let guard = lock_or_recover(&a.host_cache);
+    let data = guard.as_ref().expect("cache populated");
+    data.iter().fold(T::one(), |acc, &x| acc * x)
 }
 
 pub(crate) fn rtc_max_all<B, T: Scalar>(a: &RtcStorage<B, T>) -> T

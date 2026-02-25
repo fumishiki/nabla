@@ -29,7 +29,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         },
         &y0,
         (0.0, 2.0),
-        &AdaptiveConfig { dt_init: 0.01, ..AdaptiveConfig::default() },
+        &AdaptiveConfig {
+            dt_init: 0.01,
+            ..AdaptiveConfig::default()
+        },
     )?;
 
     println!("Steps: {}", sol.len());
@@ -44,7 +47,13 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Print first 5 time points
     for i in 0..5.min(sol.len()) {
         let s = &sol.states[i];
-        println!("t={:.4}: ({:.4}, {:.4}, {:.4})", sol.times[i], s.get(0, 0), s.get(1, 0), s.get(2, 0));
+        println!(
+            "t={:.4}: ({:.4}, {:.4}, {:.4})",
+            sol.times[i],
+            s.get(0, 0),
+            s.get(1, 0),
+            s.get(2, 0)
+        );
     }
 
     Ok(())

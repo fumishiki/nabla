@@ -5,8 +5,10 @@
 //!
 //! Run: cargo run --example 02_least_squares --features cpu
 
+#[cfg(feature = "cpu")]
 use nabla::prelude::*;
 
+#[cfg(feature = "cpu")]
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Overdetermined system: 4 data points, fit y = a + b*x
     // Design matrix [1, x_i]
@@ -23,4 +25,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("Residual norm^2: {:.6}", norm_sq);
 
     Ok(())
+}
+
+#[cfg(not(feature = "cpu"))]
+fn main() {
+    eprintln!("example 02_least_squares requires --features cpu");
 }

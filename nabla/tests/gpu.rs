@@ -42,20 +42,40 @@ macro_rules! gpu_cpu_unary_test {
     };
 }
 
-gpu_cpu_unary_test!(exp_f32_matches_cpu, exp, 4, 4, |i, j| (i * 4 + j) as f32 * 0.1);
-gpu_cpu_unary_test!(ln_f32_matches_cpu, ln, 4, 4, |i, j| (i * 4 + j + 1) as f32 * 0.5);
-gpu_cpu_unary_test!(log1p_f32_matches_cpu, log1p, 4, 4, |i, j| (i * 4 + j) as f32 * 0.25);
-gpu_cpu_unary_test!(sin_f32_matches_cpu, sin, 4, 4, |i, j| (i * 4 + j) as f32 * 0.2);
-gpu_cpu_unary_test!(cos_f32_matches_cpu, cos, 4, 4, |i, j| (i * 4 + j) as f32 * 0.2);
-gpu_cpu_unary_test!(tanh_f32_matches_cpu, tanh, 4, 4, |i, j| (i as f32) - (j as f32) * 0.5);
-gpu_cpu_unary_test!(sqrt_f32_matches_cpu, sqrt, 4, 4, |i, j| (i * 4 + j + 1) as f32);
-gpu_cpu_unary_test!(abs_f32_matches_cpu, abs, 4, 4, |i, j| (i as f32) - (j as f32) * 1.5);
-gpu_cpu_unary_test!(recip_f32_matches_cpu, recip, 4, 4, |i, j| (i * 4 + j + 1) as f32);
-gpu_cpu_unary_test!(erf_f32_matches_cpu, erf, 4, 4, |i, j| (i as f32) * 0.5 - (j as f32) * 0.3);
-gpu_cpu_unary_test!(ceil_f32_matches_cpu, ceil, 4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
-gpu_cpu_unary_test!(floor_f32_matches_cpu, floor, 4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
-gpu_cpu_unary_test!(round_f32_matches_cpu, round, 4, 4, |i, j| (i * 4 + j) as f32 * 0.7 - 5.0);
-gpu_cpu_unary_test!(powf_f32_matches_cpu, powf(2.5f32), 3, 3, |i, j| 1.0f32 + (i * 3 + j) as f32 * 0.1);
+gpu_cpu_unary_test!(exp_f32_matches_cpu, exp, 4, 4, |i, j| (i * 4 + j) as f32
+    * 0.1);
+gpu_cpu_unary_test!(ln_f32_matches_cpu, ln, 4, 4, |i, j| (i * 4 + j + 1) as f32
+    * 0.5);
+gpu_cpu_unary_test!(log1p_f32_matches_cpu, log1p, 4, 4, |i, j| (i * 4 + j)
+    as f32
+    * 0.25);
+gpu_cpu_unary_test!(sin_f32_matches_cpu, sin, 4, 4, |i, j| (i * 4 + j) as f32
+    * 0.2);
+gpu_cpu_unary_test!(cos_f32_matches_cpu, cos, 4, 4, |i, j| (i * 4 + j) as f32
+    * 0.2);
+gpu_cpu_unary_test!(tanh_f32_matches_cpu, tanh, 4, 4, |i, j| (i as f32)
+    - (j as f32) * 0.5);
+gpu_cpu_unary_test!(sqrt_f32_matches_cpu, sqrt, 4, 4, |i, j| (i * 4 + j + 1)
+    as f32);
+gpu_cpu_unary_test!(abs_f32_matches_cpu, abs, 4, 4, |i, j| (i as f32)
+    - (j as f32) * 1.5);
+gpu_cpu_unary_test!(recip_f32_matches_cpu, recip, 4, 4, |i, j| (i * 4 + j + 1)
+    as f32);
+gpu_cpu_unary_test!(erf_f32_matches_cpu, erf, 4, 4, |i, j| (i as f32) * 0.5
+    - (j as f32) * 0.3);
+gpu_cpu_unary_test!(ceil_f32_matches_cpu, ceil, 4, 4, |i, j| (i * 4 + j) as f32
+    * 0.7
+    - 5.0);
+gpu_cpu_unary_test!(floor_f32_matches_cpu, floor, 4, 4, |i, j| (i * 4 + j)
+    as f32
+    * 0.7
+    - 5.0);
+gpu_cpu_unary_test!(round_f32_matches_cpu, round, 4, 4, |i, j| (i * 4 + j)
+    as f32
+    * 0.7
+    - 5.0);
+gpu_cpu_unary_test!(powf_f32_matches_cpu, powf(2.5f32), 3, 3, |i, j| 1.0f32
+    + (i * 3 + j) as f32 * 0.1);
 
 #[test]
 fn zeros_f32_shape_and_elements() {

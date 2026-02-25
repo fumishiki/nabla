@@ -12,11 +12,12 @@ categories = ["mathematics", "science"]
 default = ["cpu"]
 cpu = ["nabla-core/cpu"]
 gpu = ["nabla-core/gpu"]
+wgpu = ["nabla-core/wgpu"]
 cuda = ["nabla-core/cuda"]
 hip = ["nabla-core/hip"]
 
 [dependencies]
-nabla-core = { path = "../nabla-core" }
+nabla-core = { path = "../nabla-core", default-features = false }
 half = { version = "2", features = ["num-traits"] }
 nabla-macros = { path = "../nabla-macros" }
 egg = "0.9"

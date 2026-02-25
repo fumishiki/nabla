@@ -42,14 +42,20 @@ impl<T: Scalar, B: Backend, Axes> Tensor<T, B, Axes> {
     #[inline]
     #[must_use]
     pub fn with_axes<NewAxes>(self) -> Tensor<T, B, NewAxes> {
-        Tensor { storage: self.storage, _axes: PhantomData }
+        Tensor {
+            storage: self.storage,
+            _axes: PhantomData,
+        }
     }
 
     /// Erase axis types back to untyped `()`.
     #[inline]
     #[must_use]
     pub fn erase_axes(self) -> Tensor<T, B> {
-        Tensor { storage: self.storage, _axes: PhantomData }
+        Tensor {
+            storage: self.storage,
+            _axes: PhantomData,
+        }
     }
 
     /// Number of rows.
@@ -103,7 +109,7 @@ impl<T: Scalar, B: Backend, Axes> Tensor<T, B, Axes> {
     #[doc(hidden)]
     #[inline]
     pub fn __storage_ptr(&self) -> *const u8 {
-        &self.storage as *const B::Storage<T> as *const u8
+        (&raw const self.storage).cast::<u8>()
     }
 }
 
@@ -112,6 +118,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ///
     /// GPU backends JIT-compile the expression; CPU backends use the closure.
     #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     pub fn __fuse_elementwise(
         inputs: &[*const u8],
@@ -123,7 +130,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         n_inputs: usize,
         reg_estimate: usize,
     ) -> Self {
-        Self::from_storage(B::fuse_launch(inputs, nrows, ncols, cpu_fn, gpu_expr, kernel_hash, n_inputs, reg_estimate))
+        Self::from_storage(B::fuse_launch(
+            inputs,
+            nrows,
+            ncols,
+            cpu_fn,
+            gpu_expr,
+            kernel_hash,
+            n_inputs,
+            reg_estimate,
+        ))
     }
 
     /// Execute multiple fused element-wise operations as a **single** GPU
@@ -282,7 +298,9 @@ impl_tensor_math! {
 
 /// Helper: `T::one() + T::one()` (avoids repeating the pattern).
 #[inline]
-fn two<T: Scalar>() -> T { T::one() + T::one() }
+fn two<T: Scalar>() -> T {
+    T::one() + T::one()
+}
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Validate two tensors have the same shape.
@@ -290,18 +308,31 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         assert!(
             self.nrows() == other.nrows() && self.ncols() == other.ncols(),
             "{op}: shape mismatch ({},{}) vs ({},{})",
-            self.nrows(), self.ncols(), other.nrows(), other.ncols()
+            self.nrows(),
+            self.ncols(),
+            other.nrows(),
+            other.ncols()
         );
     }
 
     /// Validate vector matches row/column dimension for broadcast.
     fn assert_broadcast_shape(&self, vec: &Self, axis: usize, op: &str) {
         if axis == 0 {
-            assert!(vec.nrows() == 1 && vec.ncols() == self.ncols(),
-                "{op}: expected (1,{}) got ({},{})", self.ncols(), vec.nrows(), vec.ncols());
+            assert!(
+                vec.nrows() == 1 && vec.ncols() == self.ncols(),
+                "{op}: expected (1,{}) got ({},{})",
+                self.ncols(),
+                vec.nrows(),
+                vec.ncols()
+            );
         } else {
-            assert!(vec.ncols() == 1 && vec.nrows() == self.nrows(),
-                "{op}: expected ({},1) got ({},{})", self.nrows(), vec.nrows(), vec.ncols());
+            assert!(
+                vec.ncols() == 1 && vec.nrows() == self.nrows(),
+                "{op}: expected ({},1) got ({},{})",
+                self.nrows(),
+                vec.nrows(),
+                vec.ncols()
+            );
         }
     }
 
@@ -309,11 +340,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     fn reduce_axis<F: Fn(T, T) -> T>(&self, axis: usize, f: F) -> Self {
         match axis {
             0 => Self::from_fn(1, self.ncols(), |_, c| {
-                (0..self.nrows()).map(|r| self.get(r, c))
+                (0..self.nrows())
+                    .map(|r| self.get(r, c))
                     .fold(self.get(0, c), &f)
             }),
             1 => Self::from_fn(self.nrows(), 1, |r, _| {
-                (0..self.ncols()).map(|c| self.get(r, c))
+                (0..self.ncols())
+                    .map(|c| self.get(r, c))
                     .fold(self.get(r, 0), &f)
             }),
             _ => panic!("nabla: reduce_axis axis must be 0 or 1, got {axis}"),
@@ -321,7 +354,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 
     /// Apply a binary op between self and a broadcast vector along the given axis.
-    fn apply_broadcast_op<F: Fn(T, T) -> T>(&self, vec: &Self, axis: usize, op: &str, f: F) -> Self {
+    fn apply_broadcast_op<F: Fn(T, T) -> T>(
+        &self,
+        vec: &Self,
+        axis: usize,
+        op: &str,
+        f: F,
+    ) -> Self {
         self.assert_broadcast_shape(vec, axis, op);
         let (m, n) = self.shape();
         match axis {
@@ -351,7 +390,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[inline]
     /// Construct from raw backend storage.
     pub fn from_storage(storage: B::Storage<T>) -> Self {
-        Self { storage, _axes: PhantomData }
+        Self {
+            storage,
+            _axes: PhantomData,
+        }
     }
 
     /// Consume this tensor and return its backing storage.
@@ -401,7 +443,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// On CPU backend this is identical to the synchronous path.
     #[must_use]
     pub fn from_slice_async(data: &[T], nrows: usize, ncols: usize) -> Self {
-        assert_eq!(data.len(), nrows * ncols, "from_slice_async: data.len() must equal nrows * ncols");
+        assert_eq!(
+            data.len(),
+            nrows * ncols,
+            "from_slice_async: data.len() must equal nrows * ncols"
+        );
         Self::from_storage(B::from_vec_async(nrows, ncols, data.to_vec()))
     }
 
@@ -418,7 +464,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::check_half_open("submatrix col", col_start, col_end, self.ncols());
         let nrows = row_end - row_start;
         let ncols = col_end - col_start;
-        Self::from_storage(B::from_fn(nrows, ncols, |r, c| self.get(row_start + r, col_start + c)))
+        Self::from_storage(B::from_fn(nrows, ncols, |r, c| {
+            self.get(row_start + r, col_start + c)
+        }))
     }
 
     /// Set element at `(row, col)`.
@@ -577,9 +625,15 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn cross_entropy_loss(&self, targets: &Self) -> T {
         let (batch, n) = self.shape();
-        assert_eq!(targets.shape(), (batch, n),
+        assert_eq!(
+            targets.shape(),
+            (batch, n),
             "nabla: cross_entropy_loss shape mismatch — self {}×{} vs targets {}×{}",
-            batch, n, targets.nrows(), targets.ncols());
+            batch,
+            n,
+            targets.nrows(),
+            targets.ncols()
+        );
         let sum: T = (0..batch)
             .map(|r| {
                 (0..n)
@@ -628,6 +682,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn linf_norm(&self) -> T {
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| self.get(r, c).math_abs()).max_all()
+    }
+
+    /// Lp norm: `(sum |x_i|^p)^(1/p)`, or `max|x_i|` for p=∞.
+    /// Dispatches to `B::norm_lp` which uses GPU-accelerated operations.
+    #[must_use]
+    pub fn norm_lp(&self, p: T) -> T {
+        B::norm_lp(&self.storage, p)
     }
 
     /// Normalize to unit vector (L2 norm = 1). Returns clone if norm is zero.
@@ -831,6 +892,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         })
     }
 
+    /// Short alias for conjugate transpose (`adjoint` / Hermitian transpose).
+    #[must_use]
+    #[inline]
+    pub fn h(&self) -> Self {
+        self.adjoint()
+    }
+
     /// Permute axes of a 2-D tensor.
     ///
     /// `axes` must be a permutation of `[0, 1]`:
@@ -838,11 +906,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// - `[1, 0]` -> transpose
     #[must_use]
     pub fn permute(&self, axes: &[usize]) -> Self {
-        assert_eq!(axes.len(), 2, "nabla: Tensor is 2-D — permute axes must have length 2");
+        assert_eq!(
+            axes.len(),
+            2,
+            "nabla: Tensor is 2-D — permute axes must have length 2"
+        );
         assert!(
             axes[0] < 2 && axes[1] < 2 && axes[0] != axes[1],
             "nabla: permute axes must be a permutation of {{0, 1}}, got [{}, {}]",
-            axes[0], axes[1]
+            axes[0],
+            axes[1]
         );
         match (axes[0], axes[1]) {
             (0, 1) => self.clone(),
@@ -918,11 +991,23 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let (m, n) = self.shape();
         match axis {
             0 => {
-                assert_eq!(sizes.0 * sizes.1, m, "unflatten: {m} != {}*{}", sizes.0, sizes.1);
+                assert_eq!(
+                    sizes.0 * sizes.1,
+                    m,
+                    "unflatten: {m} != {}*{}",
+                    sizes.0,
+                    sizes.1
+                );
                 self.reshape(sizes.0, sizes.1 * n)
             }
             1 => {
-                assert_eq!(sizes.0 * sizes.1, n, "unflatten: {n} != {}*{}", sizes.0, sizes.1);
+                assert_eq!(
+                    sizes.0 * sizes.1,
+                    n,
+                    "unflatten: {n} != {}*{}",
+                    sizes.0,
+                    sizes.1
+                );
                 self.reshape(m * sizes.0, sizes.1)
             }
             _ => panic!("unflatten: axis {axis} out of bounds for 2-D tensor"),
@@ -978,12 +1063,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn cumsum(&self, axis: usize) -> Self {
         match axis {
-            1 => Self::from_fn(self.nrows(), self.ncols(), |r, c| {
-                (0..=c).map(|j| self.get(r, j)).fold(T::zero(), |a, b| a + b)
-            }),
-            0 => Self::from_fn(self.nrows(), self.ncols(), |r, c| {
-                (0..=r).map(|i| self.get(i, c)).fold(T::zero(), |a, b| a + b)
-            }),
+            1 => Self::from_storage(B::cumsum_axis1(&self.storage)),
+            0 => {
+                // axis=0: transpose → cumsum_axis1 → transpose
+                let t = Self::from_storage(B::transpose(&self.storage));
+                let cs = Self::from_storage(B::cumsum_axis1(&t.storage));
+                Self::from_storage(B::transpose(&cs.storage))
+            }
             _ => panic!("nabla: cumsum axis must be 0 or 1, got {axis}"),
         }
     }
@@ -1093,11 +1179,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         match axis {
             0 => {
                 let r = self.nrows();
-                assert_eq!(
-                    r % n,
-                    0,
-                    "nabla: chunk nrows ({r}) not divisible by {n}"
-                );
+                assert_eq!(r % n, 0, "nabla: chunk nrows ({r}) not divisible by {n}");
                 let chunk_size = r / n;
                 (0..n)
                     .map(|i| self.slice_rows(i * chunk_size..(i + 1) * chunk_size))
@@ -1105,11 +1187,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             }
             1 => {
                 let c = self.ncols();
-                assert_eq!(
-                    c % n,
-                    0,
-                    "nabla: chunk ncols ({c}) not divisible by {n}"
-                );
+                assert_eq!(c % n, 0, "nabla: chunk ncols ({c}) not divisible by {n}");
                 let chunk_size = c / n;
                 (0..n)
                     .map(|i| self.slice_cols(i * chunk_size..(i + 1) * chunk_size))
@@ -1124,10 +1202,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn squeeze(&self, axis: usize) -> Self {
         let d = self.dim(axis);
-        assert_eq!(
-            d, 1,
-            "nabla: squeeze({axis}) — dim is {d}, not 1"
-        );
+        assert_eq!(d, 1, "nabla: squeeze({axis}) — dim is {d}, not 1");
         self.clone()
     }
 
@@ -1271,9 +1346,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
                     });
                     (sq_sum / T::from_f64(n as f64) + eps).math_sqrt()
                 });
-                let normed = self.broadcast_mul_cols(&Self::from_fn(m, 1, |r, c| {
-                    T::one() / rms.get(r, c)
-                }));
+                let normed =
+                    self.broadcast_mul_cols(&Self::from_fn(m, 1, |r, c| T::one() / rms.get(r, c)));
                 normed.broadcast_mul_rows(weight)
             }
             0 => {
@@ -1284,9 +1358,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
                     });
                     (sq_sum / T::from_f64(m as f64) + eps).math_sqrt()
                 });
-                let normed = self.broadcast_mul_rows(&Self::from_fn(1, n, |r, c| {
-                    T::one() / rms.get(r, c)
-                }));
+                let normed =
+                    self.broadcast_mul_rows(&Self::from_fn(1, n, |r, c| T::one() / rms.get(r, c)));
                 normed.broadcast_mul_cols(weight)
             }
             _ => panic!("nabla: rms_norm axis must be 0 or 1, got {axis}"),
@@ -1317,19 +1390,67 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         })
     }
 
+    /// Batch normalization with running statistics update (training mode).
+    ///
+    /// `self` is (N, C). `gamma`/`beta` are (1, C). `running_mean`/`running_var` are (1, C)
+    /// updated in-place when `training=true`.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn batch_norm_train(
+        &self,
+        gamma: &Self,
+        beta: &Self,
+        running_mean: &mut Self,
+        running_var: &mut Self,
+        eps: T,
+        momentum: T,
+        training: bool,
+    ) -> Self {
+        Self {
+            storage: B::batch_norm_train(
+                &self.storage,
+                &gamma.storage,
+                &beta.storage,
+                &mut running_mean.storage,
+                &mut running_var.storage,
+                eps,
+                momentum,
+                training,
+            ),
+            _axes: PhantomData,
+        }
+    }
+
+    /// Cross-entropy loss: fused softmax + NLL. `self` = (N, C) logits,
+    /// `target` = (N, 1) class indices stored as T. Returns (1, 1) scalar tensor.
+    #[must_use]
+    pub fn cross_entropy_fused(&self, target: &Self) -> Self {
+        let (n, c) = self.shape();
+        assert_eq!(
+            target.nrows(),
+            n,
+            "nabla: cross_entropy_fused shape mismatch — input {}×{} vs target {}×{}",
+            n,
+            c,
+            target.nrows(),
+            target.ncols()
+        );
+        Self {
+            storage: B::cross_entropy_fused(&self.storage, &target.storage, n, c),
+            _axes: PhantomData,
+        }
+    }
+
     /// Group normalization: divide channels into groups, normalize each group.
     ///
     /// `x` is (N, C). `num_groups` divides C. `weight` and `bias` are (1, C).
     #[must_use]
-    pub fn group_norm(
-        &self,
-        num_groups: usize,
-        weight: &Self,
-        bias: &Self,
-        eps: T,
-    ) -> Self {
+    pub fn group_norm(&self, num_groups: usize, weight: &Self, bias: &Self, eps: T) -> Self {
         let (m, n) = self.shape();
-        assert!(n % num_groups == 0, "nabla: group_norm C={n} not divisible by groups={num_groups}");
+        assert!(
+            n % num_groups == 0,
+            "nabla: group_norm C={n} not divisible by groups={num_groups}"
+        );
         let g_size = n / num_groups;
         Self::from_fn(m, n, |r, c| {
             let g = c / g_size;
@@ -1469,21 +1590,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Product of all elements.
     #[must_use]
     pub fn prod_all(&self) -> T {
-        let (m, n) = self.shape();
-        (0..m).fold(T::one(), |acc, r| {
-            (0..n).fold(acc, |a, c| a * self.get(r, c))
-        })
+        B::prod_all(&self.storage)
     }
 
     /// Count of non-zero elements.
     #[must_use]
     pub fn count_nonzero(&self) -> usize {
-        let (m, n) = self.shape();
-        (0..m).fold(0usize, |acc, r| {
-            (0..n).fold(acc, |a, c| {
-                if self.get(r, c).to_f64() != 0.0 { a + 1 } else { a }
-            })
-        })
+        B::count_nonzero(&self.storage)
     }
 
     /// Argmax along axis. Returns indices tensor.
@@ -1534,12 +1647,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn cumprod(&self, axis: usize) -> Self {
         match axis {
-            1 => Self::from_fn(self.nrows(), self.ncols(), |r, c| {
-                (0..=c).map(|j| self.get(r, j)).fold(T::one(), |a, b| a * b)
-            }),
-            0 => Self::from_fn(self.nrows(), self.ncols(), |r, c| {
-                (0..=r).map(|i| self.get(i, c)).fold(T::one(), |a, b| a * b)
-            }),
+            1 => Self::from_storage(B::cumprod_axis1(&self.storage)),
+            0 => {
+                // axis=0: transpose → cumprod_axis1 → transpose
+                let t = Self::from_storage(B::transpose(&self.storage));
+                let cp = Self::from_storage(B::cumprod_axis1(&t.storage));
+                Self::from_storage(B::transpose(&cp.storage))
+            }
             _ => panic!("nabla: cumprod axis must be 0 or 1, got {axis}"),
         }
     }
@@ -1605,19 +1719,25 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         match axis {
             0 => {
                 let mut offset = 0;
-                sizes.iter().map(|&s| {
-                    let part = self.submatrix(offset, offset + s, 0, self.ncols());
-                    offset += s;
-                    part
-                }).collect()
+                sizes
+                    .iter()
+                    .map(|&s| {
+                        let part = self.submatrix(offset, offset + s, 0, self.ncols());
+                        offset += s;
+                        part
+                    })
+                    .collect()
             }
             1 => {
                 let mut offset = 0;
-                sizes.iter().map(|&s| {
-                    let part = self.submatrix(0, self.nrows(), offset, offset + s);
-                    offset += s;
-                    part
-                }).collect()
+                sizes
+                    .iter()
+                    .map(|&s| {
+                        let part = self.submatrix(0, self.nrows(), offset, offset + s);
+                        offset += s;
+                        part
+                    })
+                    .collect()
             }
             _ => panic!("nabla: split axis must be 0 or 1, got {axis}"),
         }
@@ -1627,9 +1747,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn repeat(&self, row_reps: usize, col_reps: usize) -> Self {
         let (m, n) = self.shape();
-        Self::from_fn(m * row_reps, n * col_reps, |r, c| {
-            self.get(r % m, c % n)
-        })
+        Self::from_fn(m * row_reps, n * col_reps, |r, c| self.get(r % m, c % n))
     }
 
     /// Expand (broadcast view) — repeats without copying for broadcast dimensions.
@@ -1668,12 +1786,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn gather(&self, axis: usize, index: &Self) -> Self {
         let (m, n) = index.shape();
         match axis {
-            0 => Self::from_fn(m, n, |r, c| {
-                self.get(index.get(r, c).to_f64() as usize, c)
-            }),
-            1 => Self::from_fn(m, n, |r, c| {
-                self.get(r, index.get(r, c).to_f64() as usize)
-            }),
+            0 => Self::from_fn(m, n, |r, c| self.get(index.get(r, c).to_f64() as usize, c)),
+            1 => Self::from_fn(m, n, |r, c| self.get(r, index.get(r, c).to_f64() as usize)),
             _ => panic!("nabla: gather axis must be 0 or 1, got {axis}"),
         }
     }
@@ -1704,8 +1818,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn index_select(&self, axis: usize, index: &Self) -> Self {
         let k = index.nrows() * index.ncols();
         let get_idx = |i: usize| -> usize {
-            if index.nrows() == 1 { index.get(0, i).to_f64() as usize }
-            else { index.get(i, 0).to_f64() as usize }
+            if index.nrows() == 1 {
+                index.get(0, i).to_f64() as usize
+            } else {
+                index.get(i, 0).to_f64() as usize
+            }
         };
         match axis {
             0 => Self::from_fn(k, self.ncols(), |r, c| self.get(get_idx(r), c)),
@@ -1719,7 +1836,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn masked_fill(&self, mask: &Self, value: T) -> Self {
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| {
-            if mask.get(r, c).to_f64() != 0.0 { value } else { self.get(r, c) }
+            if mask.get(r, c).to_f64() == 0.0 {
+                self.get(r, c)
+            } else {
+                value
+            }
         })
     }
 
@@ -1728,7 +1849,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn where_cond(&self, cond: &Self, other: &Self) -> Self {
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| {
-            if cond.get(r, c).to_f64() != 0.0 { self.get(r, c) } else { other.get(r, c) }
+            if cond.get(r, c).to_f64() == 0.0 {
+                other.get(r, c)
+            } else {
+                self.get(r, c)
+            }
         })
     }
 
@@ -1737,7 +1862,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn triu(&self, diagonal: isize) -> Self {
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| {
-            if (c as isize) >= (r as isize) + diagonal { self.get(r, c) } else { T::zero() }
+            if (c as isize) >= (r as isize) + diagonal {
+                self.get(r, c)
+            } else {
+                T::zero()
+            }
         })
     }
 
@@ -1746,7 +1875,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn tril(&self, diagonal: isize) -> Self {
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| {
-            if (c as isize) <= (r as isize) + diagonal { self.get(r, c) } else { T::zero() }
+            if (c as isize) <= (r as isize) + diagonal {
+                self.get(r, c)
+            } else {
+                T::zero()
+            }
         })
     }
 
@@ -1788,7 +1921,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         for r in 0..m {
             let mut pairs: Vec<(T, usize)> = (0..n).map(|c| (self.get(r, c), c)).collect();
             // Sort descending by value
-            pairs.sort_by(|a, b| b.0.to_f64().partial_cmp(&a.0.to_f64()).unwrap());
+            pairs.sort_by(|a, b| b.0.to_f64().total_cmp(&a.0.to_f64()));
             for j in 0..k {
                 all_vals[r * k + j] = pairs[j].0;
                 all_idxs[r * k + j] = T::from_f64(pairs[j].1 as f64);
@@ -1809,9 +1942,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         for r in 0..m {
             let mut pairs: Vec<(T, usize)> = (0..n).map(|c| (self.get(r, c), c)).collect();
             if descending {
-                pairs.sort_by(|a, b| b.0.to_f64().partial_cmp(&a.0.to_f64()).unwrap());
+                pairs.sort_by(|a, b| b.0.to_f64().total_cmp(&a.0.to_f64()));
             } else {
-                pairs.sort_by(|a, b| a.0.to_f64().partial_cmp(&b.0.to_f64()).unwrap());
+                pairs.sort_by(|a, b| a.0.to_f64().total_cmp(&b.0.to_f64()));
             }
             for c in 0..n {
                 all_vals[r * n + c] = pairs[c].0;
@@ -1828,8 +1961,20 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn meshgrid(x: &Self, y: &Self) -> (Self, Self) {
         let nx = x.nrows() * x.ncols();
         let ny = y.nrows() * y.ncols();
-        let get_x = |i: usize| if x.nrows() == 1 { x.get(0, i) } else { x.get(i, 0) };
-        let get_y = |i: usize| if y.nrows() == 1 { y.get(0, i) } else { y.get(i, 0) };
+        let get_x = |i: usize| {
+            if x.nrows() == 1 {
+                x.get(0, i)
+            } else {
+                x.get(i, 0)
+            }
+        };
+        let get_y = |i: usize| {
+            if y.nrows() == 1 {
+                y.get(0, i)
+            } else {
+                y.get(i, 0)
+            }
+        };
         let gx = Self::from_fn(ny, nx, |_, c| get_x(c));
         let gy = Self::from_fn(ny, nx, |r, _| get_y(r));
         (gx, gy)
@@ -1847,13 +1992,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         assert_eq!(self.ncols(), k);
         assert_eq!(other.nrows(), batch * k);
         assert_eq!(other.ncols(), n);
-        Self::from_fn(batch * m, n, |r, c| {
-            let b = r / m;
-            let i = r % m;
-            (0..k).fold(T::zero(), |acc, j| {
-                acc + self.get(b * m + i, j) * other.get(b * k + j, c)
-            })
-        })
+        Self::from_storage(B::bmm(&self.storage, &other.storage, batch, m, k, n))
     }
 
     /// `C = alpha * A @ B + beta * C` (addmm). Self is C, returns new tensor.
@@ -1863,14 +2002,12 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let k = a.ncols();
         assert_eq!(a.nrows(), m);
         assert_eq!(b.shape(), (k, n));
-        Self::from_fn(m, n, |r, c| {
-            let ab = (0..k).fold(T::zero(), |acc, j| acc + a.get(r, j) * b.get(j, c));
-            beta * self.get(r, c) + alpha * ab
-        })
+        Self::from_storage(B::addmm(&self.storage, &a.storage, &b.storage, beta, alpha))
     }
 
     /// Batched addmm: `C = beta * C + alpha * A @ B` for each batch.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn baddbmm(
         &self,
         a: &Self,
@@ -1884,14 +2021,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ) -> Self {
         assert_eq!(self.nrows(), batch * m);
         assert_eq!(self.ncols(), n);
-        Self::from_fn(batch * m, n, |r, c| {
-            let bi = r / m;
-            let i = r % m;
-            let ab = (0..k).fold(T::zero(), |acc, j| {
-                acc + a.get(bi * m + i, j) * b.get(bi * k + j, c)
-            });
-            beta * self.get(r, c) + alpha * ab
-        })
+        Self::from_storage(B::baddbmm(
+            &self.storage,
+            &a.storage,
+            &b.storage,
+            batch,
+            m,
+            k,
+            n,
+            beta,
+            alpha,
+        ))
     }
 
     // ── Convolution ─────────────────────────────────────────────────
@@ -1900,6 +2040,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ///
     /// Input `x` is (C_in, H*W) flattened. Returns (C_in*kH*kW, out_H*out_W).
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     fn im2col(
         x: &Self,
         c_in: usize,
@@ -1936,6 +2077,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Input: (N*C_in, H*W), Weight: (C_out, C_in/groups * kH * kW), Bias: (1, C_out) or empty.
     /// Output: (N*C_out, out_H * out_W).
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn conv2d(
         &self,
         weight: &Self,
@@ -1953,46 +2095,30 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         groups: usize,
     ) -> Self {
         assert!(c_in % groups == 0 && c_out % groups == 0);
-        let c_in_g = c_in / groups;
-        let c_out_g = c_out / groups;
-        let out_h = (h + 2 * padding.0 - dilation.0 * (kh - 1) - 1) / stride.0 + 1;
-        let out_w = (w + 2 * padding.1 - dilation.1 * (kw - 1) - 1) / stride.1 + 1;
-        let out_spatial = out_h * out_w;
-
-        Self::from_fn(n_batch * c_out, out_spatial, |row, col| {
-            let b = row / c_out;
-            let oc = row % c_out;
-            let g = oc / c_out_g;
-            let oh = col / out_w;
-            let ow = col % out_w;
-
-            let mut acc = if let Some(bi) = bias { bi.get(0, oc) } else { T::zero() };
-            for ic in 0..c_in_g {
-                for khr in 0..kh {
-                    for kwc in 0..kw {
-                        let ih = oh * stride.0 + khr * dilation.0;
-                        let iw = ow * stride.1 + kwc * dilation.1;
-                        if ih >= padding.0 && ih < h + padding.0
-                            && iw >= padding.1 && iw < w + padding.1
-                        {
-                            let x_val = self.get(
-                                b * c_in + g * c_in_g + ic,
-                                (ih - padding.0) * w + (iw - padding.1),
-                            );
-                            let w_val = weight.get(oc, ic * kh * kw + khr * kw + kwc);
-                            acc = acc + x_val * w_val;
-                        }
-                    }
-                }
-            }
-            acc
-        })
+        let out = Self::from_storage(B::conv2d(
+            &self.storage,
+            &weight.storage,
+            n_batch, c_in, h, w, c_out, kh, kw,
+            stride, padding, dilation, groups,
+        ));
+        if let Some(bi) = bias {
+            let out_h = (h + 2 * padding.0 - dilation.0 * (kh - 1) - 1) / stride.0 + 1;
+            let out_w = (w + 2 * padding.1 - dilation.1 * (kw - 1) - 1) / stride.1 + 1;
+            let out_spatial = out_h * out_w;
+            let bias_exp = B::from_fn(n_batch * c_out, out_spatial, |row, _col| {
+                B::get(&bi.storage, 0, row % c_out)
+            });
+            Self::from_storage(B::add(&out.storage, &bias_exp))
+        } else {
+            out
+        }
     }
 
     /// 1-D convolution.
     ///
     /// Input: (N*C_in, L), Weight: (C_out, C_in/groups * K), Bias: (1, C_out).
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn conv1d(
         &self,
         weight: &Self,
@@ -2008,30 +2134,24 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         groups: usize,
     ) -> Self {
         assert!(c_in % groups == 0 && c_out % groups == 0);
-        let c_in_g = c_in / groups;
-        let out_len = (length + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1;
-
-        Self::from_fn(n_batch * c_out, out_len, |row, col| {
-            let b = row / c_out;
-            let oc = row % c_out;
-            let g = oc / (c_out / groups);
-            let mut acc = if let Some(bi) = bias { bi.get(0, oc) } else { T::zero() };
-            for ic in 0..c_in_g {
-                for k in 0..kernel_size {
-                    let il = col * stride + k * dilation;
-                    if il >= padding && il < length + padding {
-                        let x_val = self.get(b * c_in + g * c_in_g + ic, il - padding);
-                        let w_val = weight.get(oc, ic * kernel_size + k);
-                        acc = acc + x_val * w_val;
-                    }
-                }
-            }
-            acc
-        })
+        let out = Self::from_storage(B::conv1d(
+            &self.storage, &weight.storage,
+            n_batch, c_in, length, c_out, kernel_size, stride, padding, dilation, groups,
+        ));
+        if let Some(bi) = bias {
+            let out_len = (length + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1;
+            let bias_exp = B::from_fn(n_batch * c_out, out_len, |row, _col| {
+                B::get(&bi.storage, 0, row % c_out)
+            });
+            Self::from_storage(B::add(&out.storage, &bias_exp))
+        } else {
+            out
+        }
     }
 
     /// Transposed 2-D convolution (deconvolution / fractionally-strided convolution).
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn conv_transpose2d(
         &self,
         weight: &Self,
@@ -2049,36 +2169,18 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ) -> Self {
         let out_h = (h - 1) * stride.0 - 2 * padding.0 + kh + output_padding.0;
         let out_w = (w - 1) * stride.1 - 2 * padding.1 + kw + output_padding.1;
-
-        Self::from_fn(n_batch * c_out, out_h * out_w, |row, col| {
-            let b = row / c_out;
-            let oc = row % c_out;
-            let oh = col / out_w;
-            let ow = col % out_w;
-            let mut acc = if let Some(bi) = bias { bi.get(0, oc) } else { T::zero() };
-            for ic in 0..c_in {
-                for khr in 0..kh {
-                    for kwc in 0..kw {
-                        let ih_pad = oh + padding.0;
-                        let iw_pad = ow + padding.1;
-                        if ih_pad >= khr && iw_pad >= kwc
-                            && (ih_pad - khr) % stride.0 == 0
-                            && (iw_pad - kwc) % stride.1 == 0
-                        {
-                            let ih = (ih_pad - khr) / stride.0;
-                            let iw = (iw_pad - kwc) / stride.1;
-                            if ih < h && iw < w {
-                                let x_val = self.get(b * c_in + ic, ih * w + iw);
-                                // Weight layout: (C_in, C_out * kH * kW)
-                                let w_val = weight.get(ic, oc * kh * kw + khr * kw + kwc);
-                                acc = acc + x_val * w_val;
-                            }
-                        }
-                    }
-                }
-            }
-            acc
-        })
+        let out = Self::from_storage(B::conv_transpose2d(
+            &self.storage, &weight.storage,
+            n_batch, c_in, h, w, c_out, kh, kw, stride, padding, output_padding,
+        ));
+        if let Some(bi) = bias {
+            let bias_exp = B::from_fn(n_batch * c_out, out_h * out_w, |row, _col| {
+                B::get(&bi.storage, 0, row % c_out)
+            });
+            Self::from_storage(B::add(&out.storage, &bias_exp))
+        } else {
+            out
+        }
     }
 
     // ── Pooling ─────────────────────────────────────────────────────
@@ -2096,37 +2198,37 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         stride: (usize, usize),
         padding: (usize, usize),
     ) -> Self {
-        let out_h = (h + 2 * padding.0 - kh) / stride.0 + 1;
-        let out_w = (w + 2 * padding.1 - kw) / stride.1 + 1;
-        let nc = self.nrows();
-        let two = two::<T>();
-        Self::from_fn(nc, out_h * out_w, |ch, col| {
-            let oh = col / out_w;
-            let ow = col % out_w;
-            let mut best = T::zero();
-            let mut first = true;
-            for khr in 0..kh {
-                for kwc in 0..kw {
-                    let ih = oh * stride.0 + khr;
-                    let iw = ow * stride.1 + kwc;
-                    if ih >= padding.0 && ih < h + padding.0
-                        && iw >= padding.1 && iw < w + padding.1
-                    {
-                        let v = self.get(ch, (ih - padding.0) * w + (iw - padding.1));
-                        if first {
-                            best = v;
-                            first = false;
-                        } else {
-                            best = (best + v + (best - v).math_abs()) / two;
-                        }
-                    }
-                }
-            }
-            best
-        })
+        Self::from_storage(B::max_pool2d(
+            &self.storage,
+            h, w, kh, kw,
+            stride.0, stride.1,
+            padding.0, padding.1,
+        ))
     }
 
-    /// 2-D average pooling.
+    /// 2-D max pooling with argmax flat indices.
+    ///
+    /// Returns `(values, indices)` where `indices[i]` is the flat index in the
+    /// input tensor of the maximum element for output position `i`.
+    /// Indices are stored as `T` (float-cast), matching `argmax_axis` convention.
+    #[must_use]
+    pub fn max_pool2d_with_indices(
+        &self,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+    ) -> (Self, Self) {
+        let (v, idx) = B::max_pool2d_with_indices(
+            &self.storage,
+            h, w, kh, kw,
+            stride.0, stride.1,
+            padding.0, padding.1,
+        );
+        (Self::from_storage(v), Self::from_storage(idx))
+    }
     ///
     /// Input: (N*C, H*W). Output: (N*C, out_H*out_W).
     #[must_use]
@@ -2139,62 +2241,31 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         stride: (usize, usize),
         padding: (usize, usize),
     ) -> Self {
-        let out_h = (h + 2 * padding.0 - kh) / stride.0 + 1;
-        let out_w = (w + 2 * padding.1 - kw) / stride.1 + 1;
-        let nc = self.nrows();
-        let pool_size = T::from_f64((kh * kw) as f64);
-        Self::from_fn(nc, out_h * out_w, |ch, col| {
-            let oh = col / out_w;
-            let ow = col % out_w;
-            let mut sum = T::zero();
-            for khr in 0..kh {
-                for kwc in 0..kw {
-                    let ih = oh * stride.0 + khr;
-                    let iw = ow * stride.1 + kwc;
-                    if ih >= padding.0 && ih < h + padding.0
-                        && iw >= padding.1 && iw < w + padding.1
-                    {
-                        sum = sum + self.get(ch, (ih - padding.0) * w + (iw - padding.1));
-                    }
-                }
-            }
-            sum / pool_size
-        })
+        Self::from_storage(B::avg_pool2d(
+            &self.storage,
+            h, w, kh, kw,
+            stride.0, stride.1,
+            padding.0, padding.1,
+        ))
     }
 
     /// Adaptive average pool 2-D: output fixed size regardless of input.
     ///
     /// Input: (N*C, H*W). Output: (N*C, out_H*out_W).
     #[must_use]
-    pub fn adaptive_avg_pool2d(
-        &self,
-        h: usize,
-        w: usize,
-        out_h: usize,
-        out_w: usize,
-    ) -> Self {
-        let nc = self.nrows();
-        Self::from_fn(nc, out_h * out_w, |ch, col| {
-            let oh = col / out_w;
-            let ow = col % out_w;
-            let ih_start = oh * h / out_h;
-            let ih_end = (oh + 1) * h / out_h;
-            let iw_start = ow * w / out_w;
-            let iw_end = (ow + 1) * w / out_w;
-            let count = (ih_end - ih_start) * (iw_end - iw_start);
-            let mut sum = T::zero();
-            for ih in ih_start..ih_end {
-                for iw in iw_start..iw_end {
-                    sum = sum + self.get(ch, ih * w + iw);
-                }
-            }
-            sum / T::from_f64(count as f64)
-        })
+    pub fn adaptive_avg_pool2d(&self, h: usize, w: usize, out_h: usize, out_w: usize) -> Self {
+        Self::from_storage(B::adaptive_avg_pool2d(&self.storage, h, w, out_h, out_w))
     }
 
     /// 1-D max pooling. Input: (N*C, L). Output: (N*C, out_L).
     #[must_use]
-    pub fn max_pool1d(&self, length: usize, kernel_size: usize, stride: usize, padding: usize) -> Self {
+    pub fn max_pool1d(
+        &self,
+        length: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+    ) -> Self {
         let out_len = (length + 2 * padding - kernel_size) / stride + 1;
         let nc = self.nrows();
         let two = two::<T>();
@@ -2219,7 +2290,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// 1-D average pooling. Input: (N*C, L). Output: (N*C, out_L).
     #[must_use]
-    pub fn avg_pool1d(&self, length: usize, kernel_size: usize, stride: usize, padding: usize) -> Self {
+    pub fn avg_pool1d(
+        &self,
+        length: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+    ) -> Self {
         let out_len = (length + 2 * padding - kernel_size) / stride + 1;
         let nc = self.nrows();
         let ks = T::from_f64(kernel_size as f64);
@@ -2253,12 +2330,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Optional `mask`: (seq_q, seq_k) — positions with non-zero values are masked (set to -inf).
     /// Returns: (seq_q, d_v).
     #[must_use]
-    pub fn scaled_dot_product_attention(
-        q: &Self,
-        k: &Self,
-        v: &Self,
-        mask: Option<&Self>,
-    ) -> Self {
+    pub fn scaled_dot_product_attention(q: &Self, k: &Self, v: &Self, mask: Option<&Self>) -> Self {
         let d_k = q.ncols();
         let scale = T::from_f64(1.0 / (d_k as f64).sqrt());
 
@@ -2292,7 +2364,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         mask: Option<&Self>,
     ) -> Self {
         let d_model = q.ncols();
-        assert!(d_model % num_heads == 0, "nabla: d_model must be divisible by num_heads");
+        assert!(
+            d_model % num_heads == 0,
+            "nabla: d_model must be divisible by num_heads"
+        );
         let d_head = d_model / num_heads;
         let seq_q = q.nrows();
         let seq_k = k.nrows();
@@ -2309,6 +2384,45 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         // Concatenate heads along columns
         let refs: Vec<&Self> = head_outputs.iter().collect();
         Self::hcat(&refs)
+    }
+
+    /// Scaled dot-product attention with FlashAttention-2 on GPU backends.
+    ///
+    /// Q, K, V layout: `(batch_heads * seq_{q,k}, head_dim)` — 2-D row-major.
+    /// Returns `(batch_heads * seq_q, head_dim)`.
+    ///
+    /// `head_dim` must be ≤ 128 (compile-enforced per REQ-G-ATTN spec).
+    #[must_use]
+    pub fn sdpa(
+        q: &Self,
+        k: &Self,
+        v: &Self,
+        mask: Option<&Self>,
+        seq_q: usize,
+        seq_k: usize,
+        head_dim: usize,
+        batch_heads: usize,
+    ) -> Self {
+        assert!(
+            head_dim <= 128,
+            "nabla: sdpa head_dim must be ≤ 128 (FA_HEAD_DIM_MAX), got {head_dim}"
+        );
+        assert_eq!(
+            q.nrows(),
+            batch_heads * seq_q,
+            "nabla: sdpa Q nrows must equal batch_heads*seq_q"
+        );
+        assert_eq!(q.ncols(), head_dim, "nabla: sdpa Q ncols must equal head_dim");
+        Self::from_storage(B::sdpa(
+            &q.storage,
+            &k.storage,
+            &v.storage,
+            mask.map(|m| &m.storage),
+            seq_q,
+            seq_k,
+            head_dim,
+            batch_heads,
+        ))
     }
 }
 
@@ -2346,64 +2460,42 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Input: (N*C_in, D*H*W), Weight: (C_out, C_in/groups * kD * kH * kW).
     /// Output: (N*C_out, out_D * out_H * out_W).
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn conv3d(
         &self,
         weight: &Self,
         bias: Option<&Self>,
         n_batch: usize,
         c_in: usize,
-        d: usize, h: usize, w: usize,
+        d: usize,
+        h: usize,
+        w: usize,
         c_out: usize,
-        kd: usize, kh: usize, kw: usize,
+        kd: usize,
+        kh: usize,
+        kw: usize,
         stride: (usize, usize, usize),
         padding: (usize, usize, usize),
         dilation: (usize, usize, usize),
         groups: usize,
     ) -> Self {
         assert!(c_in % groups == 0 && c_out % groups == 0);
-        let c_in_g = c_in / groups;
-        let c_out_g = c_out / groups;
         let out_d = (d + 2 * padding.0 - dilation.0 * (kd - 1) - 1) / stride.0 + 1;
         let out_h = (h + 2 * padding.1 - dilation.1 * (kh - 1) - 1) / stride.1 + 1;
         let out_w = (w + 2 * padding.2 - dilation.2 * (kw - 1) - 1) / stride.2 + 1;
         let out_spatial = out_d * out_h * out_w;
-
-        Self::from_fn(n_batch * c_out, out_spatial, |row, col| {
-            let b = row / c_out;
-            let oc = row % c_out;
-            let g = oc / c_out_g;
-            let od = col / (out_h * out_w);
-            let oh = (col / out_w) % out_h;
-            let ow = col % out_w;
-
-            let mut acc = if let Some(bi) = bias { bi.get(0, oc) } else { T::zero() };
-            for ic in 0..c_in_g {
-                for kdr in 0..kd {
-                    for khr in 0..kh {
-                        for kwc in 0..kw {
-                            let id = od * stride.0 + kdr * dilation.0;
-                            let ih = oh * stride.1 + khr * dilation.1;
-                            let iw = ow * stride.2 + kwc * dilation.2;
-                            if id >= padding.0 && id < d + padding.0
-                                && ih >= padding.1 && ih < h + padding.1
-                                && iw >= padding.2 && iw < w + padding.2
-                            {
-                                let x_val = self.get(
-                                    b * c_in + g * c_in_g + ic,
-                                    (id - padding.0) * h * w + (ih - padding.1) * w + (iw - padding.2),
-                                );
-                                let w_val = weight.get(
-                                    oc,
-                                    ic * kd * kh * kw + kdr * kh * kw + khr * kw + kwc,
-                                );
-                                acc = acc + x_val * w_val;
-                            }
-                        }
-                    }
-                }
-            }
-            acc
-        })
+        let out = Self::from_storage(B::conv3d(
+            &self.storage, &weight.storage,
+            n_batch, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation, groups,
+        ));
+        if let Some(bi) = bias {
+            let bias_exp = B::from_fn(n_batch * c_out, out_spatial, |row, _col| {
+                B::get(&bi.storage, 0, row % c_out)
+            });
+            Self::from_storage(B::add(&out.storage, &bias_exp))
+        } else {
+            out
+        }
     }
 
     // ── Random constructors ─────────────────────────────────────────
@@ -2411,7 +2503,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Uniform random tensor in [0, 1). Uses xorshift64 seeded from `seed`.
     #[must_use]
     pub fn rand(nrows: usize, ncols: usize, seed: u64) -> Self {
-        let s0 = if seed == 0 { 0x12345678_9ABCDEF0_u64 } else { seed };
+        let s0 = if seed == 0 {
+            0x1234_5678_9ABC_DEF0_u64
+        } else {
+            seed
+        };
         let n = nrows * ncols;
         let mut data = Vec::with_capacity(n);
         let mut s = s0;
@@ -2427,7 +2523,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Normal-distributed random tensor (mean=0, std=1) via Box-Muller. Uses xorshift64 seeded from `seed`.
     #[must_use]
     pub fn randn(nrows: usize, ncols: usize, seed: u64) -> Self {
-        let mut s = if seed == 0 { 0x12345678_9ABCDEF0_u64 } else { seed };
+        let mut s = if seed == 0 {
+            0x1234_5678_9ABC_DEF0_u64
+        } else {
+            seed
+        };
         let mut xorshift = || {
             s ^= s << 13;
             s ^= s >> 7;
@@ -2467,7 +2567,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let scale = T::from_f64(1.0 / (1.0 - p));
         let threshold = (p * (u64::MAX as f64)) as u64;
         let (m, n) = self.shape();
-        let mut s = if seed == 0 { 0xDEADBEEF_CAFE1234_u64 } else { seed };
+        let mut s = if seed == 0 {
+            0xDEAD_BEEF_CAFE_1234_u64
+        } else {
+            seed
+        };
         let mut data = Vec::with_capacity(m * n);
         for r in 0..m {
             for c in 0..n {
@@ -2487,11 +2591,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ///
     /// Input: (N*C, H*W). Output: (N*C, out_H * out_W).
     #[must_use]
-    pub fn interpolate_nearest(
-        &self,
-        h: usize, w: usize,
-        out_h: usize, out_w: usize,
-    ) -> Self {
+    pub fn interpolate_nearest(&self, h: usize, w: usize, out_h: usize, out_w: usize) -> Self {
         let nc = self.nrows();
         Self::from_fn(nc, out_h * out_w, |row, col| {
             let oh = col / out_w;
@@ -2506,11 +2606,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ///
     /// Input: (N*C, H*W). Output: (N*C, out_H * out_W).
     #[must_use]
-    pub fn interpolate_bilinear(
-        &self,
-        h: usize, w: usize,
-        out_h: usize, out_w: usize,
-    ) -> Self {
+    pub fn interpolate_bilinear(&self, h: usize, w: usize, out_h: usize, out_w: usize) -> Self {
         let nc = self.nrows();
         Self::from_fn(nc, out_h * out_w, |row, col| {
             let oh = col / out_w;
@@ -2588,7 +2684,10 @@ macro_rules! impl_tensor_binop {
                 assert!(
                     m == p && n == q,
                     concat!("nabla: ", $op, " ({}×{}) vs ({}×{}) — shapes must match"),
-                    m, n, p, q,
+                    m,
+                    n,
+                    p,
+                    q,
                 );
                 Tensor::from_storage(B::$backend_fn(&self.storage, &rhs.storage))
             }
@@ -2906,10 +3005,7 @@ impl<T: Scalar> NdTensor<T> {
     #[must_use]
     pub fn unsqueeze(&self, axis: usize) -> Self {
         let nd = self.ndim();
-        assert!(
-            axis <= nd,
-            "nabla: unsqueeze axis {axis} > ndim {nd}"
-        );
+        assert!(axis <= nd, "nabla: unsqueeze axis {axis} > ndim {nd}");
         let mut new_shape = self.shape.clone();
         new_shape.insert(axis, 1);
         NdTensor::from_fn(&new_shape, |idx| {
@@ -3036,6 +3132,13 @@ impl<T: Scalar, const R: usize, const C: usize> StaticMatrix<T, R, C> {
             return self.t();
         }
         StaticMatrix::<T, C, R>::from_fn(|r, c| crate::scalar::math_utils::conj(&self.data[c][r]))
+    }
+
+    /// Short alias for conjugate-transpose (`adjoint`).
+    #[must_use]
+    #[inline]
+    pub fn h(&self) -> StaticMatrix<T, C, R> {
+        self.adjoint()
     }
 
     /// Matrix multiply `self (RxK) * rhs (KxN)` -> `StaticMatrix<T, R, N>`.
@@ -3168,9 +3271,7 @@ impl<T: Scalar, const R: usize, const K: usize, const N: usize> Mul<&StaticMatri
     }
 }
 
-impl<T: Scalar, const R: usize, const C: usize> Index<(usize, usize)>
-    for StaticMatrix<T, R, C>
-{
+impl<T: Scalar, const R: usize, const C: usize> Index<(usize, usize)> for StaticMatrix<T, R, C> {
     type Output = T;
     #[inline]
     fn index(&self, (row, col): (usize, usize)) -> &T {
@@ -3178,9 +3279,7 @@ impl<T: Scalar, const R: usize, const C: usize> Index<(usize, usize)>
     }
 }
 
-impl<T: Scalar, const R: usize, const C: usize> IndexMut<(usize, usize)>
-    for StaticMatrix<T, R, C>
-{
+impl<T: Scalar, const R: usize, const C: usize> IndexMut<(usize, usize)> for StaticMatrix<T, R, C> {
     #[inline]
     fn index_mut(&mut self, (row, col): (usize, usize)) -> &mut T {
         &mut self.data[row][col]

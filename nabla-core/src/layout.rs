@@ -62,7 +62,10 @@ impl<const N: usize> LinearLayout<N> {
     #[must_use]
     pub fn swizzle_for_tile(tile_rows: usize, tile_cols: usize, banks: usize) -> Self {
         debug_assert!(banks.is_power_of_two(), "banks must be power of two");
-        debug_assert!(tile_cols.is_power_of_two(), "tile_cols must be power of two");
+        debug_assert!(
+            tile_cols.is_power_of_two(),
+            "tile_cols must be power of two"
+        );
         let bank_bits = banks.trailing_zeros() as usize;
         let col_bits = tile_cols.trailing_zeros() as usize;
         // Shift amount for extracting high row bits to XOR with column bank bits
@@ -116,7 +119,8 @@ impl<const N: usize> LinearLayout<N> {
                 }
             } else {
                 // XOR of multiple input bits
-                let set_bits: Vec<usize> = (0..N).filter(|&j| (self.rows[i] >> j) & 1 == 1).collect();
+                let set_bits: Vec<usize> =
+                    (0..N).filter(|&j| (self.rows[i] >> j) & 1 == 1).collect();
                 if set_bits.len() == 1 {
                     let j = set_bits[0];
                     lines.push(format!("    result |= ((addr >> {j}u) & 1u) << {i}u;"));

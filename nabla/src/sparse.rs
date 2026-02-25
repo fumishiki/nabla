@@ -4,10 +4,11 @@
 // a minimal compilable surface so that linalg.rs and other modules can build.
 
 use core::fmt;
+use core::ops::Mul;
 
+use crate::linalg::{LinalgExt, Side};
 use nabla_core::backend::Cpu;
 use nabla_core::error::{Error, Result};
-use crate::linalg::{LinalgExt, Side};
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 
@@ -43,6 +44,23 @@ impl<T: Scalar> Triplet<T> {
     pub fn new(row: usize, col: usize, val: T) -> Self {
         Self { row, col, val }
     }
+}
+
+/// Build a sparse CSC matrix from `(row, col, value)` triplets.
+///
+/// # Errors
+/// Returns `Err` when any index is out of bounds.
+pub fn sparse<T: Scalar>(
+    nrows: usize,
+    ncols: usize,
+    entries: &[(usize, usize, T)],
+) -> Result<SparseMatrix<T>> {
+    let triplets: Vec<Triplet<T>> = entries
+        .iter()
+        .copied()
+        .map(|(row, col, val)| Triplet::new(row, col, val))
+        .collect();
+    SparseMatrix::try_new_from_triplets(nrows, ncols, &triplets)
 }
 
 /// CSC sparse matrix stored as sorted column arrays.
@@ -204,6 +222,14 @@ impl<T: Scalar> SparseMatrix<T> {
 }
 
 impl SparseMatrix<f64> {
+    /// Solve `A·x = b` via sparse Cholesky (lower-triangle convention).
+    ///
+    /// # Errors
+    /// Returns `Err` when factorization or solve fails.
+    pub fn chol_solve(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        self.cholesky_solve(Side::Lower, rhs)
+    }
+
     /// Solve `A·x = b` via sparse Cholesky (positive-definite symmetric).
     ///
     /// # Errors
@@ -233,6 +259,25 @@ impl SparseMatrix<f64> {
         check_rhs_rows(self.nrows, rhs)?;
         let dense = self.to_dense();
         dense.solve_lstsq(rhs)
+    }
+}
+
+impl<T: Scalar> Mul<&Tensor<T, Cpu>> for &SparseMatrix<T> {
+    type Output = Tensor<T, Cpu>;
+
+    fn mul(self, rhs: &Tensor<T, Cpu>) -> Self::Output {
+        match self.matmul_dense(rhs) {
+            Ok(out) => out,
+            Err(err) => panic!("nabla: sparse matmul failed: {err}"),
+        }
+    }
+}
+
+impl<T: Scalar> Mul<&Tensor<T, Cpu>> for SparseMatrix<T> {
+    type Output = Tensor<T, Cpu>;
+
+    fn mul(self, rhs: &Tensor<T, Cpu>) -> Self::Output {
+        (&self).mul(rhs)
     }
 }
 
@@ -410,7 +455,9 @@ pub fn mixed_spmm_f64(
         let lc = j % a.block_size;
         for p in a.row_ptrs[br]..a.row_ptrs[br + 1] {
             if a.col_idxs[p] == bc {
-                return f64::from(a.values[p * a.block_size * a.block_size + lr * a.block_size + lc]);
+                return f64::from(
+                    a.values[p * a.block_size * a.block_size + lr * a.block_size + lc],
+                );
             }
         }
         0.0

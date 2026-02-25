@@ -6,8 +6,10 @@
 //!
 //! Run: cargo run --example 09_dae_pendulum --features cpu
 
+#[cfg(feature = "cpu")]
 use nabla::prelude::*;
 
+#[cfg(feature = "cpu")]
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Simple RC circuit as index-1 DAE:
     //   Differential: C * dV/dt = I             (capacitor)
@@ -16,8 +18,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // x = [V] (voltage across capacitor), z = [I] (current)
     // V_source(t) = 1.0 (step input)
 
-    let r = 1.0;   // resistance
-    let c = 0.1;   // capacitance
+    let r = 1.0; // resistance
+    let c = 0.1; // capacitance
 
     let x0 = mat![[0.0_f64]]; // capacitor starts discharged
     let z0 = mat![[1.0_f64]]; // initial current = V_source / R
@@ -38,7 +40,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         x0,
         z0,
         (0.0, 0.5),
-        DaeConfig { dt: 0.001, tol: 1e-10, max_iter: 100 },
+        DaeConfig {
+            dt: 0.001,
+            tol: 1e-10,
+            max_iter: 100,
+        },
     )?;
 
     println!("Steps: {}", sol.len());
@@ -47,7 +53,12 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let n = sol.len();
     for &idx in &[0, n / 4, n / 2, 3 * n / 4, n - 1] {
         let v = sol.states[idx].get(0, 0);
-        println!("t={:.3}: V={:.6} (exact: {:.6})", sol.times[idx], v, 1.0 - (-sol.times[idx] / (r * c)).exp());
+        println!(
+            "t={:.3}: V={:.6} (exact: {:.6})",
+            sol.times[idx],
+            v,
+            1.0 - (-sol.times[idx] / (r * c)).exp()
+        );
     }
 
     // Final voltage should approach V_source = 1.0
@@ -55,4 +66,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("Final V = {final_v:.6} (target: 1.0)");
 
     Ok(())
+}
+
+#[cfg(not(feature = "cpu"))]
+fn main() {
+    eprintln!("example 09_dae_pendulum requires --features cpu");
 }

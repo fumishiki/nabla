@@ -70,21 +70,23 @@ fn add_opaque_symbol(
 }
 
 // syn::Expr → RecExpr<FuseExpr>, returning root Id. Opaque sub-exprs get unique symbols.
-fn expr_to_egg(
-    expr: &Expr,
-    rec: &mut RecExpr<FuseExpr>,
-    sym_map: &mut Vec<(String, Expr)>,
-) -> Id {
+fn expr_to_egg(expr: &Expr, rec: &mut RecExpr<FuseExpr>, sym_map: &mut Vec<(String, Expr)>) -> Id {
     match expr {
         // Literal numbers
-        Expr::Lit(syn::ExprLit { lit: syn::Lit::Float(f), .. }) => {
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Float(f),
+            ..
+        }) => {
             if let Ok(v) = f.base10_parse::<f64>() {
                 rec.add(FuseExpr::Num(OrderedFloat(v)))
             } else {
                 add_opaque_symbol(expr, rec, sym_map)
             }
         }
-        Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => {
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(i),
+            ..
+        }) => {
             if let Ok(v) = i.base10_parse::<i64>() {
                 rec.add(FuseExpr::Num(OrderedFloat(v as f64)))
             } else {
@@ -93,7 +95,9 @@ fn expr_to_egg(
         }
 
         // Binary ops
-        Expr::Binary(ExprBinary { left, op, right, .. }) => {
+        Expr::Binary(ExprBinary {
+            left, op, right, ..
+        }) => {
             let l = expr_to_egg(left, rec, sym_map);
             let r = expr_to_egg(right, rec, sym_map);
             match op {
@@ -106,7 +110,11 @@ fn expr_to_egg(
         }
 
         // Unary neg
-        Expr::Unary(ExprUnary { op: syn::UnOp::Neg(_), expr: inner, .. }) => {
+        Expr::Unary(ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr: inner,
+            ..
+        }) => {
             let child = expr_to_egg(inner, rec, sym_map);
             rec.add(FuseExpr::Neg([child]))
         }
@@ -116,16 +124,16 @@ fn expr_to_egg(
             let method = mc.method.to_string();
             let recv = expr_to_egg(&mc.receiver, rec, sym_map);
             match (method.as_str(), mc.args.len()) {
-                ("exp", 0)   => rec.add(FuseExpr::Exp([recv])),
-                ("ln", 0)    => rec.add(FuseExpr::Ln([recv])),
-                ("sqrt", 0)  => rec.add(FuseExpr::Sqrt([recv])),
-                ("abs", 0)   => rec.add(FuseExpr::Abs([recv])),
-                ("sin", 0)   => rec.add(FuseExpr::Sin([recv])),
-                ("cos", 0)   => rec.add(FuseExpr::Cos([recv])),
-                ("tanh", 0)  => rec.add(FuseExpr::Tanh([recv])),
+                ("exp", 0) => rec.add(FuseExpr::Exp([recv])),
+                ("ln", 0) => rec.add(FuseExpr::Ln([recv])),
+                ("sqrt", 0) => rec.add(FuseExpr::Sqrt([recv])),
+                ("abs", 0) => rec.add(FuseExpr::Abs([recv])),
+                ("sin", 0) => rec.add(FuseExpr::Sin([recv])),
+                ("cos", 0) => rec.add(FuseExpr::Cos([recv])),
+                ("tanh", 0) => rec.add(FuseExpr::Tanh([recv])),
                 ("recip", 0) => rec.add(FuseExpr::Recip([recv])),
-                ("neg", 0)   => rec.add(FuseExpr::Neg([recv])),
-                ("powf", 1)  => {
+                ("neg", 0) => rec.add(FuseExpr::Neg([recv])),
+                ("powf", 1) => {
                     let arg = expr_to_egg(&mc.args[0], rec, sym_map);
                     rec.add(FuseExpr::Pow([recv, arg]))
                 }
@@ -142,12 +150,12 @@ fn expr_to_egg(
                 let fname = path.segments[0].ident.to_string();
                 let arg = expr_to_egg(&ec.args[0], rec, sym_map);
                 match fname.as_str() {
-                    "exp"  => return rec.add(FuseExpr::Exp([arg])),
-                    "ln"   => return rec.add(FuseExpr::Ln([arg])),
+                    "exp" => return rec.add(FuseExpr::Exp([arg])),
+                    "ln" => return rec.add(FuseExpr::Ln([arg])),
                     "sqrt" => return rec.add(FuseExpr::Sqrt([arg])),
-                    "abs"  => return rec.add(FuseExpr::Abs([arg])),
-                    "sin"  => return rec.add(FuseExpr::Sin([arg])),
-                    "cos"  => return rec.add(FuseExpr::Cos([arg])),
+                    "abs" => return rec.add(FuseExpr::Abs([arg])),
+                    "sin" => return rec.add(FuseExpr::Sin([arg])),
+                    "cos" => return rec.add(FuseExpr::Cos([arg])),
                     "tanh" => return rec.add(FuseExpr::Tanh([arg])),
                     _ => {}
                 }
@@ -606,24 +614,30 @@ fn is_elementwise_fusible(expr: &Expr) -> bool {
         Expr::Lit(_) => true,
 
         // Binary +, -, *, / — fusible if both sides are
-        Expr::Binary(ExprBinary { left, op, right, .. }) => {
+        Expr::Binary(ExprBinary {
+            left, op, right, ..
+        }) => {
             matches!(
                 op,
-                syn::BinOp::Add(_)
-                    | syn::BinOp::Sub(_)
-                    | syn::BinOp::Mul(_)
-                    | syn::BinOp::Div(_)
+                syn::BinOp::Add(_) | syn::BinOp::Sub(_) | syn::BinOp::Mul(_) | syn::BinOp::Div(_)
             ) && is_elementwise_fusible(left)
                 && is_elementwise_fusible(right)
         }
 
         // Unary neg — fusible
-        Expr::Unary(ExprUnary { op: syn::UnOp::Neg(_), expr: inner, .. }) => {
-            is_elementwise_fusible(inner)
-        }
+        Expr::Unary(ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr: inner,
+            ..
+        }) => is_elementwise_fusible(inner),
 
         // Method calls: only known element-wise methods
-        Expr::MethodCall(ExprMethodCall { receiver, method, args, .. }) => {
+        Expr::MethodCall(ExprMethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        }) => {
             let name = method.to_string();
             let recv_ok = is_elementwise_fusible(receiver);
             if args.is_empty() && ELEMENTWISE_UNARY.contains(&name.as_str()) {
@@ -642,8 +656,7 @@ fn is_elementwise_fusible(expr: &Expr) -> bool {
                 && ec.args.len() == 1
             {
                 let fname = path.segments[0].ident.to_string();
-                ELEMENTWISE_UNARY.contains(&fname.as_str())
-                    && is_elementwise_fusible(&ec.args[0])
+                ELEMENTWISE_UNARY.contains(&fname.as_str()) && is_elementwise_fusible(&ec.args[0])
             } else {
                 false
             }
@@ -675,20 +688,30 @@ fn scalar_expr(expr: &Expr, tensor_names: &[String]) -> TokenStream2 {
 
         Expr::Lit(_) => expr.to_token_stream(),
 
-        Expr::Binary(ExprBinary { left, op, right, .. }) => {
+        Expr::Binary(ExprBinary {
+            left, op, right, ..
+        }) => {
             let l = scalar_expr(left, tensor_names);
             let r = scalar_expr(right, tensor_names);
             quote! { (#l #op #r) }
         }
 
-        Expr::Unary(ExprUnary { op, expr: inner, .. }) => {
+        Expr::Unary(ExprUnary {
+            op, expr: inner, ..
+        }) => {
             let i = scalar_expr(inner, tensor_names);
             quote! { (#op #i) }
         }
 
-        Expr::MethodCall(ExprMethodCall { receiver, method, args, .. }) => {
+        Expr::MethodCall(ExprMethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        }) => {
             let recv = scalar_expr(receiver, tensor_names);
-            let rewritten_args: Vec<_> = args.iter().map(|a| scalar_expr(a, tensor_names)).collect();
+            let rewritten_args: Vec<_> =
+                args.iter().map(|a| scalar_expr(a, tensor_names)).collect();
             let method_name = method.to_string();
             if method_name == "neg" {
                 return quote! { (-#recv) };
@@ -714,8 +737,11 @@ fn scalar_expr(expr: &Expr, tensor_names: &[String]) -> TokenStream2 {
                 }
             }
             let func = &ec.func;
-            let rewritten_args: Vec<_> =
-                ec.args.iter().map(|a| scalar_expr(a, tensor_names)).collect();
+            let rewritten_args: Vec<_> = ec
+                .args
+                .iter()
+                .map(|a| scalar_expr(a, tensor_names))
+                .collect();
             quote! { #func(#(#rewritten_args),*) }
         }
 
@@ -727,7 +753,10 @@ fn scalar_expr(expr: &Expr, tensor_names: &[String]) -> TokenStream2 {
         // Eqsat renders exact integers as `2i64 as _`. Inside from_fn
         // the `_` can't be inferred, so emit as float literal instead.
         Expr::Cast(ec) => {
-            if let Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) = &*ec.expr
+            if let Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(i),
+                ..
+            }) = &*ec.expr
                 && let Ok(v) = i.base10_parse::<f64>()
             {
                 return quote! { #v };
@@ -755,15 +784,15 @@ fn cuda_expr(expr: &Expr, tensor_names: &[String]) -> String {
             }
         }
 
-        Expr::Lit(syn::ExprLit { lit, .. }) => {
-            match lit {
-                syn::Lit::Float(f) => f.to_string(),
-                syn::Lit::Int(i) => format!("(double)({})", i.base10_digits()),
-                _ => lit.to_token_stream().to_string(),
-            }
-        }
+        Expr::Lit(syn::ExprLit { lit, .. }) => match lit {
+            syn::Lit::Float(f) => f.to_string(),
+            syn::Lit::Int(i) => format!("(double)({})", i.base10_digits()),
+            _ => lit.to_token_stream().to_string(),
+        },
 
-        Expr::Binary(ExprBinary { left, op, right, .. }) => {
+        Expr::Binary(ExprBinary {
+            left, op, right, ..
+        }) => {
             let l = cuda_expr(left, tensor_names);
             let r = cuda_expr(right, tensor_names);
             let op_str = match op {
@@ -776,12 +805,21 @@ fn cuda_expr(expr: &Expr, tensor_names: &[String]) -> String {
             format!("({l} {op_str} {r})")
         }
 
-        Expr::Unary(ExprUnary { op: syn::UnOp::Neg(_), expr: inner, .. }) => {
+        Expr::Unary(ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr: inner,
+            ..
+        }) => {
             let i = cuda_expr(inner, tensor_names);
             format!("(-{i})")
         }
 
-        Expr::MethodCall(ExprMethodCall { receiver, method, args, .. }) => {
+        Expr::MethodCall(ExprMethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        }) => {
             let recv = cuda_expr(receiver, tensor_names);
             let method_name = method.to_string();
             if let Some(result) = cuda_method_expr(&method_name, &recv) {
@@ -814,7 +852,10 @@ fn cuda_expr(expr: &Expr, tensor_names: &[String]) -> String {
         }
 
         Expr::Cast(ec) => {
-            if let Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) = &*ec.expr
+            if let Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(i),
+                ..
+            }) = &*ec.expr
                 && let Ok(v) = i.base10_parse::<f64>()
             {
                 return format!("{v}");
@@ -842,7 +883,13 @@ fn estimate_register_pressure(expr: &Expr, tensor_names: &[String]) -> usize {
     let mut transcendental = 0usize;
     let mut arithmetic = 0usize;
     let mut inputs = std::collections::HashSet::new();
-    count_ops(expr, tensor_names, &mut transcendental, &mut arithmetic, &mut inputs);
+    count_ops(
+        expr,
+        tensor_names,
+        &mut transcendental,
+        &mut arithmetic,
+        &mut inputs,
+    );
     let input_regs = inputs.len() * 4;
     let output_regs = 4;
     input_regs + transcendental * 12 + arithmetic * 2 + output_regs
@@ -862,9 +909,14 @@ fn count_ops(
                 inputs.insert(name);
             }
         }
-        Expr::Binary(ExprBinary { left, op, right, .. }) => {
+        Expr::Binary(ExprBinary {
+            left, op, right, ..
+        }) => {
             match op {
-                syn::BinOp::Add(_) | syn::BinOp::Sub(_) | syn::BinOp::Mul(_) | syn::BinOp::Div(_) => {
+                syn::BinOp::Add(_)
+                | syn::BinOp::Sub(_)
+                | syn::BinOp::Mul(_)
+                | syn::BinOp::Div(_) => {
                     *arithmetic += 1;
                 }
                 _ => {}
@@ -875,7 +927,12 @@ fn count_ops(
         Expr::Unary(ExprUnary { expr: inner, .. }) => {
             count_ops(inner, tensor_names, transcendental, arithmetic, inputs);
         }
-        Expr::MethodCall(ExprMethodCall { receiver, method, args, .. }) => {
+        Expr::MethodCall(ExprMethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        }) => {
             let name = method.to_string();
             match name.as_str() {
                 "exp" | "sin" | "cos" | "ln" | "tanh" | "sqrt" | "erf" | "log1p" => {
@@ -893,15 +950,15 @@ fn count_ops(
             }
         }
         Expr::Call(ec) => {
-            if let Expr::Path(ExprPath { path, .. }) = &*ec.func {
-                if path.segments.len() == 1 {
-                    let fname = path.segments[0].ident.to_string();
-                    match fname.as_str() {
-                        "exp" | "sin" | "cos" | "ln" | "tanh" | "sqrt" => {
-                            *transcendental += 1;
-                        }
-                        _ => {}
+            if let Expr::Path(ExprPath { path, .. }) = &*ec.func
+                && path.segments.len() == 1
+            {
+                let fname = path.segments[0].ident.to_string();
+                match fname.as_str() {
+                    "exp" | "sin" | "cos" | "ln" | "tanh" | "sqrt" => {
+                        *transcendental += 1;
                     }
+                    _ => {}
                 }
             }
             for a in &ec.args {
@@ -946,7 +1003,13 @@ fn detect_gemm_activation(expr: &Expr) -> Option<(Expr, Expr, Ident)> {
             Expr::Paren(ep) => &ep.expr,
             other => other,
         };
-        if let Expr::Binary(ExprBinary { left, op: syn::BinOp::Mul(_), right, .. }) = inner {
+        if let Expr::Binary(ExprBinary {
+            left,
+            op: syn::BinOp::Mul(_),
+            right,
+            ..
+        }) = inner
+        {
             // Strip reference wrappers from operands
             let lhs = strip_ref(left);
             let rhs = strip_ref(right);
@@ -1382,7 +1445,10 @@ fn nabla_grad_impl(item: TokenStream2) -> Result<TokenStream2> {
     let (arg_name, arg_ty) = match arg {
         syn::FnArg::Typed(pat_ty) => (&pat_ty.pat, &pat_ty.ty),
         syn::FnArg::Receiver(_) => {
-            return Err(Error::new_spanned(arg, "#[nabla_grad] does not support self"));
+            return Err(Error::new_spanned(
+                arg,
+                "#[nabla_grad] does not support self",
+            ));
         }
     };
 
@@ -1545,7 +1611,7 @@ fn mega_fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
 
     // Build the ops array: Vec<(Vec<*const u8>, String, usize)>
     let gpu_expr_lits: Vec<TokenStream2> = gpu_exprs.iter().map(|e| quote! { #e }).collect();
-    let n_inputs_repeated = std::iter::repeat(quote! { #n_inputs }).take(n_ops);
+    let n_inputs_repeated = std::iter::repeat_n(quote! { #n_inputs }, n_ops);
 
     Ok(quote! {{
         #(#shape_checks)*

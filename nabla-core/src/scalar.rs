@@ -171,6 +171,7 @@ impl_real_reduction!(f32);
 impl_real_reduction!(f64);
 
 /// Magnitude-squared for complex comparison: `re^2 + im^2`.
+#[cfg(feature = "cpu")]
 macro_rules! mag2 {
     ($z:expr) => {
         $z.re * $z.re + $z.im * $z.im
@@ -468,7 +469,10 @@ impl<T: RealScalar> Dual<T> {
     /// Construct a constant (derivative = 0).
     #[inline]
     pub fn constant(value: T) -> Self {
-        Self { value, deriv: T::zero() }
+        Self {
+            value,
+            deriv: T::zero(),
+        }
     }
 
     // Convenience wrappers mirroring f64 standard methods so that
@@ -477,35 +481,51 @@ impl<T: RealScalar> Dual<T> {
 
     /// Dual exponential: delegates to `MathOps::math_exp`.
     #[inline]
-    pub fn exp(self) -> Self { self.math_exp() }
+    pub fn exp(self) -> Self {
+        self.math_exp()
+    }
 
     /// Dual natural log: delegates to `MathOps::math_ln`.
     #[inline]
-    pub fn ln(self) -> Self { self.math_ln() }
+    pub fn ln(self) -> Self {
+        self.math_ln()
+    }
 
     /// Dual sin: delegates to `MathOps::math_sin`.
     #[inline]
-    pub fn sin(self) -> Self { self.math_sin() }
+    pub fn sin(self) -> Self {
+        self.math_sin()
+    }
 
     /// Dual cos: delegates to `MathOps::math_cos`.
     #[inline]
-    pub fn cos(self) -> Self { self.math_cos() }
+    pub fn cos(self) -> Self {
+        self.math_cos()
+    }
 
     /// Dual tanh: delegates to `MathOps::math_tanh`.
     #[inline]
-    pub fn tanh(self) -> Self { self.math_tanh() }
+    pub fn tanh(self) -> Self {
+        self.math_tanh()
+    }
 
     /// Dual sqrt: delegates to `MathOps::math_sqrt`.
     #[inline]
-    pub fn sqrt(self) -> Self { self.math_sqrt() }
+    pub fn sqrt(self) -> Self {
+        self.math_sqrt()
+    }
 
     /// Dual abs: delegates to `MathOps::math_abs`.
     #[inline]
-    pub fn abs(self) -> Self { self.math_abs() }
+    pub fn abs(self) -> Self {
+        self.math_abs()
+    }
 
     /// Dual reciprocal: delegates to `MathOps::math_recip`.
     #[inline]
-    pub fn recip(self) -> Self { self.math_recip() }
+    pub fn recip(self) -> Self {
+        self.math_recip()
+    }
 }
 
 #[cfg(feature = "cpu")]
@@ -565,10 +585,7 @@ impl<T: RealScalar> Div for Dual<T> {
         let b: f64 = self.deriv.into();
         let c: f64 = rhs.value.into();
         let d: f64 = rhs.deriv.into();
-        Self::new(
-            T::from_f64(a / c),
-            T::from_f64((b * c - a * d) / (c * c)),
-        )
+        Self::new(T::from_f64(a / c), T::from_f64((b * c - a * d) / (c * c)))
     }
 }
 
@@ -577,7 +594,10 @@ impl<T: RealScalar> Neg for Dual<T> {
     type Output = Self;
     #[inline]
     fn neg(self) -> Self {
-        Self::new(T::from_f64(-self.value.into()), T::from_f64(-self.deriv.into()))
+        Self::new(
+            T::from_f64(-self.value.into()),
+            T::from_f64(-self.deriv.into()),
+        )
     }
 }
 
@@ -608,7 +628,10 @@ macro_rules! impl_dual_scalar_ops {
             type Output = Dual<$scalar>;
             #[inline]
             fn sub(self, rhs: Dual<$scalar>) -> Dual<$scalar> {
-                Dual::new(self - rhs.value, <$scalar>::from_f64(-Into::<f64>::into(rhs.deriv)))
+                Dual::new(
+                    self - rhs.value,
+                    <$scalar>::from_f64(-Into::<f64>::into(rhs.deriv)),
+                )
             }
         }
 
@@ -740,7 +763,13 @@ impl<T: RealScalar> MathOps for Dual<T> {
     fn math_abs(self) -> Self {
         let a: f64 = self.value.into();
         let b: f64 = self.deriv.into();
-        let s = if a > 0.0 { 1.0 } else if a < 0.0 { -1.0 } else { 0.0 };
+        let s = if a > 0.0 {
+            1.0
+        } else if a < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
         Self::new(T::from_f64(a.abs()), T::from_f64(s * b))
     }
     // recip(a+bε) = 1/a - b/a²·ε
@@ -804,11 +833,19 @@ impl<T: RealScalar> ReductionOps for Dual<T> {
     }
     #[inline]
     fn reduction_max(self, other: Self) -> Self {
-        if self.value > other.value { self } else { other }
+        if self.value > other.value {
+            self
+        } else {
+            other
+        }
     }
     #[inline]
     fn reduction_min(self, other: Self) -> Self {
-        if self.value < other.value { self } else { other }
+        if self.value < other.value {
+            self
+        } else {
+            other
+        }
     }
     #[inline]
     fn reduction_gt(self, other: Self) -> bool {
@@ -874,7 +911,10 @@ impl<T: RealScalar, const N: usize> MultiDual<T, N> {
     /// Construct a constant (all derivatives zero).
     #[inline]
     pub fn constant(value: T) -> Self {
-        Self { value, derivs: [T::zero(); N] }
+        Self {
+            value,
+            derivs: [T::zero(); N],
+        }
     }
 
     /// Seed lane `lane` with derivative 1, all others 0.
@@ -895,7 +935,10 @@ impl<T: RealScalar, const N: usize> MultiDual<T, N> {
             out[i] = T::from_f64(fprime * d);
             i += 1;
         }
-        Self { value: T::from_f64(fval), derivs: out }
+        Self {
+            value: T::from_f64(fval),
+            derivs: out,
+        }
     }
 }
 
@@ -904,7 +947,9 @@ impl<T: RealScalar, const N: usize> fmt::Display for MultiDual<T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} + [", self.value)?;
         for (i, d) in self.derivs.iter().enumerate() {
-            if i > 0 { write!(f, ", ")?; }
+            if i > 0 {
+                write!(f, ", ")?;
+            }
             write!(f, "{d}")?;
         }
         write!(f, "]·ε")
@@ -1052,7 +1097,13 @@ impl<T: RealScalar, const N: usize> MathOps for MultiDual<T, N> {
     #[inline]
     fn math_abs(self) -> Self {
         let a: f64 = self.value.into();
-        let s = if a > 0.0 { 1.0 } else if a < 0.0 { -1.0 } else { 0.0 };
+        let s = if a > 0.0 {
+            1.0
+        } else if a < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
         self.chain(a.abs(), s)
     }
     #[inline]
@@ -1069,17 +1120,26 @@ impl<T: RealScalar, const N: usize> MathOps for MultiDual<T, N> {
     #[inline]
     fn math_ceil(self) -> Self {
         let a: f64 = self.value.into();
-        Self { value: T::from_f64(a.ceil()), derivs: [T::zero(); N] }
+        Self {
+            value: T::from_f64(a.ceil()),
+            derivs: [T::zero(); N],
+        }
     }
     #[inline]
     fn math_floor(self) -> Self {
         let a: f64 = self.value.into();
-        Self { value: T::from_f64(a.floor()), derivs: [T::zero(); N] }
+        Self {
+            value: T::from_f64(a.floor()),
+            derivs: [T::zero(); N],
+        }
     }
     #[inline]
     fn math_round(self) -> Self {
         let a: f64 = self.value.into();
-        Self { value: T::from_f64(a.round()), derivs: [T::zero(); N] }
+        Self {
+            value: T::from_f64(a.round()),
+            derivs: [T::zero(); N],
+        }
     }
     #[inline]
     fn math_powf(self, p: Self) -> Self {
@@ -1107,11 +1167,19 @@ impl<T: RealScalar, const N: usize> ReductionOps for MultiDual<T, N> {
     }
     #[inline]
     fn reduction_max(self, other: Self) -> Self {
-        if self.value > other.value { self } else { other }
+        if self.value > other.value {
+            self
+        } else {
+            other
+        }
     }
     #[inline]
     fn reduction_min(self, other: Self) -> Self {
-        if self.value < other.value { self } else { other }
+        if self.value < other.value {
+            self
+        } else {
+            other
+        }
     }
     #[inline]
     fn reduction_gt(self, other: Self) -> bool {
@@ -1127,11 +1195,17 @@ impl<T: RealScalar, const N: usize> Scalar for MultiDual<T, N> {
     const IS_REAL: bool = false;
     #[inline]
     fn zero() -> Self {
-        MultiDual { value: T::zero(), derivs: [T::zero(); N] }
+        MultiDual {
+            value: T::zero(),
+            derivs: [T::zero(); N],
+        }
     }
     #[inline]
     fn one() -> Self {
-        MultiDual { value: T::one(), derivs: [T::zero(); N] }
+        MultiDual {
+            value: T::one(),
+            derivs: [T::zero(); N],
+        }
     }
     #[inline]
     fn conj(self) -> Self {
@@ -1143,7 +1217,10 @@ impl<T: RealScalar, const N: usize> Scalar for MultiDual<T, N> {
     }
     #[inline]
     fn from_f64(v: f64) -> Self {
-        MultiDual { value: T::from_f64(v), derivs: [T::zero(); N] }
+        MultiDual {
+            value: T::from_f64(v),
+            derivs: [T::zero(); N],
+        }
     }
     #[inline]
     fn to_f64(self) -> f64 {
@@ -1327,6 +1404,7 @@ macro_rules! delegate_half_math {
     };
 }
 
+#[cfg(feature = "cpu")]
 macro_rules! impl_half_mathops {
     ($ty:ty) => {
         impl MathOps for $ty {
@@ -1354,10 +1432,22 @@ impl_half_mathops!(half::bf16);
 macro_rules! impl_half_reduction {
     ($ty:ty) => {
         impl ReductionOps for $ty {
-            #[inline] fn reduction_add(self, other: Self) -> Self { <$ty>::from_f32(f32::from(self) + f32::from(other)) }
-            #[inline] fn reduction_max(self, other: Self) -> Self { <$ty>::from_f32(f32::from(self).max(f32::from(other))) }
-            #[inline] fn reduction_min(self, other: Self) -> Self { <$ty>::from_f32(f32::from(self).min(f32::from(other))) }
-            #[inline] fn reduction_gt(self, other: Self) -> bool { f32::from(self) > f32::from(other) }
+            #[inline]
+            fn reduction_add(self, other: Self) -> Self {
+                <$ty>::from_f32(f32::from(self) + f32::from(other))
+            }
+            #[inline]
+            fn reduction_max(self, other: Self) -> Self {
+                <$ty>::from_f32(f32::from(self).max(f32::from(other)))
+            }
+            #[inline]
+            fn reduction_min(self, other: Self) -> Self {
+                <$ty>::from_f32(f32::from(self).min(f32::from(other)))
+            }
+            #[inline]
+            fn reduction_gt(self, other: Self) -> bool {
+                f32::from(self) > f32::from(other)
+            }
         }
     };
 }
@@ -1373,13 +1463,31 @@ macro_rules! impl_half_scalar {
         impl Scalar for $ty {
             type Real = f32;
             const IS_REAL: bool = true;
-            #[inline] fn zero() -> Self { <$ty>::ZERO }
-            #[inline] fn one() -> Self { <$ty>::ONE }
-            #[inline] fn conj(self) -> Self { self }
-            #[inline] fn abs_val(self) -> Self::Real { f32::from(self).abs() }
+            #[inline]
+            fn zero() -> Self {
+                <$ty>::ZERO
+            }
+            #[inline]
+            fn one() -> Self {
+                <$ty>::ONE
+            }
+            #[inline]
+            fn conj(self) -> Self {
+                self
+            }
+            #[inline]
+            fn abs_val(self) -> Self::Real {
+                f32::from(self).abs()
+            }
             #[allow(clippy::cast_possible_truncation)]
-            #[inline] fn from_f64(v: f64) -> Self { <$ty>::from_f32(v as f32) }
-            #[inline] fn to_f64(self) -> f64 { f64::from(f32::from(self)) }
+            #[inline]
+            fn from_f64(v: f64) -> Self {
+                <$ty>::from_f32(v as f32)
+            }
+            #[inline]
+            fn to_f64(self) -> f64 {
+                f64::from(f32::from(self))
+            }
         }
     };
 }

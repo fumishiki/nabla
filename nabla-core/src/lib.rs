@@ -24,7 +24,15 @@
     )
 )]
 
-// Enforce mutually exclusive GPU backends. CPU may combine with any GPU backend.
+// Enforce mutually exclusive backend selection (build-time fixed backend).
+#[cfg(not(any(feature = "cpu", feature = "gpu", feature = "cuda", feature = "hip")))]
+compile_error!("nabla-core: enable exactly one backend feature (cpu / wgpu / cuda / hip)");
+#[cfg(all(feature = "cpu", feature = "gpu"))]
+compile_error!("nabla-core: features 'cpu' and 'gpu' are mutually exclusive");
+#[cfg(all(feature = "cpu", feature = "cuda"))]
+compile_error!("nabla-core: features 'cpu' and 'cuda' are mutually exclusive");
+#[cfg(all(feature = "cpu", feature = "hip"))]
+compile_error!("nabla-core: features 'cpu' and 'hip' are mutually exclusive");
 #[cfg(all(feature = "gpu", feature = "cuda"))]
 compile_error!("nabla-core: features 'gpu' and 'cuda' are mutually exclusive");
 #[cfg(all(feature = "gpu", feature = "hip"))]
@@ -42,6 +50,7 @@ pub mod scalar;
 pub mod backend;
 
 #[cfg(feature = "gpu")]
+/// wgpu backend module.
 pub mod gpu;
 
 #[cfg(any(feature = "cuda", feature = "hip"))]
@@ -54,7 +63,7 @@ pub mod gpu_common;
 pub mod cuda_backend;
 
 #[cfg(feature = "cuda")]
-pub use cuda_backend::{NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached, CuBuffer};
+pub use cuda_backend::{CuBuffer, NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached};
 
 #[cfg(any(feature = "cuda", feature = "hip"))]
 pub use gpu_common::RtcStorage;

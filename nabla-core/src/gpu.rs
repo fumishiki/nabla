@@ -62,8 +62,16 @@ enum ShaderOp {
     ReduceMin,
     Argmax,
     Argmin,
-    Matmul { tile: u32 },
-    MatmulRegTile { tr: u32, tc: u32, bm: u32, bn: u32, bk: u32 },
+    Matmul {
+        tile: u32,
+    },
+    MatmulRegTile {
+        tr: u32,
+        tc: u32,
+        bm: u32,
+        bn: u32,
+        bk: u32,
+    },
     // Activation / composite ops
     ActivationSilu,
     ActivationMish,
@@ -115,7 +123,13 @@ async fn init_gpu() -> GpuContext {
         .await
         .expect("failed to create wgpu device");
     let max_wg = device.limits().max_compute_workgroup_size_x;
-    let wg_size = if max_wg >= 512 { 256 } else if max_wg >= 256 { 128 } else { 64 };
+    let wg_size = if max_wg >= 512 {
+        256
+    } else if max_wg >= 256 {
+        128
+    } else {
+        64
+    };
     GpuContext {
         device,
         queue,
@@ -142,7 +156,11 @@ fn compile_pipeline(ctx: &GpuContext, shader_src: &str) -> wgpu::ComputePipeline
         })
 }
 
-fn with_pipeline<R>(ctx: &GpuContext, key: PipelineKey, f: impl FnOnce(&wgpu::ComputePipeline) -> R) -> R {
+fn with_pipeline<R>(
+    ctx: &GpuContext,
+    key: PipelineKey,
+    f: impl FnOnce(&wgpu::ComputePipeline) -> R,
+) -> R {
     let mut cache = lock_or_recover(&ctx.pipelines);
     cache.entry(key).or_insert_with(|| {
         let src = generate_shader(key);
@@ -237,7 +255,9 @@ fn generate_shader(key: PipelineKey) -> String {
         ShaderOp::Argmax => gen_argmax(wg),
         ShaderOp::Argmin => gen_argmin(wg),
         ShaderOp::Matmul { tile } => gen_matmul(tile),
-        ShaderOp::MatmulRegTile { tr, tc, bm, bn, bk } => gen_matmul_register_tile(tr, tc, bm, bn, bk),
+        ShaderOp::MatmulRegTile { tr, tc, bm, bn, bk } => {
+            gen_matmul_register_tile(tr, tc, bm, bn, bk)
+        }
         ShaderOp::ActivationSilu => gen_activation_silu(wg),
         ShaderOp::ActivationMish => gen_activation_mish(wg),
         ShaderOp::ActivationLeakyRelu => gen_activation_leaky_relu(wg),
@@ -253,7 +273,8 @@ fn generate_shader(key: PipelineKey) -> String {
 }
 
 fn gen_binary(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read> b: array<f32>;
 @group(0) @binding(2) var<storage, read_write> out: array<f32>;
@@ -269,11 +290,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     else if op == 2u {{ out[i] = a[i] * b[i]; }}
     else {{ out[i] = a[i] / b[i]; }}
 }}
-")
+"
+    )
 }
 
 fn gen_scale(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -285,11 +308,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let scalar = bitcast<f32>(params[1]);
     out[i] = a[i] * scalar;
 }}
-")
+"
+    )
 }
 
 fn gen_unary(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -322,11 +347,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     else if op == 12u {{ out[i] = floor(v); }}
     else {{ out[i] = round(v); }}
 }}
-")
+"
+    )
 }
 
 fn gen_powf(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -338,11 +365,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let p = bitcast<f32>(params[1]);
     out[i] = pow(a[i], p);
 }}
-")
+"
+    )
 }
 
 fn gen_transpose(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -356,11 +385,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let col = i % cols;
     out[col * rows + row] = a[i];
 }}
-")
+"
+    )
 }
 
 fn gen_copy(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -370,13 +401,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     if i >= params[0] {{ return; }}
     out[i] = a[i];
 }}
-")
+"
+    )
 }
 
 fn gen_matmul(tile: u32) -> String {
     let tile_sq = tile * tile;
     let tile_m1 = tile - 1;
-    format!(r"
+    format!(
+        r"
 var<workgroup> tile_a: array<f32, {tile_sq}>;
 var<workgroup> tile_b: array<f32, {tile_sq}>;
 @group(0) @binding(0) var<storage, read> a: array<f32>;
@@ -424,7 +457,8 @@ fn main(
         out[row * n + col] = sum;
     }}
 }}
-")
+"
+    )
 }
 
 fn gen_matmul_register_tile(tr: u32, tc: u32, bm: u32, bn: u32, bk: u32) -> String {
@@ -436,7 +470,8 @@ fn select_register_tile_params(m: usize, n: usize, k: usize) -> (u32, u32, u32, 
 }
 
 fn gen_fill_zeros(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read_write> out: array<f32>;
 @group(0) @binding(1) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
@@ -444,11 +479,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     if gid.x >= params[0] {{ return; }}
     out[gid.x] = 0.0;
 }}
-")
+"
+    )
 }
 
 fn gen_fill_scalar(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read_write> out: array<f32>;
 @group(0) @binding(1) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
@@ -456,11 +493,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     if gid.x >= params[0] {{ return; }}
     out[gid.x] = bitcast<f32>(params[1]);
 }}
-")
+"
+    )
 }
 
 fn gen_fill_identity(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read_write> out: array<f32>;
 @group(0) @binding(1) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
@@ -472,11 +511,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let col = i % n;
     out[i] = select(0.0, 1.0, row == col);
 }}
-")
+"
+    )
 }
 
 fn gen_reduce_sum(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 var<workgroup> shared: array<f32, {wg}>;
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
@@ -498,11 +539,13 @@ fn main(
         out[wgid.x] = acc;
     }}
 }}
-")
+"
+    )
 }
 
 fn gen_reduce_max(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 var<workgroup> shared: array<f32, {wg}>;
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
@@ -526,11 +569,13 @@ fn main(
         out[wgid.x] = acc;
     }}
 }}
-")
+"
+    )
 }
 
 fn gen_reduce_min(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 var<workgroup> shared: array<f32, {wg}>;
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
@@ -554,11 +599,13 @@ fn main(
         out[wgid.x] = acc;
     }}
 }}
-")
+"
+    )
 }
 
 fn gen_argmax(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 var<workgroup> shared_v: array<f32, {wg}>;
 var<workgroup> shared_i: array<u32, {wg}>;
 @group(0) @binding(0) var<storage, read> input: array<f32>;
@@ -594,11 +641,13 @@ fn main(
         idxs[wgid.x] = bi;
     }}
 }}
-")
+"
+    )
 }
 
 fn gen_argmin(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 var<workgroup> shared_v: array<f32, {wg}>;
 var<workgroup> shared_i: array<u32, {wg}>;
 @group(0) @binding(0) var<storage, read> input: array<f32>;
@@ -634,13 +683,15 @@ fn main(
         idxs[wgid.x] = bi;
     }}
 }}
-")
+"
+    )
 }
 
 // ── Activation & composite WGSL shaders ──────────────────────────────────────
 
 fn gen_activation_silu(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -652,11 +703,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let x = a[i];
     out[i] = x / (1.0 + exp(-x));
 }}
-")
+"
+    )
 }
 
 fn gen_activation_mish(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -669,11 +722,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let sp = log(1.0 + exp(x));
     out[i] = x * tanh(sp);
 }}
-")
+"
+    )
 }
 
 fn gen_activation_leaky_relu(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -686,11 +741,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let slope = bitcast<f32>(params[1]);
     out[i] = select(slope * x, x, x >= 0.0);
 }}
-")
+"
+    )
 }
 
 fn gen_activation_elu(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -703,11 +760,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let alpha = bitcast<f32>(params[1]);
     out[i] = select(alpha * (exp(x) - 1.0), x, x >= 0.0);
 }}
-")
+"
+    )
 }
 
 fn gen_activation_hardswish(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -720,11 +779,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let v = clamp(x + 3.0, 0.0, 6.0);
     out[i] = x * v / 6.0;
 }}
-")
+"
+    )
 }
 
 fn gen_softmax(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -774,11 +835,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
         out[base + j] = exp(a[base + j] - row_max) * inv;
     }}
 }}
-")
+"
+    )
 }
 
 fn gen_layer_norm(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read> gamma: array<f32>;
 @group(0) @binding(2) var<storage, read> beta: array<f32>;
@@ -828,11 +891,13 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
         out[base + j] = (a[base + j] - mean) * inv_std * gamma[j] + beta[j];
     }}
 }}
-")
+"
+    )
 }
 
 fn gen_rms_norm(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read> gamma: array<f32>;
 @group(0) @binding(2) var<storage, read_write> out: array<f32>;
@@ -866,11 +931,13 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
         out[base + j] = a[base + j] * inv_rms * gamma[j];
     }}
 }}
-")
+"
+    )
 }
 
 fn gen_sum_axis1(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -894,11 +961,13 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
     }}
     if tid == 0u {{ out[row] = sdata[0]; }}
 }}
-")
+"
+    )
 }
 
 fn gen_max_axis1(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -922,11 +991,13 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
     }}
     if tid == 0u {{ out[row] = sdata[0]; }}
 }}
-")
+"
+    )
 }
 
 fn gen_embedding(wg: u32) -> String {
-    format!(r"
+    format!(
+        r"
 @group(0) @binding(0) var<storage, read> indices: array<f32>;
 @group(0) @binding(1) var<storage, read> weight: array<f32>;
 @group(0) @binding(2) var<storage, read_write> out: array<f32>;
@@ -943,13 +1014,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let idx = u32(indices[token]);
     out[tid] = weight[idx * embed_dim + dim];
 }}
-")
+"
+    )
 }
 
 // Select matmul tile size based on matrix dimensions
 fn select_matmul_tile(m: usize, k: usize, n: usize) -> u32 {
     let max_dim = m.max(k).max(n);
-    if max_dim < 64 { 8 } else if max_dim >= 256 { 32 } else { 16 }
+    if max_dim < 64 {
+        8
+    } else if max_dim >= 256 {
+        32
+    } else {
+        16
+    }
 }
 
 // ── GpuStorage ───────────────────────────────────────────────────────────────
@@ -1066,7 +1144,13 @@ fn workgroups(n: usize, wg_size: u32) -> u32 {
 
 /// Single-input GPU dispatch: input → params → output.
 #[allow(clippy::cast_possible_truncation)]
-fn run_1in(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, n: usize, params: &[u32]) -> wgpu::Buffer {
+fn run_1in(
+    ctx: &GpuContext,
+    op: ShaderOp,
+    a: &wgpu::Buffer,
+    n: usize,
+    params: &[u32],
+) -> wgpu::Buffer {
     let wg = ctx.wg_size;
     let key = PipelineKey { op, wg_size: wg };
     let p = params_buf(params);
@@ -1080,20 +1164,37 @@ fn run_1in(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, n: usize, params: &
 
 /// Two-input GPU dispatch: a, b → params → output.
 #[allow(clippy::cast_possible_truncation)]
-fn run_2in(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, b: &wgpu::Buffer, n: usize, params: &[u32]) -> wgpu::Buffer {
+fn run_2in(
+    ctx: &GpuContext,
+    op: ShaderOp,
+    a: &wgpu::Buffer,
+    b: &wgpu::Buffer,
+    n: usize,
+    params: &[u32],
+) -> wgpu::Buffer {
     let wg = ctx.wg_size;
     let key = PipelineKey { op, wg_size: wg };
     let p = params_buf(params);
     let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
     with_pipeline(ctx, key, |pipeline| {
-        let bg = bind_group(ctx, pipeline, &[(a, true), (b, true), (&out, false), (&p, true)]);
+        let bg = bind_group(
+            ctx,
+            pipeline,
+            &[(a, true), (b, true), (&out, false), (&p, true)],
+        );
         dispatch_and_wait(ctx, pipeline, &bg, workgroups(n, wg));
     });
     out
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn run_binary_f32(ctx: &GpuContext, a: &wgpu::Buffer, b: &wgpu::Buffer, n: usize, op_type: u32) -> wgpu::Buffer {
+fn run_binary_f32(
+    ctx: &GpuContext,
+    a: &wgpu::Buffer,
+    b: &wgpu::Buffer,
+    n: usize,
+    op_type: u32,
+) -> wgpu::Buffer {
     run_2in(ctx, ShaderOp::Binary, a, b, n, &[n as u32, op_type])
 }
 
@@ -1114,7 +1215,13 @@ fn run_powf_f32(ctx: &GpuContext, a: &wgpu::Buffer, n: usize, power: f32) -> wgp
 
 #[allow(clippy::cast_possible_truncation)]
 fn run_transpose_f32(ctx: &GpuContext, a: &wgpu::Buffer, rows: usize, cols: usize) -> wgpu::Buffer {
-    run_1in(ctx, ShaderOp::Transpose, a, rows * cols, &[rows as u32, cols as u32])
+    run_1in(
+        ctx,
+        ShaderOp::Transpose,
+        a,
+        rows * cols,
+        &[rows as u32, cols as u32],
+    )
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -1139,12 +1246,19 @@ fn run_matmul_f32(
     let grid_cols = n.div_ceil(tile_usize);
     let grid_rows = m.div_ceil(tile_usize);
     let grid_size = grid_rows * grid_cols;
-    let key = PipelineKey { op: ShaderOp::Matmul { tile }, wg_size: tile };
+    let key = PipelineKey {
+        op: ShaderOp::Matmul { tile },
+        wg_size: tile,
+    };
     #[allow(clippy::cast_possible_truncation)]
     let params = params_buf(&[m as u32, k as u32, n as u32, grid_cols as u32]);
     let out = GpuStorage::<f32>::empty_buf((m * n * 4) as u64);
     with_pipeline(ctx, key, |pipeline| {
-        let bg = bind_group(ctx, pipeline, &[(a, true), (b, true), (&out, false), (&params, true)]);
+        let bg = bind_group(
+            ctx,
+            pipeline,
+            &[(a, true), (b, true), (&out, false), (&params, true)],
+        );
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -1187,7 +1301,11 @@ fn run_matmul_register_tile_f32(
     let params = params_buf(&[m as u32, k as u32, n as u32, grid_cols as u32]);
     let out = GpuStorage::<f32>::empty_buf((m * n * 4) as u64);
     with_pipeline(ctx, key, |pipeline| {
-        let bg = bind_group(ctx, pipeline, &[(a, true), (b, true), (&out, false), (&params, true)]);
+        let bg = bind_group(
+            ctx,
+            pipeline,
+            &[(a, true), (b, true), (&out, false), (&params, true)],
+        );
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -1209,7 +1327,10 @@ fn run_matmul_register_tile_f32(
 
 fn run_fill_zeros_f32(ctx: &GpuContext, n: usize) -> wgpu::Buffer {
     let wg = ctx.wg_size;
-    let key = PipelineKey { op: ShaderOp::FillZeros, wg_size: wg };
+    let key = PipelineKey {
+        op: ShaderOp::FillZeros,
+        wg_size: wg,
+    };
     #[allow(clippy::cast_possible_truncation)]
     let params = params_buf(&[n as u32]);
     let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
@@ -1222,7 +1343,10 @@ fn run_fill_zeros_f32(ctx: &GpuContext, n: usize) -> wgpu::Buffer {
 
 fn run_fill_scalar_f32(ctx: &GpuContext, n: usize, val: f32) -> wgpu::Buffer {
     let wg = ctx.wg_size;
-    let key = PipelineKey { op: ShaderOp::FillScalar, wg_size: wg };
+    let key = PipelineKey {
+        op: ShaderOp::FillScalar,
+        wg_size: wg,
+    };
     #[allow(clippy::cast_possible_truncation)]
     let params = params_buf(&[n as u32, val.to_bits()]);
     let out = GpuStorage::<f32>::empty_buf((n * 4) as u64);
@@ -1235,7 +1359,10 @@ fn run_fill_scalar_f32(ctx: &GpuContext, n: usize, val: f32) -> wgpu::Buffer {
 
 fn run_fill_identity_f32(ctx: &GpuContext, n: usize) -> wgpu::Buffer {
     let wg = ctx.wg_size;
-    let key = PipelineKey { op: ShaderOp::FillIdentity, wg_size: wg };
+    let key = PipelineKey {
+        op: ShaderOp::FillIdentity,
+        wg_size: wg,
+    };
     let total = n * n;
     #[allow(clippy::cast_possible_truncation)]
     let params = params_buf(&[n as u32]);
@@ -1283,7 +1410,12 @@ fn run_argreduce_f32(
         let bg = bind_group(
             ctx,
             pipeline,
-            &[(a, true), (&out_vals, false), (&out_idxs, false), (&params, true)],
+            &[
+                (a, true),
+                (&out_vals, false),
+                (&out_idxs, false),
+                (&params, true),
+            ],
         );
         #[allow(clippy::cast_possible_truncation)]
         dispatch_and_wait(ctx, pipeline, &bg, num_blocks as u32);
@@ -1298,7 +1430,13 @@ fn run_argreduce_f32(
 
 // ── Activation & composite GPU dispatch ──────────────────────────────────────
 
-fn run_activation_1in(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, n: usize, extra_params: &[u32]) -> wgpu::Buffer {
+fn run_activation_1in(
+    ctx: &GpuContext,
+    op: ShaderOp,
+    a: &wgpu::Buffer,
+    n: usize,
+    extra_params: &[u32],
+) -> wgpu::Buffer {
     let wg = ctx.wg_size;
     let key = PipelineKey { op, wg_size: wg };
     let mut pdata = vec![n as u32];
@@ -1312,7 +1450,13 @@ fn run_activation_1in(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, n: usize
     out
 }
 
-fn run_rowwise_1in(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, rows: usize, cols: usize) -> wgpu::Buffer {
+fn run_rowwise_1in(
+    ctx: &GpuContext,
+    op: ShaderOp,
+    a: &wgpu::Buffer,
+    rows: usize,
+    cols: usize,
+) -> wgpu::Buffer {
     let wg = ctx.wg_size;
     let key = PipelineKey { op, wg_size: wg };
     let p = params_buf(&[rows as u32, cols as u32]);
@@ -1324,7 +1468,13 @@ fn run_rowwise_1in(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, rows: usize
     out
 }
 
-fn run_rowwise_reduce(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, rows: usize, cols: usize) -> wgpu::Buffer {
+fn run_rowwise_reduce(
+    ctx: &GpuContext,
+    op: ShaderOp,
+    a: &wgpu::Buffer,
+    rows: usize,
+    cols: usize,
+) -> wgpu::Buffer {
     let wg = ctx.wg_size;
     let key = PipelineKey { op, wg_size: wg };
     let p = params_buf(&[rows as u32, cols as u32]);
@@ -1339,14 +1489,26 @@ fn run_rowwise_reduce(ctx: &GpuContext, op: ShaderOp, a: &wgpu::Buffer, rows: us
 pub(crate) fn gpu_silu<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
     assert_is_f32::<T>();
     let ctx = get_context();
-    let buf = run_activation_1in(ctx, ShaderOp::ActivationSilu, &a.buffer, a.nrows * a.ncols, &[]);
+    let buf = run_activation_1in(
+        ctx,
+        ShaderOp::ActivationSilu,
+        &a.buffer,
+        a.nrows * a.ncols,
+        &[],
+    );
     GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
 pub(crate) fn gpu_mish<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
     assert_is_f32::<T>();
     let ctx = get_context();
-    let buf = run_activation_1in(ctx, ShaderOp::ActivationMish, &a.buffer, a.nrows * a.ncols, &[]);
+    let buf = run_activation_1in(
+        ctx,
+        ShaderOp::ActivationMish,
+        &a.buffer,
+        a.nrows * a.ncols,
+        &[],
+    );
     GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
@@ -1354,7 +1516,13 @@ pub(crate) fn gpu_leaky_relu<T: Scalar>(a: &GpuStorage<T>, slope: T) -> GpuStora
     assert_is_f32::<T>();
     let ctx = get_context();
     let slope_bits = (slope.to_f64() as f32).to_bits();
-    let buf = run_activation_1in(ctx, ShaderOp::ActivationLeakyRelu, &a.buffer, a.nrows * a.ncols, &[slope_bits]);
+    let buf = run_activation_1in(
+        ctx,
+        ShaderOp::ActivationLeakyRelu,
+        &a.buffer,
+        a.nrows * a.ncols,
+        &[slope_bits],
+    );
     GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
@@ -1362,14 +1530,26 @@ pub(crate) fn gpu_elu<T: Scalar>(a: &GpuStorage<T>, alpha: T) -> GpuStorage<T> {
     assert_is_f32::<T>();
     let ctx = get_context();
     let alpha_bits = (alpha.to_f64() as f32).to_bits();
-    let buf = run_activation_1in(ctx, ShaderOp::ActivationElu, &a.buffer, a.nrows * a.ncols, &[alpha_bits]);
+    let buf = run_activation_1in(
+        ctx,
+        ShaderOp::ActivationElu,
+        &a.buffer,
+        a.nrows * a.ncols,
+        &[alpha_bits],
+    );
     GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
 pub(crate) fn gpu_hardswish<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
     assert_is_f32::<T>();
     let ctx = get_context();
-    let buf = run_activation_1in(ctx, ShaderOp::ActivationHardswish, &a.buffer, a.nrows * a.ncols, &[]);
+    let buf = run_activation_1in(
+        ctx,
+        ShaderOp::ActivationHardswish,
+        &a.buffer,
+        a.nrows * a.ncols,
+        &[],
+    );
     GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
@@ -1381,39 +1561,64 @@ pub(crate) fn gpu_softmax<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
 }
 
 pub(crate) fn gpu_layer_norm<T: Scalar>(
-    a: &GpuStorage<T>, gamma: &GpuStorage<T>, beta: &GpuStorage<T>, eps: T,
+    a: &GpuStorage<T>,
+    gamma: &GpuStorage<T>,
+    beta: &GpuStorage<T>,
+    eps: T,
 ) -> GpuStorage<T> {
     assert_is_f32::<T>();
     let ctx = get_context();
     let wg = ctx.wg_size;
-    let key = PipelineKey { op: ShaderOp::LayerNorm, wg_size: wg };
+    let key = PipelineKey {
+        op: ShaderOp::LayerNorm,
+        wg_size: wg,
+    };
     let eps_bits = (eps.to_f64() as f32).to_bits();
     let p = params_buf(&[a.nrows as u32, a.ncols as u32, eps_bits]);
     let out = GpuStorage::<f32>::empty_buf((a.nrows * a.ncols * 4) as u64);
     with_pipeline(ctx, key, |pipeline| {
-        let bg = bind_group(ctx, pipeline, &[
-            (&a.buffer, true), (&gamma.buffer, true), (&beta.buffer, true),
-            (&out, false), (&p, true),
-        ]);
+        let bg = bind_group(
+            ctx,
+            pipeline,
+            &[
+                (&a.buffer, true),
+                (&gamma.buffer, true),
+                (&beta.buffer, true),
+                (&out, false),
+                (&p, true),
+            ],
+        );
         dispatch_and_wait(ctx, pipeline, &bg, a.nrows as u32);
     });
     GpuStorage::from_buffer(a.nrows, a.ncols, out)
 }
 
 pub(crate) fn gpu_rms_norm<T: Scalar>(
-    a: &GpuStorage<T>, gamma: &GpuStorage<T>, eps: T,
+    a: &GpuStorage<T>,
+    gamma: &GpuStorage<T>,
+    eps: T,
 ) -> GpuStorage<T> {
     assert_is_f32::<T>();
     let ctx = get_context();
     let wg = ctx.wg_size;
-    let key = PipelineKey { op: ShaderOp::RmsNorm, wg_size: wg };
+    let key = PipelineKey {
+        op: ShaderOp::RmsNorm,
+        wg_size: wg,
+    };
     let eps_bits = (eps.to_f64() as f32).to_bits();
     let p = params_buf(&[a.nrows as u32, a.ncols as u32, eps_bits]);
     let out = GpuStorage::<f32>::empty_buf((a.nrows * a.ncols * 4) as u64);
     with_pipeline(ctx, key, |pipeline| {
-        let bg = bind_group(ctx, pipeline, &[
-            (&a.buffer, true), (&gamma.buffer, true), (&out, false), (&p, true),
-        ]);
+        let bg = bind_group(
+            ctx,
+            pipeline,
+            &[
+                (&a.buffer, true),
+                (&gamma.buffer, true),
+                (&out, false),
+                (&p, true),
+            ],
+        );
         dispatch_and_wait(ctx, pipeline, &bg, a.nrows as u32);
     });
     GpuStorage::from_buffer(a.nrows, a.ncols, out)
@@ -1433,20 +1638,33 @@ pub(crate) fn gpu_max_axis1<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
     GpuStorage::from_buffer(a.nrows, 1, buf)
 }
 
-pub(crate) fn gpu_embedding<T: Scalar>(indices: &GpuStorage<T>, weight: &GpuStorage<T>) -> GpuStorage<T> {
+pub(crate) fn gpu_embedding<T: Scalar>(
+    indices: &GpuStorage<T>,
+    weight: &GpuStorage<T>,
+) -> GpuStorage<T> {
     assert_is_f32::<T>();
     let ctx = get_context();
     let n_tokens = indices.nrows * indices.ncols;
     let embed_dim = weight.ncols;
     let total = n_tokens * embed_dim;
     let wg = ctx.wg_size;
-    let key = PipelineKey { op: ShaderOp::Embedding, wg_size: wg };
+    let key = PipelineKey {
+        op: ShaderOp::Embedding,
+        wg_size: wg,
+    };
     let p = params_buf(&[n_tokens as u32, embed_dim as u32]);
     let out = GpuStorage::<f32>::empty_buf((total * 4) as u64);
     with_pipeline(ctx, key, |pipeline| {
-        let bg = bind_group(ctx, pipeline, &[
-            (&indices.buffer, true), (&weight.buffer, true), (&out, false), (&p, true),
-        ]);
+        let bg = bind_group(
+            ctx,
+            pipeline,
+            &[
+                (&indices.buffer, true),
+                (&weight.buffer, true),
+                (&out, false),
+                (&p, true),
+            ],
+        );
         dispatch_and_wait(ctx, pipeline, &bg, workgroups(total, wg));
     });
     GpuStorage::from_buffer(n_tokens, embed_dim, out)
@@ -1732,6 +1950,31 @@ fn assert_is_f32<T: Scalar>() {
     );
 }
 
+macro_rules! gpu_fwd_unary {
+    ($($trait_fn:ident => $impl_fn:ident),+ $(,)?) => {
+        $(
+            #[inline]
+            fn $trait_fn<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+                $impl_fn::<T>(a)
+            }
+        )+
+    };
+}
+
+macro_rules! gpu_fwd_binary {
+    ($($trait_fn:ident => $impl_fn:ident),+ $(,)?) => {
+        $(
+            #[inline]
+            fn $trait_fn<T: crate::scalar::Scalar>(
+                a: &GpuStorage<T>,
+                b: &GpuStorage<T>,
+            ) -> GpuStorage<T> {
+                $impl_fn::<T>(a, b)
+            }
+        )+
+    };
+}
+
 // ── Backend impl for Gpu ──────────────────────────────────────────────────────
 
 #[cfg(feature = "gpu")]
@@ -1791,27 +2034,6 @@ impl crate::backend::Backend for crate::backend::Gpu {
         gpu_matmul::<T>(out, a, b);
     }
 
-    macro_rules! gpu_fwd_unary {
-        ($($trait_fn:ident => $impl_fn:ident),+ $(,)?) => {
-            $(
-                #[inline]
-                fn $trait_fn<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
-                    $impl_fn::<T>(a)
-                }
-            )+
-        };
-    }
-    macro_rules! gpu_fwd_binary {
-        ($($trait_fn:ident => $impl_fn:ident),+ $(,)?) => {
-            $(
-                #[inline]
-                fn $trait_fn<T: crate::scalar::Scalar>(a: &GpuStorage<T>, b: &GpuStorage<T>) -> GpuStorage<T> {
-                    $impl_fn::<T>(a, b)
-                }
-            )+
-        };
-    }
-
     gpu_fwd_unary!(
         neg => gpu_neg, transpose => gpu_transpose,
         exp => gpu_exp, ln => gpu_ln, log1p => gpu_log1p,
@@ -1861,17 +2083,71 @@ impl crate::backend::Backend for crate::backend::Gpu {
         gpu_argmin_all::<T>(s)
     }
 
-    fn silu<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_silu(a) }
-    fn mish<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_mish(a) }
-    fn leaky_relu<T: crate::scalar::Scalar>(a: &GpuStorage<T>, s: T) -> GpuStorage<T> { gpu_leaky_relu(a, s) }
-    fn elu<T: crate::scalar::Scalar>(a: &GpuStorage<T>, alpha: T) -> GpuStorage<T> { gpu_elu(a, alpha) }
-    fn hardswish<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_hardswish(a) }
-    fn softmax<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_softmax(a) }
-    fn layer_norm<T: crate::scalar::Scalar>(a: &GpuStorage<T>, g: &GpuStorage<T>, b: &GpuStorage<T>, eps: T) -> GpuStorage<T> { gpu_layer_norm(a, g, b, eps) }
-    fn rms_norm<T: crate::scalar::Scalar>(a: &GpuStorage<T>, g: &GpuStorage<T>, eps: T) -> GpuStorage<T> { gpu_rms_norm(a, g, eps) }
-    fn sum_axis1<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_sum_axis1(a) }
-    fn max_axis1<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_max_axis1(a) }
-    fn embedding<T: crate::scalar::Scalar>(i: &GpuStorage<T>, w: &GpuStorage<T>) -> GpuStorage<T> { gpu_embedding(i, w) }
+    fn silu<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_silu(a)
+    }
+    fn mish<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_mish(a)
+    }
+    fn leaky_relu<T: crate::scalar::Scalar>(a: &GpuStorage<T>, s: T) -> GpuStorage<T> {
+        gpu_leaky_relu(a, s)
+    }
+    fn elu<T: crate::scalar::Scalar>(a: &GpuStorage<T>, alpha: T) -> GpuStorage<T> {
+        gpu_elu(a, alpha)
+    }
+    fn hardswish<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_hardswish(a)
+    }
+    fn softmax<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_softmax(a)
+    }
+    fn layer_norm<T: crate::scalar::Scalar>(
+        a: &GpuStorage<T>,
+        g: &GpuStorage<T>,
+        b: &GpuStorage<T>,
+        eps: T,
+    ) -> GpuStorage<T> {
+        gpu_layer_norm(a, g, b, eps)
+    }
+    fn rms_norm<T: crate::scalar::Scalar>(
+        a: &GpuStorage<T>,
+        g: &GpuStorage<T>,
+        eps: T,
+    ) -> GpuStorage<T> {
+        gpu_rms_norm(a, g, eps)
+    }
+    fn sum_axis1<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_sum_axis1(a)
+    }
+    fn max_axis1<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_max_axis1(a)
+    }
+    fn embedding<T: crate::scalar::Scalar>(i: &GpuStorage<T>, w: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_embedding(i, w)
+    }
+
+    fn fuse_launch<T: crate::scalar::Scalar>(
+        _inputs: &[*const u8],
+        _nrows: usize,
+        _ncols: usize,
+        _cpu_fn: impl FnMut(usize, usize) -> T,
+        _gpu_expr: &str,
+        _kernel_hash: &str,
+        _n_inputs: usize,
+        _reg_estimate: usize,
+    ) -> GpuStorage<T> {
+        panic!("fuse_launch: not supported on wgpu backend; use cpu/cuda/hip backend")
+    }
+
+    fn mega_fuse_launch<T: crate::scalar::Scalar>(
+        _ops: &[(Vec<*const u8>, String, usize)],
+        _nrows: usize,
+        _ncols: usize,
+        _cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,
+        _kernel_hash: &str,
+    ) -> Vec<GpuStorage<T>> {
+        panic!("mega_fuse_launch: not supported on wgpu backend; use cpu/cuda/hip backend")
+    }
 }
 
 /// WGSL compute shader for BCSR SpMM (Block Compressed Sparse Row × Dense).

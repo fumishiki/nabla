@@ -6,8 +6,10 @@
 //!
 //! Run: cargo run --example 10_half_precision --features cpu
 
+#[cfg(feature = "cpu")]
 use nabla::prelude::*;
 
+#[cfg(feature = "cpu")]
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // f16 tensor creation
     let a = Tensor::<f16>::from_fn(3, 3, |i, j| f16::from_f32((i * 3 + j + 1) as f32));
@@ -35,4 +37,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("f16 range: [{}, {}]", f16::MIN, f16::MAX);
 
     Ok(())
+}
+
+#[cfg(not(feature = "cpu"))]
+fn main() {
+    eprintln!("example 10_half_precision requires --features cpu");
 }

@@ -6,8 +6,10 @@
 //!
 //! Run: cargo run --example 06_sparse_solve --features cpu
 
+#[cfg(feature = "cpu")]
 use nabla::prelude::*;
 
+#[cfg(feature = "cpu")]
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // 1D Poisson: -u'' = f on [0,1], u(0)=u(1)=0
     // Finite difference: [-1, 2, -1] / h^2
@@ -27,7 +29,12 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     }
     let a = SparseMatrix::try_new_from_triplets(n, n, &trips)?;
-    println!("Sparse matrix: {}x{}, nnz={}", a.nrows(), a.ncols(), a.nnz());
+    println!(
+        "Sparse matrix: {}x{}, nnz={}",
+        a.nrows(),
+        a.ncols(),
+        a.nnz()
+    );
 
     // RHS: f(x) = 1 (constant source)
     let rhs = Tensor::fill(n, 1, 1.0_f64);
@@ -40,4 +47,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(not(feature = "cpu"))]
+fn main() {
+    eprintln!("example 06_sparse_solve requires --features cpu");
 }

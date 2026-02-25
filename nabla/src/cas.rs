@@ -7,14 +7,21 @@
 
 // CAS literal comparison is intentionally exact (0.0, 1.0 are constructed, not computed).
 #![allow(clippy::float_cmp, clippy::too_many_lines, clippy::single_match_else)]
-#![allow(clippy::missing_errors_doc, clippy::implicit_hasher, clippy::many_single_char_names)]
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::implicit_hasher,
+    clippy::many_single_char_names
+)]
 
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Add, Deref, Div, Mul, Neg, Sub};
 use std::sync::Arc;
 
-use egg::{define_language, rewrite, Analysis, DidMerge, EGraph, Id, RecExpr, Rewrite, Runner, Symbol, Subst, Var};
+use egg::{
+    Analysis, DidMerge, EGraph, Id, RecExpr, Rewrite, Runner, Subst, Symbol, Var, define_language,
+    rewrite,
+};
 use nabla_core::backend::Backend;
 use nabla_core::error::{Error, Result};
 use nabla_core::scalar::Scalar;
@@ -313,12 +320,20 @@ impl Analysis<CasLang> for ConstFold {
             CasLang::CExp([a]) => NotNan::new(x(a)?.exp()).ok(),
             CasLang::CLn([a]) => {
                 let av = x(a)?;
-                if *av > 0.0 { NotNan::new(av.ln()).ok() } else { None }
+                if *av > 0.0 {
+                    NotNan::new(av.ln()).ok()
+                } else {
+                    None
+                }
             }
             CasLang::CTanh([a]) => NotNan::new(x(a)?.tanh()).ok(),
             CasLang::CSqrt([a]) => {
                 let av = x(a)?;
-                if *av >= 0.0 { NotNan::new(av.sqrt()).ok() } else { None }
+                if *av >= 0.0 {
+                    NotNan::new(av.sqrt()).ok()
+                } else {
+                    None
+                }
             }
             CasLang::CAbs([a]) => NotNan::new(x(a)?.abs()).ok(),
             CasLang::CDiff(_) | CasLang::Symbol(_) => None,
@@ -427,10 +442,10 @@ fn cas_rules() -> Vec<Rewrite<CasLang, ConstFold>> {
             if IsConst { v: "?c".parse().expect("var") }),
         rewrite!("diff-var-same"; "(diff ?x ?x)" => "1"),
         rewrite!("diff-var-other"; "(diff ?y ?x)" => "0"
-            if IsDifferentVar {
-                y: "?y".parse().expect("var"),
-                x: "?x".parse().expect("var"),
-            }),
+        if IsDifferentVar {
+            y: "?y".parse().expect("var"),
+            x: "?x".parse().expect("var"),
+        }),
         // d[a+b]/dx = d[a]/dx + d[b]/dx
         rewrite!("diff-add"; "(diff (+ ?a ?b) ?x)" => "(+ (diff ?a ?x) (diff ?b ?x))"),
         // d[a*b]/dx = a'*b + a*b'
@@ -472,18 +487,58 @@ fn to_recexpr(e: &Expr, rec: &mut RecExpr<CasLang>) -> Id {
             rec.add(CasLang::Num(n))
         }
         ExprKind::Var(s) => rec.add(CasLang::Symbol(s.as_str().into())),
-        ExprKind::Neg(a) => { let i = to_recexpr(a, rec); rec.add(CasLang::CNeg([i])) }
-        ExprKind::Add(a, b) => { let i = to_recexpr(a, rec); let j = to_recexpr(b, rec); rec.add(CasLang::CAdd([i, j])) }
-        ExprKind::Mul(a, b) => { let i = to_recexpr(a, rec); let j = to_recexpr(b, rec); rec.add(CasLang::CMul([i, j])) }
-        ExprKind::Div(a, b) => { let i = to_recexpr(a, rec); let j = to_recexpr(b, rec); rec.add(CasLang::CDiv([i, j])) }
-        ExprKind::Pow(a, b) => { let i = to_recexpr(a, rec); let j = to_recexpr(b, rec); rec.add(CasLang::CPow([i, j])) }
-        ExprKind::Sin(a) => { let i = to_recexpr(a, rec); rec.add(CasLang::CSin([i])) }
-        ExprKind::Cos(a) => { let i = to_recexpr(a, rec); rec.add(CasLang::CCos([i])) }
-        ExprKind::Exp(a) => { let i = to_recexpr(a, rec); rec.add(CasLang::CExp([i])) }
-        ExprKind::Ln(a) => { let i = to_recexpr(a, rec); rec.add(CasLang::CLn([i])) }
-        ExprKind::Tanh(a) => { let i = to_recexpr(a, rec); rec.add(CasLang::CTanh([i])) }
-        ExprKind::Sqrt(a) => { let i = to_recexpr(a, rec); rec.add(CasLang::CSqrt([i])) }
-        ExprKind::Abs(a) => { let i = to_recexpr(a, rec); rec.add(CasLang::CAbs([i])) }
+        ExprKind::Neg(a) => {
+            let i = to_recexpr(a, rec);
+            rec.add(CasLang::CNeg([i]))
+        }
+        ExprKind::Add(a, b) => {
+            let i = to_recexpr(a, rec);
+            let j = to_recexpr(b, rec);
+            rec.add(CasLang::CAdd([i, j]))
+        }
+        ExprKind::Mul(a, b) => {
+            let i = to_recexpr(a, rec);
+            let j = to_recexpr(b, rec);
+            rec.add(CasLang::CMul([i, j]))
+        }
+        ExprKind::Div(a, b) => {
+            let i = to_recexpr(a, rec);
+            let j = to_recexpr(b, rec);
+            rec.add(CasLang::CDiv([i, j]))
+        }
+        ExprKind::Pow(a, b) => {
+            let i = to_recexpr(a, rec);
+            let j = to_recexpr(b, rec);
+            rec.add(CasLang::CPow([i, j]))
+        }
+        ExprKind::Sin(a) => {
+            let i = to_recexpr(a, rec);
+            rec.add(CasLang::CSin([i]))
+        }
+        ExprKind::Cos(a) => {
+            let i = to_recexpr(a, rec);
+            rec.add(CasLang::CCos([i]))
+        }
+        ExprKind::Exp(a) => {
+            let i = to_recexpr(a, rec);
+            rec.add(CasLang::CExp([i]))
+        }
+        ExprKind::Ln(a) => {
+            let i = to_recexpr(a, rec);
+            rec.add(CasLang::CLn([i]))
+        }
+        ExprKind::Tanh(a) => {
+            let i = to_recexpr(a, rec);
+            rec.add(CasLang::CTanh([i]))
+        }
+        ExprKind::Sqrt(a) => {
+            let i = to_recexpr(a, rec);
+            rec.add(CasLang::CSqrt([i]))
+        }
+        ExprKind::Abs(a) => {
+            let i = to_recexpr(a, rec);
+            rec.add(CasLang::CAbs([i]))
+        }
     }
 }
 

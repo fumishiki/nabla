@@ -6,8 +6,8 @@
 //!
 //! Run: cargo run --example 08_cas_symbolic --features cpu
 
+use nabla::cas::{diff, diff_simplify, eval, simplify};
 use nabla::prelude::*;
-use nabla::cas::{diff, simplify, diff_simplify, eval};
 use std::collections::HashMap;
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {

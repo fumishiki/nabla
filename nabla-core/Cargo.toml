@@ -10,6 +10,7 @@ description = "Core tensor and backend types for nabla linear algebra DSL"
 default = ["cpu"]
 cpu = ["dep:half"]
 gpu = ["dep:wgpu", "dep:pollster"]
+wgpu = ["gpu"]
 cuda = ["dep:cudarc"]
 hip = ["dep:hip-runtime-sys"]
 
@@ -20,4 +21,3 @@ wgpu = { version = "24", optional = true }
 pollster = { version = "0.4", optional = true }
 cudarc = { version = "0.19", optional = true, features = ["driver", "nvrtc", "cublas", "cuda-version-from-build-system"] }
 hip-runtime-sys = { version = "0.1", optional = true }
-

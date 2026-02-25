@@ -3,7 +3,6 @@
 // All algorithms operate on Tensor<T, Cpu> via .get()/.set()/.from_fn()/.zeros().
 // No external BLAS/LAPACK dependencies.
 
-
 use core::cmp::Ordering;
 use core::fmt;
 
@@ -166,7 +165,9 @@ fn householder_apply_left(
 ) {
     let len = v.len();
     for jj in col_start..col_end {
-        let dot: f64 = (0..len).map(|i| v[i] * buf[(i + row_off) * ncols + jj]).sum();
+        let dot: f64 = (0..len)
+            .map(|i| v[i] * buf[(i + row_off) * ncols + jj])
+            .sum();
         let scale = tau * dot;
         for (i, &vi) in v.iter().enumerate().take(len) {
             buf[(i + row_off) * ncols + jj] -= scale * vi;
@@ -1333,6 +1334,7 @@ impl Svd<f64> {
 
     /// Golub-Reinsch implicit QR sweep on bidiagonal matrix.
     #[allow(clippy::many_single_char_names)]
+    #[allow(clippy::too_many_lines)]
     fn bidiag_qr_svd(
         d: &mut [f64],
         e: &mut [f64],
@@ -1406,7 +1408,11 @@ impl Svd<f64> {
             }
 
             // Wilkinson shift on trailing 2x2 of B^T*B
-            let e_top = if p >= 3 && (p - 3) >= q { e[p - 3] } else { 0.0 };
+            let e_top = if p >= 3 && (p - 3) >= q {
+                e[p - 3]
+            } else {
+                0.0
+            };
             let a11 = d[p - 2] * d[p - 2] + e_top * e_top;
             let a12 = d[p - 2] * e[p - 2];
             let a22 = d[p - 1] * d[p - 1] + e[p - 2] * e[p - 2];
@@ -1629,6 +1635,10 @@ impl SelfAdjointEigen<f64> {
 pub trait LinalgExt {
     /// LU decomposition with partial pivoting.
     fn partial_piv_lu(&self) -> Result<PartialPivLu<f64>>;
+    /// Alias for [`partial_piv_lu`](Self::partial_piv_lu).
+    fn lu(&self) -> Result<PartialPivLu<f64>> {
+        self.partial_piv_lu()
+    }
     /// LU decomposition with full pivoting.
     fn full_piv_lu(&self) -> Result<FullPivLu<f64>>;
     /// QR decomposition.
@@ -1637,8 +1647,16 @@ pub trait LinalgExt {
     fn col_piv_qr(&self) -> ColPivQr<f64>;
     /// Cholesky factorization.
     fn llt(&self, side: Side) -> Result<Llt<f64>>;
+    /// Alias for lower-triangle Cholesky.
+    fn chol(&self) -> Result<Llt<f64>> {
+        self.llt(Side::Lower)
+    }
     /// LDL^T factorization.
     fn ldlt(&self, side: Side) -> Result<Ldlt<f64>>;
+    /// Alias for lower-triangle LDL^T.
+    fn ldl(&self) -> Result<Ldlt<f64>> {
+        self.ldlt(Side::Lower)
+    }
     /// Bunch-Kaufman LBL^T decomposition.
     fn lblt(&self, side: Side) -> Lblt<f64>;
     /// Singular value decomposition.
@@ -1647,10 +1665,16 @@ pub trait LinalgExt {
     fn thin_svd(&self) -> Result<Svd<f64>>;
     /// Singular values in descending order.
     fn singular_values(&self) -> Result<Vec<f64>>;
+    /// Alias for [`singular_values`](Self::singular_values).
+    fn svdvals(&self) -> Result<Vec<f64>> {
+        self.singular_values()
+    }
     /// Self-adjoint eigendecomposition.
     fn self_adjoint_eigen(&self, side: Side) -> Result<SelfAdjointEigen<f64>>;
     /// Eigenvalues of a self-adjoint matrix.
     fn self_adjoint_eigenvalues(&self, side: Side) -> Result<Vec<f64>>;
+    /// Wrap as a symmetric view.
+    fn sym(&self, side: Side) -> Result<Symmetric<f64>>;
     /// Solve A*x = b.
     fn solve(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>>;
     /// Solve A^T*x = b.
@@ -1673,6 +1697,10 @@ pub trait LinalgExt {
     fn rsolve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()>;
     /// Least-squares solve.
     fn solve_lstsq(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>>;
+    /// Alias for [`solve_lstsq`](Self::solve_lstsq).
+    fn lstsq(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        self.solve_lstsq(rhs)
+    }
     /// Least-squares solve in place.
     fn solve_lstsq_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()>;
     /// Solve lower triangular in place.
@@ -1785,6 +1813,14 @@ impl LinalgExt for Tensor<f64, Cpu> {
     /// Returns `Err` if the matrix is not square or eigensolver fails.
     fn self_adjoint_eigenvalues(&self, side: Side) -> Result<Vec<f64>> {
         Ok(SelfAdjointEigen::factorize(self, side)?.eigenvalues)
+    }
+
+    /// Symmetric matrix view.
+    ///
+    /// # Errors
+    /// Returns `Err` if the matrix is not square.
+    fn sym(&self, side: Side) -> Result<Symmetric<f64>> {
+        Symmetric::new(self.clone(), side)
     }
 
     // --- Solve methods (delegate to PartialPivLu) ---
@@ -2159,6 +2195,14 @@ impl Symmetric<f64> {
         self.tensor.self_adjoint_eigen(self.side)
     }
 
+    /// Alias for [`eigen`](Self::eigen).
+    ///
+    /// # Errors
+    /// Returns `Err` if the eigensolver fails to converge.
+    pub fn eigh(&self) -> Result<SelfAdjointEigen<f64>> {
+        self.eigen()
+    }
+
     /// Eigenvalues only (ascending order).
     ///
     /// # Errors
@@ -2276,7 +2320,11 @@ pub fn expm(a: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
     }
 
     // Scaling: s = max(0, ceil(log2(norm1))) so that ||A/2^s|| <= 1
-    let s = if norm1 <= 1.0 { 0_u32 } else { norm1.log2().ceil() as u32 };
+    let s = if norm1 <= 1.0 {
+        0_u32
+    } else {
+        norm1.log2().ceil() as u32
+    };
     let scale = 0.5_f64.powi(s as i32);
     let a_s = a * scale;
 

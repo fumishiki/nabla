@@ -68,11 +68,11 @@ nabla's scope is limited to **mathematically invariant rules** — operations wh
 1. **Zero-GC, zero-copy** — `Drop` = deterministic deallocation. `&` = zero-copy borrow. `_into(out: &mut)` = zero-allocation in-place. No reference counting in the hot path.
 2. **Python's ease, C's speed** — PyTorch-familiar API (`loss.backward()`, `.exp()`, `.sum()`) at native Rust speed. Macro layer absorbs the syntax gap vs Julia.
 3. **Macros = notation layer** — proc macros (`einsum!`, `fuse!`, `stencil!`) provide concise math notation; type-safe Rust underneath. No runtime overhead.
-4. **Build-time exclusive GPU backend** — GPU backends (`wgpu`/`cuda`/`hip`) are mutually exclusive (`compile_error!` on multi-select). `cpu` may be combined with any GPU backend to enable linalg/sparse alongside GPU compute.
+4. **Build-time exclusive backend** — backend features (`cpu`/`wgpu`/`cuda`/`hip`) are mutually exclusive (`compile_error!` on multi-select). No implicit CPU fallback.
 5. **Self-contained LA** — zero external LA deps (no LAPACK, no BLAS, no C++ wrappers). Row-major `CpuStorage`, 9 dense factorizations, CSC sparse — all pure Rust.
-6. **Two kernel codebases, not one abstraction** — WGSL (wgpu) + CUDA/HIP shared C source. 32 fixed ops → dual maintenance is manageable and avoids abstraction overhead (no CubeCL/Triton).
+6. **Two kernel codebases, not one abstraction** — WGSL (wgpu) + CUDA/HIP shared C source. 190+ fixed ops — dual maintenance is manageable and avoids abstraction overhead (no CubeCL/Triton).
 7. **Errors read like math** — shape mismatch says `nabla: matmul 3×2 · 4×2` not `type parameter mismatch`. `einsum!` compile errors point to the exact index character.
-8. **Adjoint ≠ Transpose** — `.t()` = transpose, `.adjoint()` = conjugate transpose. Correct complex LA semantics enforced by distinct methods.
+8. **Adjoint ≠ Transpose** — `.t()` = transpose, `.h()`/`.adjoint()` = conjugate transpose. Correct complex LA semantics enforced by distinct methods.
 
 ---
 
@@ -114,7 +114,7 @@ nabla's scope is limited to **mathematically invariant rules** — operations wh
 | **4 backends** | `cpu` (faer + rayon) · `wgpu` (WGSL, cross-platform) · `cuda` (NVRTC JIT) · `hip` (hiprtc JIT) |
 | **No external LA deps** | Pure Rust — no LAPACK, no BLAS, no foreign bindings |
 
-157 boundary tests · MSRV 1.85 (edition 2024) · Apache-2.0 OR MIT
+231 boundary tests · MSRV 1.85 (edition 2024) · Apache-2.0 OR MIT
 
 ---
 
@@ -152,22 +152,16 @@ nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, 
 # AMD HIP GPU — hiprtc JIT (f32 + f64)
 nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["hip"] }
 
-# CPU linalg + CUDA GPU — full stack (recommended for NVIDIA)
-nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["cpu", "cuda"] }
-
-# CPU linalg + wgpu GPU — full stack (cross-platform)
-nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["cpu", "gpu"] }
+# Backend features are mutually exclusive: choose exactly one of cpu/wgpu/cuda/hip.
 ```
 
-GPU backends (wgpu/cuda/hip) are mutually exclusive. `cpu` may be combined with any GPU backend to enable linalg/sparse alongside GPU compute:
+Backend features are mutually exclusive (`cpu`/`wgpu`/`cuda`/`hip`) at build time:
 
 ```rust
-// features = ["cpu", "cuda"]
-let m: Tensor<f64, Cpu> = Tensor::from_fn(4, 4, |i, j| (i + j) as f64);
-let lu = m.lu()?;               // CPU linalg — always available via Tensor<T, Cpu>
-
+// features = ["cuda"]  (single backend per build)
 let a: Tensor<f32> = zeros(1024, 1024);  // DefaultBackend = Cuda
-let c = &a * &b;                          // GPU matmul
+let b: Tensor<f32> = zeros(1024, 1024);
+let c = &a * &b;
 ```
 
 ---
@@ -347,7 +341,7 @@ let dx = tape.grad(&xv);
 
 ## Backend system
 
-Compile-time exclusive GPU selection — GPU backends are mutually exclusive. `cpu` may be combined with any GPU backend.
+Compile-time exclusive backend selection — `cpu`/`wgpu`/`cuda`/`hip` are mutually exclusive.
 
 | Feature | Backend | Scalar types | Notes |
 |---|---|---|---|
@@ -365,7 +359,7 @@ cargo build --no-default-features --features cuda        # NVIDIA
 cargo build --no-default-features --features hip         # AMD
 ```
 
-**Prohibited**: two GPU features enabled simultaneously → `compile_error!`. `cpu` may be combined with any single GPU backend.
+**Prohibited**: multiple backend features enabled simultaneously → `compile_error!`.
 
 **CUDA/HIP runtime requirements** — no CUDA/HIP SDK needed at build time. Libraries are dynamically loaded at runtime via `libloading`:
 - CUDA: `libcuda.so` + `libnvrtc.so` (NVIDIA driver ≥ Volta recommended for WMMA)
@@ -418,7 +412,10 @@ nabla/                       [workspace root]
 │       ├── tensor.rs        Tensor<T,B> + StaticMatrix<T,R,C> + NdTensor<T> + DynTensor
 │       ├── backend.rs       Backend trait (sealed) + Cpu impl
 │       ├── scalar.rs        Scalar + Complex<T> + Dual<T> + f16/bf16
-│       ├── gpu.rs           GpuStorage + dispatch (wgpu/cuda/hip)
+│       ├── gpu.rs           GpuStorage + wgpu dispatch
+│       ├── cuda_backend.rs  CUDA NVRTC dispatch + cuBLAS helpers
+│       ├── hip_backend.rs   HIP hiprtc dispatch + rocBLAS helpers
+│       ├── kernels_cu.rs    CUDA/HIP C kernel source (100+ kernels, f32+f64)
 │       ├── layout.rs        LinearLayout<N> F₂ swizzle
 │       └── wgsl.rs          register-tile MMA codegen
 ├── nabla-macros/            proc-macro crate
@@ -434,7 +431,7 @@ nabla/                       [workspace root]
 │   │   ├── cas.rs           Expr tree + E-graph 32 rules
 │   │   └── ode.rs           Euler/RK4/DP/BDF-1/IF-Euler/METD/Verlet/Parareal
 │   ├── examples/            cargo run --example <name> (10 examples)
-│   └── tests/               157 boundary + GPU + compile-fail tests
+│   └── tests/               231 boundary + GPU + compile-fail tests
 └── docs/spec.md             full specification
 ```
 
@@ -476,7 +473,7 @@ MSRV: **1.85.0** (Rust edition 2024)
 |---|---|
 | No wgpu f64 | WGSL / Metal lacks f64 — use `cuda` or `hip` for f64 |
 | No GPU complex | c32 / c64 unsupported on all GPU backends (compile error by design) |
-| GPU linalg: TRSM only | `gpu_trsm_lower` available; full LU/Cholesky/QR: use `Tensor<T, Cpu>` with `features = ["cpu", "cuda"]` |
+| GPU linalg: TRSM only | `gpu_trsm_lower` available; full LU/Cholesky/QR: use a CPU backend build (`features = ["cpu"]`) |
 | `from_fn` requires host | Closures cannot execute on GPU — use `fuse!` for GPU element-wise ops |
 | L2/L3 `fuse!` GPU fusion | L1 element-wise fusion on CPU; GPU kernel fusion requires codegen extension |
 | Tape AD overhead | `Tape` is Rc + dynamic graph (CPU) — use `GpuTape` for GPU-resident AD |

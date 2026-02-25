@@ -28,11 +28,11 @@
 )]
 
 // Re-export nabla-core modules for path-based access.
-pub use nabla_core::error;
-pub use nabla_core::scalar;
 pub use nabla_core::backend;
-pub use nabla_core::tensor;
+pub use nabla_core::error;
 pub use nabla_core::layout;
+pub use nabla_core::scalar;
+pub use nabla_core::tensor;
 pub use nabla_core::{LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64};
 
 #[cfg(feature = "gpu")]
@@ -61,6 +61,147 @@ pub mod cas;
 
 /// ODE solvers: Euler, RK4, Dormand-Prince.
 pub mod ode;
+
+#[inline]
+fn default_seed() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(dur) => {
+            let nanos = dur.as_nanos();
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                (nanos as u64) ^ ((nanos >> 64) as u64)
+            }
+        }
+        Err(_) => 0xA11C_E5EE_D5EE_DBAD_u64,
+    }
+}
+
+/// Allocate a zero-filled tensor of shape `(nrows, ncols)`.
+#[must_use]
+#[inline]
+pub fn zeros<T: scalar::Scalar>(nrows: usize, ncols: usize) -> tensor::Tensor<T> {
+    tensor::Tensor::zeros(nrows, ncols)
+}
+
+/// Allocate a one-filled tensor of shape `(nrows, ncols)`.
+#[must_use]
+#[inline]
+pub fn ones<T: scalar::Scalar>(nrows: usize, ncols: usize) -> tensor::Tensor<T> {
+    tensor::Tensor::fill(nrows, ncols, T::one())
+}
+
+/// Allocate a tensor of shape `(nrows, ncols)` filled with `value`.
+#[must_use]
+#[inline]
+pub fn fill<T: scalar::Scalar>(nrows: usize, ncols: usize, value: T) -> tensor::Tensor<T> {
+    tensor::Tensor::fill(nrows, ncols, value)
+}
+
+/// Allocate an identity matrix of size `n x n`.
+#[must_use]
+#[inline]
+pub fn eye<T: scalar::Scalar>(n: usize) -> tensor::Tensor<T> {
+    tensor::Tensor::identity(n)
+}
+
+/// Allocate a tensor whose element `(r, c)` is `f(r, c)`.
+#[must_use]
+#[inline]
+pub fn from_fn<T: scalar::Scalar>(
+    nrows: usize,
+    ncols: usize,
+    f: impl FnMut(usize, usize) -> T,
+) -> tensor::Tensor<T> {
+    tensor::Tensor::from_fn(nrows, ncols, f)
+}
+
+/// Allocate a zero-filled N-D tensor.
+#[must_use]
+#[inline]
+pub fn nd_zeros<T: scalar::Scalar>(shape: &[usize]) -> tensor::NdTensor<T> {
+    tensor::NdTensor::zeros(shape)
+}
+
+/// Uniform random tensor in `[0, 1)`.
+#[must_use]
+pub fn rand<T: scalar::Scalar>(nrows: usize, ncols: usize) -> tensor::Tensor<T> {
+    let mut s = {
+        let seed = default_seed();
+        if seed == 0 {
+            0x1234_5678_9ABC_DEF0_u64
+        } else {
+            seed
+        }
+    };
+    tensor::Tensor::from_fn(nrows, ncols, |_, _| {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        T::from_f64((s as f64) / (u64::MAX as f64))
+    })
+}
+
+/// Standard normal random tensor (`mean=0`, `std=1`).
+#[must_use]
+pub fn randn<T: scalar::Scalar>(nrows: usize, ncols: usize) -> tensor::Tensor<T> {
+    let mut s = {
+        let seed = default_seed();
+        if seed == 0 {
+            0x1234_5678_9ABC_DEF0_u64
+        } else {
+            seed
+        }
+    };
+    let mut xorshift = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        (s as f64) / (u64::MAX as f64)
+    };
+    let n = nrows * ncols;
+    let mut data = Vec::with_capacity(n);
+    let mut i = 0usize;
+    while i < n {
+        let u1 = xorshift().max(1e-300);
+        let u2 = xorshift();
+        let r = (-2.0 * u1.ln()).sqrt();
+        let theta = 2.0 * std::f64::consts::PI * u2;
+        data.push(T::from_f64(r * theta.cos()));
+        if i + 1 < n {
+            data.push(T::from_f64(r * theta.sin()));
+        }
+        i += 2;
+    }
+    tensor::Tensor::from_fn(nrows, ncols, |r, c| data[r * ncols + c])
+}
+
+/// 1-D half-open range tensor: `[start, start+step, ..., < stop]`.
+#[must_use]
+pub fn arange<T: scalar::Scalar>(start: T, stop: T, step: T) -> tensor::Tensor<T> {
+    let step_f = step.to_f64();
+    assert!(
+        step_f.is_finite() && step_f != 0.0,
+        "nabla: arange step must be non-zero finite, got {step_f}"
+    );
+    let stop_f = stop.to_f64();
+    let mut cur = start.to_f64();
+    let mut n = 0usize;
+
+    if step_f > 0.0 {
+        while cur < stop_f {
+            n += 1;
+            cur += step_f;
+        }
+    } else {
+        while cur > stop_f {
+            n += 1;
+            cur += step_f;
+        }
+    }
+
+    tensor::Tensor::arange(start, step, n)
+}
 
 /// Utility macros and functions mirroring Julia math notation.
 pub mod util {
@@ -328,36 +469,44 @@ pub mod util {
 /// Prelude for convenient imports.
 pub mod prelude {
     pub use nabla_core::backend::{Backend, DefaultBackend};
-    pub use nabla_core::layout::{LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64};
     pub use nabla_core::error::{Error, Result};
+    pub use nabla_core::layout::{LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64};
     pub use nabla_core::scalar::Scalar;
-    pub use nabla_core::tensor::{MatmulCompat, Tensor};
     pub use nabla_core::tensor::{Array, NdTensor, StaticMatrix};
     #[cfg(feature = "cpu")]
     pub use nabla_core::tensor::{DynTensor, Matrix};
-    pub use nabla_macros::{axis, einsum, fuse, generated, mat, mega_fuse, nabla_grad, named, named_zeros};
+    pub use nabla_core::tensor::{MatmulCompat, Tensor};
+    pub use nabla_macros::{
+        axis, einsum, fuse, generated, mat, mega_fuse, nabla_grad, named, named_zeros,
+    };
 
+    #[cfg(feature = "cpu")]
+    pub use crate::autograd::{GradPrep, grad, gradient, gradient_prep};
     pub use crate::autograd::{Tape, Variable};
-    #[cfg(feature = "cpu")]
-    pub use crate::autograd::{grad, gradient, gradient_prep, GradPrep};
-    #[cfg(feature = "cpu")]
-    pub use nabla_core::backend::Cpu;
     pub use crate::cas::{Expr, ExprKind};
-    #[cfg(feature = "cpu")]
-    pub use crate::linalg::{Diagonal, LinalgExt, Side, Symmetric, TriKind, Triangular};
-    pub use crate::ode::{AdaptiveConfig, Bdf1Config, MetdConfig, OdeSolution, PararealConfig, StormerVerletConfig};
-    #[cfg(feature = "cpu")]
-    pub use crate::ode::{bdf1, dae_solve, if_euler_scalar, metd_solve, parareal_solve, stormer_verlet, DaeConfig, IfEulerScalarConfig};
     #[cfg(feature = "cpu")]
     pub use crate::linalg::expm;
     #[cfg(feature = "cpu")]
-    pub use nabla_core::scalar::{c32, c64, Dual, MultiDual};
+    pub use crate::linalg::{Diagonal, LinalgExt, Side, Symmetric, TriKind, Triangular};
+    pub use crate::ode::{
+        AdaptiveConfig, Bdf1Config, MetdConfig, OdeSolution, PararealConfig, StormerVerletConfig,
+    };
     #[cfg(feature = "cpu")]
-    pub use half::{bf16, f16};
+    pub use crate::ode::{
+        DaeConfig, IfEulerScalarConfig, bdf1, dae_solve, if_euler_scalar, metd_solve,
+        parareal_solve, stormer_verlet,
+    };
     #[cfg(feature = "cpu")]
     pub use crate::sparse::*;
     #[cfg(feature = "cpu")]
     pub use crate::util::linspace;
+    pub use crate::{arange, eye, fill, from_fn, nd_zeros, ones, rand, randn, zeros};
+    #[cfg(feature = "cpu")]
+    pub use half::{bf16, f16};
+    #[cfg(feature = "cpu")]
+    pub use nabla_core::backend::Cpu;
+    #[cfg(feature = "cpu")]
+    pub use nabla_core::scalar::{Dual, MultiDual, c32, c64};
     #[cfg(feature = "cpu")]
     pub use nabla_macros::stencil;
 
