@@ -1038,7 +1038,7 @@ impl NablaCudaGraph {
 ///     graph.launch()?; // single CPU dispatch replays all kernels
 /// }
 /// ```
-pub(crate) fn cuda_graph_capture<F: FnOnce()>(f: F) -> CudaResult<NablaCudaGraph> {
+pub fn cuda_graph_capture<F: FnOnce()>(f: F) -> CudaResult<NablaCudaGraph> {
     NablaCudaGraph::begin_capture()?;
     f();
     NablaCudaGraph::end_capture()
@@ -1049,7 +1049,7 @@ pub(crate) fn cuda_graph_capture<F: FnOnce()>(f: F) -> CudaResult<NablaCudaGraph
 /// If a graph with the given `name` already exists in the cache, returns
 /// the cached version without re-capturing. Otherwise, captures via `f`
 /// and stores for future reuse.
-pub(crate) fn cuda_graph_capture_cached<F: FnOnce()>(
+pub fn cuda_graph_capture_cached<F: FnOnce()>(
     name: &str,
     f: F,
 ) -> CudaResult<Arc<NablaCudaGraph>> {
