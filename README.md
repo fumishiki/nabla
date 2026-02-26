@@ -8,13 +8,60 @@
 
 Four backends (cpu / wgpu / cuda / hip), reverse-mode + forward-mode autodiff, symbolic CAS, ODE solvers. Zero external LA dependencies.
 
-| Rust | nabla |
-|---|---|
-| `faer::linalg::matmul::matmul(&mut c, &a, &b, None, 1.0, Par::Seq)` | `&a * &b` |
-| `let lu = a.partial_piv_lu();` `lu.solve_in_place(&mut b);` | `a.solve(&b)?` |
-| nested `for i,j,k` loops — runtime shape bug possible | `einsum!(c[i,j]=a[i,k]*b[k,j])` — **compile error** at bad index |
-| write CUDA C string → NVRTC compile → launch params | `fuse!(x.sin().powf(2.0); x)` — **1 kernel, 0 intermediates** |
-| derive ∂L/∂w by hand, or add `tch-rs` (PyTorch C++ FFI) | `loss.backward()` — pure Rust, no FFI |
+**Raw Rust → nabla** — the same math, a fraction of the code:
+
+```rust
+// ① matmul
+faer::linalg::matmul::matmul(&mut c, &a, &b, None, 1.0, Par::Seq);  // Rust
+let c = &a * &b;                                                       // nabla
+
+// ② solve Ax = b
+let lu = a.partial_piv_lu(); lu.solve_in_place(&mut b);               // Rust
+let x = a.solve(&b)?;                                                  // nabla — Result, no silent NaN
+
+// ③ Einstein summation — runtime index bugs vs compile-time
+for i in 0..m { for j in 0..n { for k in 0..p {                      // Rust
+    c[(i,j)] += a[(i,k)] * b[(k,j)]; } } }
+let c: Tensor<f64> = einsum!(c[i,j] = a[i,k] * b[k,j]);             // nabla — bad index = compile error
+
+// ④ GPU kernel fusion — boilerplate vs 1 line
+let src = "extern \"C\" __global__ void ...";                          // Rust: NVRTC string
+let ptx = nvrtc::compile(src, &[])?; /* launch params, grid, block */ //       + compile + launch
+let y = fuse!(x.sin().powf(2.0); x);                                  // nabla — 1 kernel, 0 intermediates
+
+// ⑤ Reverse-mode autodiff — hand-deriving vs tape
+// Rust: derive ∂L/∂w analytically or add tch-rs (C++ FFI, 500 MB)
+let tape = Tape::new(); let xv = tape.var(&x);                        // nabla
+let loss = (&xv * &xv).exp().sum(); loss.backward();                  //       pure Rust, no FFI
+let dx = xv.grad();
+
+// ⑥ Laplacian stencil — index arithmetic vs DSL
+for i in 1..rows-1 { for j in 1..cols-1 {                            // Rust
+    out[(i,j)] = -4.0*a[(i,j)] + a[(i-1,j)] + a[(i+1,j)]
+               + a[(i,j-1)] + a[(i,j+1)]; } }
+let out = stencil!(out[i,j] =                                         // nabla — bounds-checked, GPU-ready
+    -4.0*a[i,j] + a[i-1,j] + a[i+1,j] + a[i,j-1] + a[i,j+1]);
+
+// ⑦ Parallel element-wise — rayon boilerplate vs macro
+let y: Vec<f64> = x.par_iter().map(|v| v.sin().powi(2)).collect();   // Rust
+let y = par_map!(|v| v.sin().powf(2.0), &x);                         // nabla
+
+// ⑧ SVD
+let (u, s, vt) = faer::linalg::svd::compute_svd(                     // Rust: 5+ args, output refs
+    &a, faer::linalg::svd::SvdJob::Full, ...)?;
+let svd = a.factorize_svd()?;                                         // nabla — .u(), .s(), .vt()
+
+// ⑨ Sparse solve
+let triplets: Vec<(usize, usize, f64)> = vec![...];                   // Rust: build CSC by hand
+let csc = faer::sparse::SparseColMat::try_new_from_triplets(...)?;    //       then SparseLu
+let x = SparseMatrix::try_new_from_triplets(m, n, &triplets)?         // nabla — one chain
+    .solve(&b)?;
+
+// ⑩ Symbolic differentiation — C++ FFI vs pure Rust
+// Rust: symengine FFI (C++ shared library, bindgen)
+let f = expr!("x^2 * sin(x)");                                       // nabla
+let df = f.diff("x").simplify();  // → 2x·sin(x) + x²·cos(x)        //       pure Rust, E-graph rules
+```
 
 ---
 
@@ -55,15 +102,7 @@ nabla's scope is limited to **mathematically invariant rules** — operations wh
 
 ## Why nabla over raw Rust
 
-Without nabla, GPU linear algebra in Rust means wiring `libcuda` manually, writing C kernel strings, calling cuBLAS through bindgen FFI, and deriving gradients by hand. nabla gives you the same Rust safety and speed with math-notation ergonomics — one consistent API across CPU, Vulkan, CUDA, and AMD.
-
-| Rust | nabla |
-|---|---|
-| `faer::linalg::matmul::matmul(&mut c, &a, &b, None, 1.0, Par::Seq)` | `&a * &b` |
-| `let lu = a.partial_piv_lu(); lu.solve_in_place(&mut b);` | `a.solve(&b)?` |
-| nested `for i,j,k` loops — runtime shape bug possible | `einsum!(c[i,j]=a[i,k]*b[k,j])` — **compile error** at bad index |
-| write CUDA C string → NVRTC compile → launch params | `fuse!(x.sin().powf(2.0); x)` — **1 kernel, 0 intermediates** |
-| derive ∂L/∂w by hand, or add `tch-rs` (PyTorch C++ FFI) | `loss.backward()` — pure Rust, no FFI |
+Without nabla, GPU linear algebra in Rust means wiring `libcuda` manually, writing C kernel strings, calling cuBLAS through bindgen FFI, and deriving gradients by hand. nabla gives you the same Rust safety and speed with math-notation ergonomics — one consistent API across CPU, Vulkan, CUDA, and AMD. See the 10 code examples at the top.
 
 **What nabla does NOT replace** — and is right not to: optimizer update rules, loss function choice, model architecture, training loop. Those are user-defined logic, not fixed mathematics.
 
