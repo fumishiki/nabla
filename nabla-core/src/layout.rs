@@ -11,7 +11,7 @@ pub struct LinearLayout<const N: usize> {
 }
 
 impl<const N: usize> LinearLayout<N> {
-    /// Identity matrix: rows[i] = 1 << i.
+    /// Identity matrix: `rows[i] = 1 << i`.
     #[must_use]
     pub fn identity() -> Self {
         let mut rows = [0u64; N];
@@ -23,7 +23,7 @@ impl<const N: usize> LinearLayout<N> {
 
     /// Matrix product over F₂: C = self * other.
     ///
-    /// C[i][j] = XOR over k of (self[i][k] AND other[k][j]).
+    /// `C[i][j] = XOR over k of (self[i][k] AND other[k][j])`.
     #[must_use]
     pub fn compose(&self, other: &Self) -> Self {
         let mut result = [0u64; N];
@@ -44,7 +44,7 @@ impl<const N: usize> LinearLayout<N> {
         Self { rows: result }
     }
 
-    /// Matrix-vector product over F₂: output bit i = popcount(rows[i] & v) mod 2.
+    /// Matrix-vector product over F₂: output bit `i = popcount(rows[i] & v) mod 2`.
     #[must_use]
     pub fn apply(&self, v: u64) -> u64 {
         let mut out = 0u64;

@@ -732,6 +732,7 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     }
 
     /// 1-D convolution (im1col-based default).
+    #[allow(clippy::too_many_arguments)]
     fn conv1d<T: Scalar>(
         input: &Self::Storage<T>,
         weight: &Self::Storage<T>,
@@ -745,7 +746,7 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
         dilation: usize,
         groups: usize,
     ) -> Self::Storage<T> {
-        assert!(c_in % groups == 0 && c_out % groups == 0);
+        assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
         let c_in_g = c_in / groups;
         let out_len = (length + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1;
         Self::from_fn(n_batch * c_out, out_len, |row, col| {
@@ -768,6 +769,7 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     }
 
     /// 3-D convolution (default loop implementation).
+    #[allow(clippy::too_many_arguments)]
     fn conv3d<T: Scalar>(
         input: &Self::Storage<T>,
         weight: &Self::Storage<T>,
@@ -785,7 +787,7 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
         dilation: (usize, usize, usize),
         groups: usize,
     ) -> Self::Storage<T> {
-        assert!(c_in % groups == 0 && c_out % groups == 0);
+        assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
         let c_in_g = c_in / groups;
         let c_out_g = c_out / groups;
         let out_d = (d + 2 * padding.0 - dilation.0 * (kd - 1) - 1) / stride.0 + 1;
@@ -837,6 +839,7 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     }
 
     /// Transposed 2-D convolution (default loop implementation).
+    #[allow(clippy::too_many_arguments)]
     fn conv_transpose2d<T: Scalar>(
         input: &Self::Storage<T>,
         weight: &Self::Storage<T>,
@@ -866,8 +869,8 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
                         let iw_pad = ow + padding.1;
                         if ih_pad >= khr
                             && iw_pad >= kwc
-                            && (ih_pad - khr) % stride.0 == 0
-                            && (iw_pad - kwc) % stride.1 == 0
+                            && (ih_pad - khr).is_multiple_of(stride.0)
+                            && (iw_pad - kwc).is_multiple_of(stride.1)
                         {
                             let ih = (ih_pad - khr) / stride.0;
                             let iw = (iw_pad - kwc) / stride.1;
@@ -936,7 +939,7 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     }
 
     /// Cross-entropy loss: fused softmax + NLL. Input (N, C) logits, target (N, 1) class indices.
-    /// Returns (1, 1) scalar tensor = mean(-log(softmax(x)[target])).
+    /// Returns (1, 1) scalar tensor = `mean(-log(softmax(x)[target]))`.
     fn cross_entropy_fused<T: Scalar>(
         input: &Self::Storage<T>,
         target: &Self::Storage<T>,
@@ -982,13 +985,13 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
             for i in 0..seq_q {
                 // scores[j] = dot(Q[bh*seq_q+i], K[bh*seq_k+j]) * scale
                 let mut scores = vec![T::zero(); seq_k];
-                for j in 0..seq_k {
+                for (j, score_slot) in scores.iter_mut().enumerate() {
                     let mut dot = T::zero();
                     for d in 0..head_dim {
                         dot =
                             dot + Self::get(q, bh * seq_q + i, d) * Self::get(k, bh * seq_k + j, d);
                     }
-                    scores[j] = dot * scale;
+                    *score_slot = dot * scale;
                 }
                 // Softmax over scores.
                 let max_s = scores

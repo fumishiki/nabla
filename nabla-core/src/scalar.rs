@@ -1248,7 +1248,7 @@ impl RealScalar for f64 {}
 ///
 /// Implemented for `f32`, `f64`, `c32`, and `c64`.  All backends are generic
 /// over `T: Scalar` and dispatch element-wise operations through [`MathOps`]
-/// and [`ReductionOps`].
+/// and `ReductionOps`.
 // MathOps and ReductionOps are private supertraits (sealed impl details).
 #[allow(private_bounds)]
 pub trait Scalar:

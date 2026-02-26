@@ -2094,7 +2094,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         dilation: (usize, usize),
         groups: usize,
     ) -> Self {
-        assert!(c_in % groups == 0 && c_out % groups == 0);
+        assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
         let out = Self::from_storage(B::conv2d(
             &self.storage,
             &weight.storage,
@@ -2142,7 +2142,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         dilation: usize,
         groups: usize,
     ) -> Self {
-        assert!(c_in % groups == 0 && c_out % groups == 0);
+        assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
         let out = Self::from_storage(B::conv1d(
             &self.storage,
             &weight.storage,
@@ -2408,7 +2408,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ) -> Self {
         let d_model = q.ncols();
         assert!(
-            d_model % num_heads == 0,
+            d_model.is_multiple_of(num_heads),
             "nabla: d_model must be divisible by num_heads"
         );
         let d_head = d_model / num_heads;
@@ -2436,6 +2436,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ///
     /// `head_dim` must be ≤ 128 (compile-enforced per REQ-G-ATTN spec).
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn sdpa(
         q: &Self,
         k: &Self,
@@ -2526,7 +2527,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         dilation: (usize, usize, usize),
         groups: usize,
     ) -> Self {
-        assert!(c_in % groups == 0 && c_out % groups == 0);
+        assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
         let out_d = (d + 2 * padding.0 - dilation.0 * (kd - 1) - 1) / stride.0 + 1;
         let out_h = (h + 2 * padding.1 - dilation.1 * (kh - 1) - 1) / stride.1 + 1;
         let out_w = (w + 2 * padding.2 - dilation.2 * (kw - 1) - 1) / stride.2 + 1;
