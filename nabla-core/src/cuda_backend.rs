@@ -21,7 +21,7 @@ use crate::gpu_common::{
     self, EnsureCache, FreeBlock, GpuPtr, LARGE_ALLOC_SIZE, MemoryPool, RtcStorage,
     SMALL_ALLOC_SIZE, SMALL_LARGE_BOUNDARY, grid_1d, lock_or_recover, round_size, type_suffix,
 };
-use crate::kernels_cu::{self, BLOCK_SIZE};
+use crate::kernels_cu::{self, BLOCK_SIZE, REDUCE_BLOCK, REDUCE_GRID_CAP};
 use crate::scalar::Scalar;
 
 // ── Error type ───────────────────────────────────────────────────────────────
