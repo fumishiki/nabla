@@ -945,12 +945,14 @@ pub(crate) fn cuda_clone<T: Scalar>(s: &CudaStorage<T>) -> CudaStorage<T> {
                 result::memcpy_dtod_async(new_buf.ptr, s.buf.ptr, bytes, ctx.stream.cu_stream());
         }
     }
-    let cache = lock_or_recover(&s.host_cache).clone();
+    // Don't copy the host cache: the cloned buffer has its own GPU data.
+    // If a CPU readback is later needed, ensure_cache() will repopulate lazily.
+    // Copying the Vec<T> here (potentially 100s of MB) is pure waste for GPU ops.
     CudaStorage {
         nrows: s.nrows,
         ncols: s.ncols,
         buf: new_buf,
-        host_cache: Mutex::new(cache),
+        host_cache: Mutex::new(None),
     }
 }
 

@@ -803,12 +803,13 @@ pub(crate) fn hip_clone<T: Scalar>(s: &HipStorage<T>) -> HipStorage<T> {
             panic!("HIP d2d copy failed: {err:?}");
         }
     }
-    let cache = lock_or_recover(&s.host_cache).clone();
+    // Don't copy the host cache: the cloned buffer has its own GPU data.
+    // ensure_cache() will repopulate lazily if a CPU readback is later needed.
     RtcStorage {
         nrows: s.nrows,
         ncols: s.ncols,
         buf: new_buf,
-        host_cache: Mutex::new(cache),
+        host_cache: Mutex::new(None),
     }
 }
 
