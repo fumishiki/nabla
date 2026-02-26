@@ -125,6 +125,7 @@ impl CuBuffer {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (dptr, alloc_size) = if let Some((ptr, sc)) = pool.try_alloc(size_bytes) {
+            pool.allocated_bytes += sc; // track pool-hit allocations
             (ptr, sc)
         } else {
             // Over-allocate to batch cudaMalloc calls (PyTorch strategy)
@@ -178,6 +179,7 @@ impl CuBuffer {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((ptr, sc)) = pool.try_alloc(size_bytes) {
+            pool.allocated_bytes += sc; // track pool-hit allocations
             return Ok(Self {
                 ptr,
                 size: size_bytes,
@@ -347,7 +349,9 @@ impl Drop for CuBuffer {
                 pool.allocated_bytes = pool.allocated_bytes.saturating_sub(self.alloc_size);
                 pool.release(self.ptr, self.alloc_size);
                 pool.maybe_gc(|ptr, _| unsafe {
-                    let _ = result::free_sync(ptr);
+                    // SAFETY: ptr was allocated via cuMemAllocAsync; must be freed with cuMemFreeAsync.
+                    let stream = get_ctx().stream.cu_stream();
+                    let _ = result::free_async(ptr, stream);
                 });
             } else {
                 unsafe {
