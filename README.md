@@ -76,26 +76,31 @@ nabla's scope is limited to **mathematically invariant rules** — operations wh
 
 ---
 
-## Why nabla vs Python / Julia
+## Why nabla over raw Rust
 
-| Operation | NumPy | Julia | nabla |
-|---|---|---|---|
-| Matrix literal | `np.array([[1,2],[3,4]])` | `[1 2; 3 4]` | `mat![[1.0, 2.0], [3.0, 4.0]]` |
-| Matmul | `A @ B` | `A * B` | `a * b` |
-| Element-wise | `A * B` | `A .* B` | `a.emul(&b)` |
-| Solve | `np.linalg.solve(A,b)` | `A \ b` | `a.solve(&b)?` |
-| LU factorize | `scipy.linalg.lu(A)` | `lu(A)` | `a.lu()?` |
-| Sin element-wise | `np.sin(A)` | `sin.(A)` | `a.sin()` |
-| Fused GPU chain | 2+ kernels | CPU only `@.` | `fuse!(x.sin(); x)` **1 kernel** |
-| Einsum | `np.einsum('ik,kj->ij',A,B)` _(runtime error)_ | `@einsum` _(runtime error)_ | `einsum!(c[i,j]=a[i,k]*b[k,j])` **compile error** |
-| Backward | `loss.backward()` | — | `loss.backward()` |
-| Forward AD | ForwardDiff.jl (separate pkg) | — | `Dual::new(x, 1.0)` / `#[nabla_grad]` |
+Without nabla, GPU linear algebra in Rust means: wiring up `libcuda` manually, writing C kernel strings, calling cuBLAS through bindgen FFI, building your own reverse-mode tape. nabla collapses that into one consistent API — same call site whether you target CPU, Vulkan, CUDA, or AMD.
 
-**nabla honest friction** (Rust language constraints, constant overhead):
-- `()` in indexing: `a[(i,j)]` vs `A[i,j]` — gains borrow-checked slice lifetimes
-- `&` for re-use: `&a * &b` vs `A * B` — gains explicit zero-copy semantics
-- `?` for fallibility: `a.solve(&b)?` — gains `Result`, no silent NaN/Inf
-- `.emul()` for Hadamard — `*` is occupied by matmul (statically distinguished)
+| Task | Raw Rust (without nabla) | nabla |
+|---|---|---|
+| Matrix literal | `vec![1.0f64, 2.0, 3.0, 4.0]` — flat Vec, manual stride math | `mat![[1.0, 2.0], [3.0, 4.0]]` |
+| Matmul | `faer::linalg::matmul::matmul(&mut c, &a, &b, None, 1.0, Par::Seq)` | `&a * &b` |
+| Element-wise | manual `zip().map().collect()` | `a.emul(&b)` |
+| Solve Ax = b | `faer` LU decompose → `solve_in_place` (4 steps, raw API) | `a.solve(&b)?` |
+| Fused GPU op | write CUDA C string + NVRTC compile call + kernel launch boilerplate | `fuse!(x.sin().powf(2.0); x)` — **1 kernel** |
+| Einstein sum | nested loops — runtime shape bug risk, no diagnostics | `einsum!(c[i,j]=a[i,k]*b[k,j])` — **compile error** at bad index |
+| Autodiff | derive gradients by hand, or add `tch-rs` / `candle` (PyTorch FFI, C++ dep) | `loss.backward()` — pure Rust, no FFI |
+| Switch CPU↔GPU | rewrite every allocation + kernel call site | change one feature flag |
+| Stiff ODE | implement Newton iteration + BDF-1 tableau + step-size control | `bdf1(f, y0, t0, t1, h, cfg)` |
+| Symbolic diff | `symengine` FFI (C++ shared library) | `f.diff("x").simplify()` — pure Rust |
+| Sparse solve | CSC format by hand + custom factorization | `sparse(m, n, &triples)?.solve(&b)?` |
+
+**What nabla does NOT replace** — and is right not to: optimizer update rules, loss function choice, model architecture, training loop. Those are user-defined logic, not fixed mathematics.
+
+**Honest friction** — Rust language constraints, not nabla choices:
+- `&a * &b` not `a * b` for re-use — explicit zero-copy borrow semantics
+- `a.solve(&b)?` not `A \ b` — `?` propagates `Result`, no silent NaN
+- `a.emul(&b)` not `a * b` — `*` is matmul; Hadamard needs a distinct name
+- `a[(i, j)]` not `a[i, j]` — tuple indexing is the borrow-checker's price
 
 ---
 
