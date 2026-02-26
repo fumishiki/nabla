@@ -88,6 +88,38 @@ fn main() {
     bench("fuse exp+sin", || fuse!(a.exp().sin(); a));
     bench("fuse 4-op", || fuse!(a.exp().sin().cos().tanh(); a));
 
+    // --- Mega-fused (multi-output single kernel) ---
+    // Baseline: two separate fuse! calls (2 kernel launches)
+    println!("\n--- Mega-fused (multi-output, 1 kernel) ---");
+    bench("2x fuse! (baseline)", || {
+        let _ = fuse!(a.exp().sin(); a) as Tensor<f32>;
+        fuse!(b.tanh(); b)
+    });
+    bench("mega_fuse 2-out", || {
+        let _r = mega_fuse!(
+            a.exp().sin();
+            b.tanh();
+            inputs: a, b
+        );
+        _r.into_iter().last().unwrap()
+    });
+    bench("4x fuse! (baseline)", || {
+        let _ = fuse!(a.exp(); a) as Tensor<f32>;
+        let _ = fuse!(b.sin(); b) as Tensor<f32>;
+        let _ = fuse!(a.cos(); a) as Tensor<f32>;
+        fuse!(b.tanh(); b)
+    });
+    bench("mega_fuse 4-out", || {
+        let _r = mega_fuse!(
+            a.exp();
+            b.sin();
+            a.cos();
+            b.tanh();
+            inputs: a, b
+        );
+        _r.into_iter().last().unwrap()
+    });
+
     // --- Reductions ---
     println!("\n--- Reductions ---");
     bench_scalar("sum_all", || a.sum_all());
