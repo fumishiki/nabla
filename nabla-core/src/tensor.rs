@@ -167,11 +167,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// ```
     #[doc(hidden)]
     #[inline]
-    pub fn __mega_fuse_elementwise(
+    pub fn __mega_fuse_elementwise<'a>(
         ops: &[(Vec<*const u8>, String, usize)],
         nrows: usize,
         ncols: usize,
-        cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,
+        cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
         kernel_hash: &str,
     ) -> Vec<Self> {
         B::mega_fuse_launch::<T>(ops, nrows, ncols, cpu_fns, kernel_hash)

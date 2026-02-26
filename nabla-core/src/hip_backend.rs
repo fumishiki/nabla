@@ -2429,11 +2429,11 @@ impl crate::backend::Backend for crate::backend::Hip {
         )
     }
 
-    fn mega_fuse_launch<T: Scalar>(
+    fn mega_fuse_launch<'a, T: Scalar>(
         ops: &[(Vec<*const u8>, String, usize)],
         nrows: usize,
         ncols: usize,
-        _cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,
+        _cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
         kernel_hash: &str,
     ) -> Vec<HipStorage<T>> {
         let mega_ops: Vec<MegaFuseOp> = ops

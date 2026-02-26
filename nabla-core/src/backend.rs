@@ -411,11 +411,11 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     ///
     /// GPU backends emit a single mega-kernel; CPU runs each `cpu_fn`
     /// independently via `from_fn`.
-    fn mega_fuse_launch<T: Scalar>(
+    fn mega_fuse_launch<'a, T: Scalar>(
         ops: &[(Vec<*const u8>, String, usize)],
         nrows: usize,
         ncols: usize,
-        cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,
+        cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
         kernel_hash: &str,
     ) -> Vec<Self::Storage<T>>;
 
@@ -1437,11 +1437,11 @@ impl Backend for Cpu {
         Self::from_fn(nrows, ncols, cpu_fn)
     }
 
-    fn mega_fuse_launch<T: Scalar>(
+    fn mega_fuse_launch<'a, T: Scalar>(
         _ops: &[(Vec<*const u8>, String, usize)],
         nrows: usize,
         ncols: usize,
-        cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,
+        cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
         _kernel_hash: &str,
     ) -> Vec<CpuStorage<T>> {
         cpu_fns
