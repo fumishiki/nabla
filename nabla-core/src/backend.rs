@@ -1475,14 +1475,14 @@ pub type DefaultBackend = Cpu;
 /// Default backend selected at compile time.
 pub type DefaultBackend = Cuda;
 
-#[cfg(feature = "hip")]
+#[cfg(all(feature = "hip", not(feature = "cuda")))]
 /// Default backend selected at compile time.
 pub type DefaultBackend = Hip;
 
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(feature = "cuda"), not(feature = "hip")))]
 /// Default backend selected at compile time.
 pub type DefaultBackend = Gpu;
 
-#[cfg(feature = "cpu")]
+#[cfg(all(feature = "cpu", not(feature = "cuda"), not(feature = "hip"), not(feature = "gpu")))]
 /// Default backend selected at compile time.
 pub type DefaultBackend = Cpu;
