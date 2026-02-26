@@ -129,6 +129,7 @@ __device__ double hardswish_f64(double x) {
 
 // ── Activation kernels f32 (float4) ──────────────────────────────────────
 
+UNARY_F32(sigmoid,    sigmoid_f32,    sigmoid_f32)
 UNARY_F32(silu,       silu_f32,       silu_f32)
 UNARY_F32(mish,       mish_f32,       mish_f32)
 UNARY_F32(leaky_relu, leaky_relu_f32, leaky_relu_f32)
@@ -444,6 +445,7 @@ UNARY_F64(erf,   erf_approx_f64)
 
 // ── Activation kernels f64 ───────────────────────────────────────────────
 
+UNARY_F64(sigmoid,    sigmoid_f64)
 UNARY_F64(silu,       silu_f64)
 UNARY_F64(mish,       mish_f64)
 UNARY_F64(leaky_relu, leaky_relu_f64)
