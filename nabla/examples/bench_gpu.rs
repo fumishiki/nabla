@@ -19,43 +19,25 @@ const WARMUP: usize = 20;
 const ITERS: usize = 100;
 
 fn bench<F: FnMut() -> Tensor<f32>>(name: &str, mut f: F) {
-    // Warmup: compile kernels + place output buffers in HBM.
-    for _ in 0..WARMUP {
-        f().sync();
+    // Ring-buffer warmup: keep WARMUP output tensors live so the pool holds
+    // WARMUP HBM-resident blocks.  allocated/(allocated+cached) stays ~0.5,
+    // well below the GC threshold of 0.9, preventing any pool drain.
+    let mut ring: Vec<Tensor<f32>> = (0..WARMUP).map(|_| f()).collect();
+    gpu_sync(); // flush to HBM
+    let start = Instant::now();
+    // Each iteration overwrites one ring slot: the dropped tensor returns to
+    // the pool (no GC), the new tensor reuses an HBM-resident block.
+    for i in 0..ITERS {
+        ring[i % WARMUP] = f();
     }
-    // CUDA Graph: capture one iteration (alloc + kernel), then replay ITERS
-    // times reusing the same HBM-resident buffer. This eliminates:
-    //   - per-iteration allocation overhead
-    //   - GC thrashing from pool accumulation
-    //   - HBM cold-page migration on first-touch
-    // Result: measures pure GPU kernel throughput, matching PyTorch methodology.
-    #[cfg(feature = "cuda")]
-    {
-        let graph = nabla::cuda_graph_capture(|| { let _ = f(); })
-            .unwrap_or_else(|_| panic!("CUDA graph capture failed"));
-        gpu_sync();
-        let start = Instant::now();
-        for _ in 0..ITERS { graph.launch().unwrap_or_else(|_| panic!("graph replay failed")); }
-        gpu_sync();
-        let elapsed = start.elapsed();
-        let per_iter_us = elapsed.as_micros() as f64 / ITERS as f64;
-        let per_iter_ms = per_iter_us / 1000.0;
-        let bytes = N * N * 4;
-        let gbps = (2.0 * bytes as f64) / (per_iter_us * 1e-6) / 1e9;
-        println!("{:<25} {:>8.3} ms  {:>8.1} GB/s", name, per_iter_ms, gbps);
-    }
-    #[cfg(not(feature = "cuda"))]
-    {
-        gpu_sync();
-        let start = Instant::now();
-        for _ in 0..ITERS { f().sync(); }
-        let elapsed = start.elapsed();
-        let per_iter_us = elapsed.as_micros() as f64 / ITERS as f64;
-        let per_iter_ms = per_iter_us / 1000.0;
-        let bytes = N * N * 4;
-        let gbps = (2.0 * bytes as f64) / (per_iter_us * 1e-6) / 1e9;
-        println!("{:<25} {:>8.3} ms  {:>8.1} GB/s", name, per_iter_ms, gbps);
-    }
+    gpu_sync();
+    let elapsed = start.elapsed();
+    drop(ring);
+    let per_iter_us = elapsed.as_micros() as f64 / ITERS as f64;
+    let per_iter_ms = per_iter_us / 1000.0;
+    let bytes = N * N * 4;
+    let gbps = (2.0 * bytes as f64) / (per_iter_us * 1e-6) / 1e9;
+    println!("{:<25} {:>8.3} ms  {:>8.1} GB/s", name, per_iter_ms, gbps);
 }
 
 fn bench_scalar<F: FnMut() -> f32>(name: &str, mut f: F) {
