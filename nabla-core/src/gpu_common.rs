@@ -281,15 +281,15 @@ pub(crate) fn fuse_kernel_source(
     if is_f32 {
         let scalar_expr = gpu_expr.to_string();
 
-        src.push_str("extern \"C\" __global__ void ");
+        src.push_str("extern \"C\" __global__ __launch_bounds__(256) void ");
         src.push_str(kernel_name);
         src.push('(');
         for i in 0..n_inputs {
-            src.push_str("const float* in");
+            src.push_str("const float* __restrict__ in");
             src.push_str(&i.to_string());
             src.push_str(", ");
         }
-        src.push_str("float* out, unsigned n) {\n");
+        src.push_str("float* __restrict__ out, unsigned n) {\n");
         src.push_str("    unsigned i4 = blockIdx.x * blockDim.x + threadIdx.x;\n");
         src.push_str("    unsigned i = i4 * 4;\n");
         src.push_str("    if (i + 3 < n) {\n");
@@ -327,18 +327,18 @@ pub(crate) fn fuse_kernel_source(
         src.push_str("        }\n");
         src.push_str("    }\n}\n");
     } else {
-        src.push_str("extern \"C\" __global__ void ");
+        src.push_str("extern \"C\" __global__ __launch_bounds__(256) void ");
         src.push_str(kernel_name);
         src.push('(');
         for i in 0..n_inputs {
             src.push_str("const ");
             src.push_str(type_name);
-            src.push_str("* in");
+            src.push_str("* __restrict__ in");
             src.push_str(&i.to_string());
             src.push_str(", ");
         }
         src.push_str(type_name);
-        src.push_str("* out, unsigned n) {\n");
+        src.push_str("* __restrict__ out, unsigned n) {\n");
         src.push_str("    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;\n");
         src.push_str("    if (i < n) {\n");
         if use_ldg {
@@ -374,7 +374,7 @@ pub(crate) fn mega_fuse_kernel_source(
     let is_f32 = type_name == "float";
     let mut src = String::with_capacity(2048);
 
-    src.push_str("extern \"C\" __global__ void ");
+    src.push_str("extern \"C\" __global__ __launch_bounds__(256) void ");
     src.push_str(kernel_name);
     src.push('(');
     let mut first = true;
@@ -384,13 +384,13 @@ pub(crate) fn mega_fuse_kernel_source(
                 src.push_str(", ");
             }
             first = false;
-            src.push_str(&format!("const {type_name}* op{op_idx}_in{j}"));
+            src.push_str(&format!("const {type_name}* __restrict__ op{op_idx}_in{j}"));
         }
         if !first {
             src.push_str(", ");
         }
         first = false;
-        src.push_str(&format!("{type_name}* op{op_idx}_out"));
+        src.push_str(&format!("{type_name}* __restrict__ op{op_idx}_out"));
     }
     src.push_str(", unsigned n) {\n");
 

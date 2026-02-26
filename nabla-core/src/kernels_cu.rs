@@ -17,7 +17,8 @@ pub(crate) const KERNELS: &str = r#"
 #define TILE 16
 
 // float4 is CUDA built-in with __attribute__((aligned(16))) → emits LDG.E.128
-#define LOAD_F4(ptr, i)  (((const float4*)(ptr))[i])
+// __ldg() forces L1 texture cache path (read-only, no coherence cost)
+#define LOAD_F4(ptr, i)  __ldg(((const float4*)(ptr)) + (i))
 #define STORE_F4(ptr, i, v) (((float4*)(ptr))[i] = (v))
 #define VEC4_IDX (blockIdx.x * blockDim.x + threadIdx.x)
 
@@ -28,34 +29,36 @@ pub(crate) const KERNELS: &str = r#"
 #define _RECIP_D(x) (1.0/(x))
 #define _LOG1P_FAST(x) (__logf(1.0f+(x)))
 
+// __launch_bounds__(256) pins register budget → more warps per SM on GH200.
+// __restrict__ eliminates alias analysis → compiler emits LDG + STG freely.
 #define UNARY_F32(name, vop, sop) \
-extern "C" __global__ void k_##name##_f32(const float* in, float* out, unsigned n) { \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_f32(const float* __restrict__ in, float* __restrict__ out, unsigned n) { \
     unsigned i4 = VEC4_IDX, i = i4 * 4; \
     if (i + 3 < n) { \
         float4 v = LOAD_F4(in, i4); \
         v.x = vop(v.x); v.y = vop(v.y); v.z = vop(v.z); v.w = vop(v.w); \
         STORE_F4(out, i4, v); \
-    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = sop(in[j]); } \
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = sop(__ldg(&in[j])); } \
 }
 
 #define UNARY_F64(name, op) \
-extern "C" __global__ void k_##name##_f64(const double* in, double* out, unsigned n) { \
-    unsigned i = THREAD_ID; if (i < n) out[i] = op(in[i]); \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_f64(const double* __restrict__ in, double* __restrict__ out, unsigned n) { \
+    unsigned i = THREAD_ID; if (i < n) out[i] = op(__ldg(&in[i])); \
 }
 
 #define BINARY_F32(name, op) \
-extern "C" __global__ void k_##name##_f32(const float* a, const float* b, float* out, unsigned n) { \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_f32(const float* __restrict__ a, const float* __restrict__ b, float* __restrict__ out, unsigned n) { \
     unsigned i4 = VEC4_IDX, i = i4 * 4; \
     if (i + 3 < n) { \
         float4 va = LOAD_F4(a, i4), vb = LOAD_F4(b, i4); \
         float4 vo = make_float4(va.x op vb.x, va.y op vb.y, va.z op vb.z, va.w op vb.w); \
         STORE_F4(out, i4, vo); \
-    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = a[j] op b[j]; } \
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = __ldg(&a[j]) op __ldg(&b[j]); } \
 }
 
 #define BINARY_F64(name, op) \
-extern "C" __global__ void k_##name##_f64(const double* a, const double* b, double* out, unsigned n) { \
-    unsigned i = THREAD_ID; if (i < n) out[i] = a[i] op b[i]; \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_f64(const double* __restrict__ a, const double* __restrict__ b, double* __restrict__ out, unsigned n) { \
+    unsigned i = THREAD_ID; if (i < n) out[i] = __ldg(&a[i]) op __ldg(&b[i]); \
 }
 
 // ── Device helpers (erf A&S polynomial, max error ~1.5e-7) ──────────────
@@ -145,24 +148,24 @@ BINARY_F32(ediv, /)
 
 // ── Scalar ops f32 (float4 + fast math) ─────────────────────────────────
 
-extern "C" __global__ void k_scale_f32(const float* in, float s, float* out, unsigned n) {
+extern "C" __global__ __launch_bounds__(256) void k_scale_f32(const float* __restrict__ in, float s, float* __restrict__ out, unsigned n) {
     unsigned i4 = VEC4_IDX, i = i4 * 4;
     if (i + 3 < n) {
         float4 v = LOAD_F4(in, i4);
         v.x *= s; v.y *= s; v.z *= s; v.w *= s;
         STORE_F4(out, i4, v);
-    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = in[j]*s; }
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = __ldg(&in[j])*s; }
 }
-extern "C" __global__ void k_powf_f32(const float* in, float p, float* out, unsigned n) {
+extern "C" __global__ __launch_bounds__(256) void k_powf_f32(const float* __restrict__ in, float p, float* __restrict__ out, unsigned n) {
     unsigned i4 = VEC4_IDX, i = i4 * 4;
     if (i + 3 < n) {
         float4 v = LOAD_F4(in, i4);
         v.x = __expf(p*__logf(v.x)); v.y = __expf(p*__logf(v.y));
         v.z = __expf(p*__logf(v.z)); v.w = __expf(p*__logf(v.w));
         STORE_F4(out, i4, v);
-    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = powf(in[j], p); }
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = powf(__ldg(&in[j]), p); }
 }
-extern "C" __global__ void k_fill_f32(float* out, float val, unsigned n) {
+extern "C" __global__ __launch_bounds__(256) void k_fill_f32(float* __restrict__ out, float val, unsigned n) {
     unsigned i4 = VEC4_IDX, i = i4 * 4;
     if (i + 3 < n) {
         float4 v = make_float4(val, val, val, val);
