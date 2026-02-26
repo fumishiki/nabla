@@ -19,19 +19,22 @@ const WARMUP: usize = 20;
 const ITERS: usize = 100;
 
 fn bench<F: FnMut() -> Tensor<f32>>(name: &str, mut f: F) {
-    // Warmup with full sync to ensure clean GPU state.
+    // Warmup: compile kernels + first allocations.
     for _ in 0..WARMUP {
         f().sync();
     }
-    // Match PyTorch measurement style: submit all ITERS kernels, then sync once.
-    // This measures sustained throughput (GPU-side time) rather than
-    // per-kernel latency+sync overhead, giving a fair apples-to-apples comparison.
+    // Pre-fill pool: allocate ITERS tensors then free them so the allocator
+    // has ITERS free blocks ready. Without this, the first bench in a run
+    // pays cold-allocation cost (~20µs/tensor) that inflates the measurement.
+    {
+        let prealloc: Vec<Tensor<f32>> = (0..ITERS).map(|_| f()).collect();
+        gpu_sync();
+        drop(prealloc); // returns ITERS buffers to the pool
+    }
+    // Measure: all iterations pull from the warm pool, no new allocations.
     gpu_sync();
     let start = Instant::now();
-    let mut results: Vec<Tensor<f32>> = Vec::with_capacity(ITERS);
-    for _ in 0..ITERS {
-        results.push(f());
-    }
+    let results: Vec<Tensor<f32>> = (0..ITERS).map(|_| f()).collect();
     gpu_sync();
     let elapsed = start.elapsed();
     drop(results);
