@@ -63,7 +63,7 @@ pub mod gpu_common;
 pub mod cuda_backend;
 
 #[cfg(feature = "cuda")]
-pub use cuda_backend::{CuBuffer, NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached};
+pub use cuda_backend::{CuBuffer, NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached, cuda_synchronize};
 
 #[cfg(any(feature = "cuda", feature = "hip"))]
 pub use gpu_common::RtcStorage;

@@ -1971,6 +1971,16 @@ unsafe fn reduce_readback<T: Scalar>(ctx: &CudaCtx) -> T {
     core::ptr::read_volatile(ctx.reduce_host_ptr.0 as *const T)
 }
 
+/// Synchronize the CUDA compute stream, blocking until all queued GPU ops complete.
+/// Use this for benchmarking to match PyTorch's `torch.cuda.synchronize()` pattern.
+pub fn cuda_synchronize() {
+    let ctx = get_ctx();
+    // SAFETY: cuStreamSynchronize is safe to call; stream is valid.
+    unsafe {
+        cudarc::driver::sys::cuStreamSynchronize(ctx.stream.cu_stream());
+    }
+}
+
 pub(crate) fn cuda_sum_all<T: Scalar>(a: &CudaStorage<T>) -> T {
     let ctx = get_ctx();
     let n = a.n();
