@@ -32,10 +32,10 @@ fn bench<F: FnMut() -> Tensor<f32>>(name: &str, mut f: F) {
     #[cfg(feature = "cuda")]
     {
         let graph = nabla::cuda_graph_capture(|| { let _ = f(); })
-            .expect("CUDA graph capture failed");
+            .unwrap_or_else(|_| panic!("CUDA graph capture failed"));
         gpu_sync();
         let start = Instant::now();
-        for _ in 0..ITERS { graph.launch().expect("graph replay"); }
+        for _ in 0..ITERS { graph.launch().unwrap_or_else(|_| panic!("graph replay failed")); }
         gpu_sync();
         let elapsed = start.elapsed();
         let per_iter_us = elapsed.as_micros() as f64 / ITERS as f64;
