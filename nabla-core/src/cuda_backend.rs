@@ -2784,7 +2784,7 @@ pub(crate) fn cuda_prod_all<T: Scalar>(a: &CudaStorage<T>) -> T {
     if grid1 == 1 {
         // Single block: result is in partial_buf[0]
         let partial_storage = CudaStorage::new(1, 1, partial_buf);
-        return partial_storage.get(0, 0);
+        return cuda_get(&partial_storage, 0, 0);
     }
     // Phase 2: reduce the partial array to a single value
     let out_buf = CuBuffer::alloc_async(&ctx.stream, core::mem::size_of::<T>())
@@ -2805,7 +2805,7 @@ pub(crate) fn cuda_prod_all<T: Scalar>(a: &CudaStorage<T>) -> T {
         )
         .unwrap_or_else(|e| panic!("CUDA prod phase2: {e}"));
     }
-    CudaStorage::new(1, 1, out_buf).get(0, 0)
+    cuda_get(&CudaStorage::new(1, 1, out_buf), 0, 0)
 }
 
 /// Max pooling with argmax index output. Returns (values, flat_indices as T).
