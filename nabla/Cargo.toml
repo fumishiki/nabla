@@ -2,7 +2,7 @@
 name = "nabla"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.88.0"
 license = "Apache-2.0 OR MIT"
 description = "Type-safe linear algebra DSL for Rust — zero-copy, compile-time backend selection"
 keywords = ["linear-algebra", "tensor", "einsum", "gpu", "math"]

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/fumishiki/nabla/actions/workflows/ci.yml/badge.svg)](https://github.com/fumishiki/nabla/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](LICENSE)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 
 **Zero-GC, zero-copy computation engine for Rust** — not a framework. nabla provides every mathematically fixed computation primitive (matmul, conv, softmax, cross_entropy, …) optimized for CPU/GPU. Users compose these primitives into any architecture they want. Edge cases need minimal extension, never reimplementation.
 
@@ -114,7 +114,7 @@ nabla's scope is limited to **mathematically invariant rules** — operations wh
 | **4 backends** | `cpu` (faer + rayon) · `wgpu` (WGSL, cross-platform) · `cuda` (NVRTC JIT) · `hip` (hiprtc JIT) |
 | **No external LA deps** | Pure Rust — no LAPACK, no BLAS, no foreign bindings |
 
-231 boundary tests · MSRV 1.85 (edition 2024) · Apache-2.0 OR MIT
+231 boundary tests · MSRV 1.88 (edition 2024) · Apache-2.0 OR MIT
 
 ---
 
@@ -463,7 +463,7 @@ cargo fmt --all -- --check                             # format
 cargo doc --workspace --no-deps                        # docs
 ```
 
-MSRV: **1.85.0** (Rust edition 2024)
+MSRV: **1.88.0** (Rust edition 2024)
 
 ---
 
