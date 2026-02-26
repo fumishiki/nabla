@@ -1949,19 +1949,22 @@ unsafe fn launch_reduce(
     stream: cudarc::driver::sys::CUstream,
     args: &mut [*mut c_void],
 ) {
-    cudarc::driver::sys::cuLaunchKernel(
-        func,
-        grid,
-        1,
-        1,
-        block,
-        1,
-        1,
-        0,
-        stream,
-        args.as_mut_ptr(),
-        std::ptr::null_mut(),
-    );
+    // SAFETY: caller guarantees func, stream, and args are valid CUDA objects.
+    unsafe {
+        cudarc::driver::sys::cuLaunchKernel(
+            func,
+            grid,
+            1,
+            1,
+            block,
+            1,
+            1,
+            0,
+            stream,
+            args.as_mut_ptr(),
+            std::ptr::null_mut(),
+        );
+    }
 }
 
 /// Read back a scalar from pinned host memory after stream sync.
