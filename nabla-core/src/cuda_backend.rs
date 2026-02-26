@@ -27,7 +27,7 @@ use crate::scalar::Scalar;
 // ── Error type ───────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
-pub(crate) enum CudaError {
+pub enum CudaError {
     Driver(cudarc::driver::DriverError),
     Nvrtc(nvrtc::CompileError),
     KernelNotFound(String),
@@ -57,7 +57,7 @@ impl core::fmt::Display for CudaError {
     }
 }
 
-type CudaResult<T> = Result<T, CudaError>;
+pub type CudaResult<T> = Result<T, CudaError>;
 
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
