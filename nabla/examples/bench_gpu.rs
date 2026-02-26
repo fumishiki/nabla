@@ -6,19 +6,35 @@
 use nabla::prelude::*;
 use std::time::Instant;
 
+/// Block until all GPU work on the default stream is complete.
+#[cfg(feature = "cuda")]
+#[inline]
+fn gpu_sync() { nabla::cuda_synchronize(); }
+#[cfg(not(feature = "cuda"))]
+#[inline]
+fn gpu_sync() {}
+
 const N: usize = 4096;
 const WARMUP: usize = 20;
 const ITERS: usize = 100;
 
 fn bench<F: FnMut() -> Tensor<f32>>(name: &str, mut f: F) {
+    // Warmup with full sync to ensure clean GPU state.
     for _ in 0..WARMUP {
         f().sync();
     }
+    // Match PyTorch measurement style: submit all ITERS kernels, then sync once.
+    // This measures sustained throughput (GPU-side time) rather than
+    // per-kernel latency+sync overhead, giving a fair apples-to-apples comparison.
+    gpu_sync();
     let start = Instant::now();
+    let mut results: Vec<Tensor<f32>> = Vec::with_capacity(ITERS);
     for _ in 0..ITERS {
-        f().sync();
+        results.push(f());
     }
+    gpu_sync();
     let elapsed = start.elapsed();
+    drop(results);
     let per_iter_us = elapsed.as_micros() as f64 / ITERS as f64;
     let per_iter_ms = per_iter_us / 1000.0;
     let bytes = N * N * 4; // f32 = 4 bytes
@@ -30,10 +46,12 @@ fn bench_scalar<F: FnMut() -> f32>(name: &str, mut f: F) {
     for _ in 0..WARMUP {
         let _ = f();
     }
+    gpu_sync();
     let start = Instant::now();
     for _ in 0..ITERS {
         let _ = f();
     }
+    gpu_sync();
     let elapsed = start.elapsed();
     let per_iter_us = elapsed.as_micros() as f64 / ITERS as f64;
     let per_iter_ms = per_iter_us / 1000.0;
