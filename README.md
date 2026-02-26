@@ -78,21 +78,21 @@ nabla's scope is limited to **mathematically invariant rules** — operations wh
 
 ## Why nabla over raw Rust
 
-Without nabla, GPU linear algebra in Rust means: wiring up `libcuda` manually, writing C kernel strings, calling cuBLAS through bindgen FFI, building your own reverse-mode tape. nabla collapses that into one consistent API — same call site whether you target CPU, Vulkan, CUDA, or AMD.
+Without nabla, GPU linear algebra in Rust means wiring `libcuda` manually, writing C kernel strings, calling cuBLAS through bindgen FFI, and deriving gradients by hand. nabla gives you the same Rust safety and speed with math-notation ergonomics — one consistent API across CPU, Vulkan, CUDA, and AMD.
 
-| Task | Raw Rust (without nabla) | nabla |
-|---|---|---|
-| Matrix literal | `vec![1.0f64, 2.0, 3.0, 4.0]` — flat Vec, manual stride math | `mat![[1.0, 2.0], [3.0, 4.0]]` |
-| Matmul | `faer::linalg::matmul::matmul(&mut c, &a, &b, None, 1.0, Par::Seq)` | `&a * &b` |
-| Element-wise | manual `zip().map().collect()` | `a.emul(&b)` |
-| Solve Ax = b | `faer` LU decompose → `solve_in_place` (4 steps, raw API) | `a.solve(&b)?` |
-| Fused GPU op | write CUDA C string + NVRTC compile call + kernel launch boilerplate | `fuse!(x.sin().powf(2.0); x)` — **1 kernel** |
-| Einstein sum | nested loops — runtime shape bug risk, no diagnostics | `einsum!(c[i,j]=a[i,k]*b[k,j])` — **compile error** at bad index |
-| Autodiff | derive gradients by hand, or add `tch-rs` / `candle` (PyTorch FFI, C++ dep) | `loss.backward()` — pure Rust, no FFI |
-| Switch CPU↔GPU | rewrite every allocation + kernel call site | change one feature flag |
-| Stiff ODE | implement Newton iteration + BDF-1 tableau + step-size control | `bdf1(f, y0, t0, t1, h, cfg)` |
-| Symbolic diff | `symengine` FFI (C++ shared library) | `f.diff("x").simplify()` — pure Rust |
-| Sparse solve | CSC format by hand + custom factorization | `sparse(m, n, &triples)?.solve(&b)?` |
+| Rust | nabla |
+|---|---|
+| `vec![1.0f64, 2.0, 3.0, 4.0]` — flat `Vec`, manual stride math | `mat![[1.0, 2.0], [3.0, 4.0]]` |
+| `faer::linalg::matmul::matmul(&mut c, &a, &b, None, 1.0, Par::Seq)` | `&a * &b` |
+| `a.col_iter().zip(b.row_iter()).map(...).collect()` | `a.emul(&b)` |
+| `let lu = a.partial_piv_lu(); lu.solve_in_place(&mut b); b` | `a.solve(&b)?` |
+| write CUDA C string → NVRTC compile → kernel launch boilerplate | `fuse!(x.sin().powf(2.0); x)` — **1 kernel** |
+| nested `for` loops — runtime index bug, no shape diagnostics | `einsum!(c[i,j]=a[i,k]*b[k,j])` — **compile error** at bad index |
+| derive ∂L/∂w by hand, or pull in `tch-rs` / `candle` (C++ FFI dep) | `loss.backward()` — pure Rust, no FFI |
+| rewrite every allocation + kernel call site | change one feature flag to switch CPU↔GPU |
+| implement Newton iteration + BDF-1 tableau + step-size control | `bdf1(f, y0, t0, t1, h, cfg)` |
+| `symengine` FFI (C++ shared library) | `f.diff("x").simplify()` — pure Rust |
+| build CSC manually + write factorization routine | `SparseMatrix::try_new_from_triplets(...)?.solve(&b)?` |
 
 **What nabla does NOT replace** — and is right not to: optimizer update rules, loss function choice, model architecture, training loop. Those are user-defined logic, not fixed mathematics.
 
