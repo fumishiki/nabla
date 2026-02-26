@@ -1859,6 +1859,14 @@ extern "C" __global__ void k_sdpa_f64(
         __syncthreads();
     }
 
+    if (qi_row < seq_q) {
+        double inv_li = (li > 0.0) ? 1.0 / li : 0.0;
+        unsigned base = bh * seq_q * D + qi_row * D;
+        for (unsigned d = 0; d < D; d++)
+            Out[base + d] = oi[d] * inv_li;
+    }
+}
+
 // ── im1col: 1D im2col for conv1d ─────────────────────────────────────────
 extern "C" __global__ void k_im1col_f32(
     const float* __restrict__ in, float* __restrict__ col,
