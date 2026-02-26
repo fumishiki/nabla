@@ -58,7 +58,7 @@ pub(crate) const SMALL_ALLOC_SIZE: usize = 2 << 20; // 2MB
 /// Over-allocate size for large allocs.
 pub(crate) const LARGE_ALLOC_SIZE: usize = 20 << 20; // 20MB
 /// GC threshold: free cached blocks when usage exceeds this fraction.
-pub(crate) const GC_THRESHOLD: f64 = 0.9;
+pub(crate) const GC_THRESHOLD: f64 = 0.97;
 
 // ── Generic GPU pointer trait ───────────────────────────────────────────────
 
