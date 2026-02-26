@@ -8,36 +8,13 @@
 
 Four backends (cpu / wgpu / cuda / hip), reverse-mode + forward-mode autodiff, symbolic CAS, ODE solvers. Zero external LA dependencies.
 
-```rust
-use nabla::prelude::*;
-
-// Construction
-let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
-let z = zeros::<f64>(3, 3);
-
-// Arithmetic — same syntax as Julia
-let c = &a * &b;               // matmul
-let h = a.emul(&b);            // Hadamard (A .* B)
-let x = a.solve(&b)?;          // Ax = b, Result — no silent NaN
-
-// Einstein summation (compile-time, spanned errors)
-let c: Tensor<f64> = einsum!(c[i,j] = a[i,k] * b[k,j]);
-
-// GPU kernel fusion — 1 kernel, 0 intermediates
-let y = fuse!(x.sin().powf(2.0); x);   // Julia: @. sin(x)^2
-
-// Reverse-mode autodiff (PyTorch-familiar)
-let tape = Tape::new();
-let xv = tape.var(&x);
-let loss = (&xv * &xv).exp().sum();
-loss.backward();
-let dx = xv.grad();
-
-// Forward-mode via proc macro
-#[nabla_grad]
-fn energy(x: f64) -> f64 { (x * x).sin() }
-let (val, deriv) = energy_grad(2.0);    // → (sin(4), 4·cos(4))
-```
+| Rust | nabla |
+|---|---|
+| `faer::linalg::matmul::matmul(&mut c, &a, &b, None, 1.0, Par::Seq)` | `&a * &b` |
+| `let lu = a.partial_piv_lu();` `lu.solve_in_place(&mut b);` | `a.solve(&b)?` |
+| nested `for i,j,k` loops — runtime shape bug possible | `einsum!(c[i,j]=a[i,k]*b[k,j])` — **compile error** at bad index |
+| write CUDA C string → NVRTC compile → launch params | `fuse!(x.sin().powf(2.0); x)` — **1 kernel, 0 intermediates** |
+| derive ∂L/∂w by hand, or add `tch-rs` (PyTorch C++ FFI) | `loss.backward()` — pure Rust, no FFI |
 
 ---
 
@@ -82,17 +59,11 @@ Without nabla, GPU linear algebra in Rust means wiring `libcuda` manually, writi
 
 | Rust | nabla |
 |---|---|
-| `vec![1.0f64, 2.0, 3.0, 4.0]` — flat `Vec`, manual stride math | `mat![[1.0, 2.0], [3.0, 4.0]]` |
 | `faer::linalg::matmul::matmul(&mut c, &a, &b, None, 1.0, Par::Seq)` | `&a * &b` |
-| `a.col_iter().zip(b.row_iter()).map(...).collect()` | `a.emul(&b)` |
-| `let lu = a.partial_piv_lu(); lu.solve_in_place(&mut b); b` | `a.solve(&b)?` |
-| write CUDA C string → NVRTC compile → kernel launch boilerplate | `fuse!(x.sin().powf(2.0); x)` — **1 kernel** |
-| nested `for` loops — runtime index bug, no shape diagnostics | `einsum!(c[i,j]=a[i,k]*b[k,j])` — **compile error** at bad index |
-| derive ∂L/∂w by hand, or pull in `tch-rs` / `candle` (C++ FFI dep) | `loss.backward()` — pure Rust, no FFI |
-| rewrite every allocation + kernel call site | change one feature flag to switch CPU↔GPU |
-| implement Newton iteration + BDF-1 tableau + step-size control | `bdf1(f, y0, t0, t1, h, cfg)` |
-| `symengine` FFI (C++ shared library) | `f.diff("x").simplify()` — pure Rust |
-| build CSC manually + write factorization routine | `SparseMatrix::try_new_from_triplets(...)?.solve(&b)?` |
+| `let lu = a.partial_piv_lu(); lu.solve_in_place(&mut b);` | `a.solve(&b)?` |
+| nested `for i,j,k` loops — runtime shape bug possible | `einsum!(c[i,j]=a[i,k]*b[k,j])` — **compile error** at bad index |
+| write CUDA C string → NVRTC compile → launch params | `fuse!(x.sin().powf(2.0); x)` — **1 kernel, 0 intermediates** |
+| derive ∂L/∂w by hand, or add `tch-rs` (PyTorch C++ FFI) | `loss.backward()` — pure Rust, no FFI |
 
 **What nabla does NOT replace** — and is right not to: optimizer update rules, loss function choice, model architecture, training loop. Those are user-defined logic, not fixed mathematics.
 
@@ -100,7 +71,6 @@ Without nabla, GPU linear algebra in Rust means wiring `libcuda` manually, writi
 - `&a * &b` not `a * b` for re-use — explicit zero-copy borrow semantics
 - `a.solve(&b)?` not `A \ b` — `?` propagates `Result`, no silent NaN
 - `a.emul(&b)` not `a * b` — `*` is matmul; Hadamard needs a distinct name
-- `a[(i, j)]` not `a[i, j]` — tuple indexing is the borrow-checker's price
 
 ---
 
