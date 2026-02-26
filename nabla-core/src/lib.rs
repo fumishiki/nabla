@@ -24,21 +24,9 @@
     )
 )]
 
-// Enforce mutually exclusive backend selection (build-time fixed backend).
+// Require at least one backend. Multiple backends are allowed — DefaultBackend priority: cuda > hip > gpu > cpu.
 #[cfg(not(any(feature = "cpu", feature = "gpu", feature = "cuda", feature = "hip")))]
-compile_error!("nabla-core: enable exactly one backend feature (cpu / wgpu / cuda / hip)");
-#[cfg(all(feature = "cpu", feature = "gpu"))]
-compile_error!("nabla-core: features 'cpu' and 'gpu' are mutually exclusive");
-#[cfg(all(feature = "cpu", feature = "cuda"))]
-compile_error!("nabla-core: features 'cpu' and 'cuda' are mutually exclusive");
-#[cfg(all(feature = "cpu", feature = "hip"))]
-compile_error!("nabla-core: features 'cpu' and 'hip' are mutually exclusive");
-#[cfg(all(feature = "gpu", feature = "cuda"))]
-compile_error!("nabla-core: features 'gpu' and 'cuda' are mutually exclusive");
-#[cfg(all(feature = "gpu", feature = "hip"))]
-compile_error!("nabla-core: features 'gpu' and 'hip' are mutually exclusive");
-#[cfg(all(feature = "cuda", feature = "hip"))]
-compile_error!("nabla-core: features 'cuda' and 'hip' are mutually exclusive");
+compile_error!("nabla-core: enable at least one backend feature (cpu / wgpu / cuda / hip)");
 
 /// Error types for nabla operations.
 pub mod error;
