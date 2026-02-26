@@ -933,10 +933,14 @@ pub(crate) fn hip_argmin_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) {
 
 fn hip_max_pool2d<T: Scalar>(
     a: &HipStorage<T>,
-    h: usize, w: usize,
-    kh: usize, kw: usize,
-    sh: usize, sw: usize,
-    ph: usize, pw: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    sh: usize,
+    sw: usize,
+    ph: usize,
+    pw: usize,
 ) -> HipStorage<T> {
     let ctx = get_ctx();
     let nc = a.nrows;
@@ -948,8 +952,17 @@ fn hip_max_pool2d<T: Scalar>(
     let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (
-        h as u32, w as u32, kh as u32, kw as u32, sh as u32, sw as u32,
-        ph as u32, pw as u32, out_h as u32, out_w as u32, nc as u32,
+        h as u32,
+        w as u32,
+        kh as u32,
+        kw as u32,
+        sh as u32,
+        sw as u32,
+        ph as u32,
+        pw as u32,
+        out_h as u32,
+        out_w as u32,
+        nc as u32,
     );
     hip_launch(
         func,
@@ -976,10 +989,14 @@ fn hip_max_pool2d<T: Scalar>(
 
 fn hip_avg_pool2d<T: Scalar>(
     a: &HipStorage<T>,
-    h: usize, w: usize,
-    kh: usize, kw: usize,
-    sh: usize, sw: usize,
-    ph: usize, pw: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    sh: usize,
+    sw: usize,
+    ph: usize,
+    pw: usize,
 ) -> HipStorage<T> {
     let ctx = get_ctx();
     let nc = a.nrows;
@@ -991,8 +1008,17 @@ fn hip_avg_pool2d<T: Scalar>(
     let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (
-        h as u32, w as u32, kh as u32, kw as u32, sh as u32, sw as u32,
-        ph as u32, pw as u32, out_h as u32, out_w as u32, nc as u32,
+        h as u32,
+        w as u32,
+        kh as u32,
+        kw as u32,
+        sh as u32,
+        sw as u32,
+        ph as u32,
+        pw as u32,
+        out_h as u32,
+        out_w as u32,
+        nc as u32,
     );
     hip_launch(
         func,
@@ -1019,8 +1045,10 @@ fn hip_avg_pool2d<T: Scalar>(
 
 fn hip_adaptive_avg_pool2d<T: Scalar>(
     a: &HipStorage<T>,
-    in_h: usize, in_w: usize,
-    out_h: usize, out_w: usize,
+    in_h: usize,
+    in_w: usize,
+    out_h: usize,
+    out_w: usize,
 ) -> HipStorage<T> {
     let ctx = get_ctx();
     let nc = a.nrows;
@@ -1030,7 +1058,11 @@ fn hip_adaptive_avg_pool2d<T: Scalar>(
     let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let (in_h_u, in_w_u, out_h_u, out_w_u, nc_u) = (
-        in_h as u32, in_w as u32, out_h as u32, out_w as u32, nc as u32,
+        in_h as u32,
+        in_w as u32,
+        out_h as u32,
+        out_w as u32,
+        nc as u32,
     );
     hip_launch(
         func,
@@ -1077,12 +1109,19 @@ fn hip_im2col<T: Scalar>(
     let col_elem = k_cols * out_spatial;
     let grid_x = ((col_elem as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE;
     let (c_in_u, h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, dh_u, dw_u, out_h_u, out_w_u) = (
-        c_in as u32, h as u32, w as u32,
-        kh as u32, kw as u32,
-        sh as u32, sw as u32,
-        ph as u32, pw as u32,
-        dh as u32, dw as u32,
-        out_h as u32, out_w as u32,
+        c_in as u32,
+        h as u32,
+        w as u32,
+        kh as u32,
+        kw as u32,
+        sh as u32,
+        sw as u32,
+        ph as u32,
+        pw as u32,
+        dh as u32,
+        dw as u32,
+        out_h as u32,
+        out_w as u32,
     );
     hip_launch(
         func,
@@ -1112,8 +1151,14 @@ fn hip_im2col<T: Scalar>(
 #[allow(clippy::too_many_arguments)]
 fn hip_im1col<T: Scalar>(
     input: &HipStorage<T>,
-    n: usize, c_in: usize, l: usize,
-    kl: usize, sl: usize, pl: usize, dl: usize, out_l: usize,
+    n: usize,
+    c_in: usize,
+    l: usize,
+    kl: usize,
+    sl: usize,
+    pl: usize,
+    dl: usize,
+    out_l: usize,
 ) -> HipStorage<T> {
     let k_cols = c_in * kl;
     let ctx = get_ctx();
@@ -1124,7 +1169,13 @@ fn hip_im1col<T: Scalar>(
     let col_elem = k_cols * out_l;
     let grid_x = ((col_elem as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE;
     let (c_in_u, l_u, kl_u, sl_u, pl_u, dl_u, out_l_u) = (
-        c_in as u32, l as u32, kl as u32, sl as u32, pl as u32, dl as u32, out_l as u32,
+        c_in as u32,
+        l as u32,
+        kl as u32,
+        sl as u32,
+        pl as u32,
+        dl as u32,
+        out_l as u32,
     );
     hip_launch(
         func,
@@ -1148,13 +1199,26 @@ fn hip_im1col<T: Scalar>(
 #[allow(clippy::too_many_arguments)]
 fn hip_im3col<T: Scalar>(
     input: &HipStorage<T>,
-    n: usize, c_in: usize,
-    d: usize, h: usize, w: usize,
-    kd: usize, kh: usize, kw: usize,
-    sd: usize, sh: usize, sw: usize,
-    pd: usize, ph: usize, pw: usize,
-    dd: usize, dh: usize, dw: usize,
-    out_d: usize, out_h: usize, out_w: usize,
+    n: usize,
+    c_in: usize,
+    d: usize,
+    h: usize,
+    w: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    dd: usize,
+    dh: usize,
+    dw: usize,
+    out_d: usize,
+    out_h: usize,
+    out_w: usize,
 ) -> HipStorage<T> {
     let k_vol = c_in * kd * kh * kw;
     let out_vol = out_d * out_h * out_w;
@@ -1207,11 +1271,20 @@ fn hip_im3col<T: Scalar>(
 fn hip_conv1d<T: Scalar>(
     input: &HipStorage<T>,
     weight: &HipStorage<T>,
-    n: usize, c_in: usize, l: usize,
-    c_out: usize, kl: usize,
-    stride: usize, padding: usize, dilation: usize, groups: usize,
+    n: usize,
+    c_in: usize,
+    l: usize,
+    c_out: usize,
+    kl: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    groups: usize,
 ) -> HipStorage<T> {
-    assert!(groups == 1, "GPU conv1d: groups > 1 not supported; use CPU backend");
+    assert!(
+        groups == 1,
+        "GPU conv1d: groups > 1 not supported; use CPU backend"
+    );
     let out_l = (l + 2 * padding - dilation * (kl - 1) - 1) / stride + 1;
     let k_cols = c_in * kl;
 
@@ -1226,14 +1299,12 @@ fn hip_conv1d<T: Scalar>(
         // SAFETY: offsets are within allocated buffers; borrow_ptr creates non-owning views.
         let col_ptr = unsafe { col.buf.ptr.byte_add(col_off) };
         let out_ptr = unsafe { out.buf.ptr.byte_add(out_off) };
-        let col_slice = HipStorage::new(
-            k_cols, out_l,
-            unsafe { HipBuffer::borrow_ptr(col_ptr, k_cols * out_l * core::mem::size_of::<T>()) },
-        );
-        let mut out_slice = HipStorage::new(
-            c_out, out_l,
-            unsafe { HipBuffer::borrow_ptr(out_ptr, c_out * out_l * core::mem::size_of::<T>()) },
-        );
+        let col_slice = HipStorage::new(k_cols, out_l, unsafe {
+            HipBuffer::borrow_ptr(col_ptr, k_cols * out_l * core::mem::size_of::<T>())
+        });
+        let mut out_slice = HipStorage::new(c_out, out_l, unsafe {
+            HipBuffer::borrow_ptr(out_ptr, c_out * out_l * core::mem::size_of::<T>())
+        });
         hip_matmul(&mut out_slice, weight, &col_slice);
         core::mem::forget(col_slice);
         core::mem::forget(out_slice);
@@ -1247,15 +1318,24 @@ fn hip_conv1d<T: Scalar>(
 fn hip_conv3d<T: Scalar>(
     input: &HipStorage<T>,
     weight: &HipStorage<T>,
-    n: usize, c_in: usize,
-    d: usize, h: usize, w: usize,
-    c_out: usize, kd: usize, kh: usize, kw: usize,
+    n: usize,
+    c_in: usize,
+    d: usize,
+    h: usize,
+    w: usize,
+    c_out: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
     stride: (usize, usize, usize),
     padding: (usize, usize, usize),
     dilation: (usize, usize, usize),
     groups: usize,
 ) -> HipStorage<T> {
-    assert!(groups == 1, "GPU conv3d: groups > 1 not supported; use CPU backend");
+    assert!(
+        groups == 1,
+        "GPU conv3d: groups > 1 not supported; use CPU backend"
+    );
     let (sd, sh, sw) = stride;
     let (pd, ph, pw) = padding;
     let (dd, dh, dw) = dilation;
@@ -1265,7 +1345,10 @@ fn hip_conv3d<T: Scalar>(
     let out_vol = out_d * out_h * out_w;
     let k_vol = c_in * kd * kh * kw;
 
-    let col = hip_im3col(input, n, c_in, d, h, w, kd, kh, kw, sd, sh, sw, pd, ph, pw, dd, dh, dw, out_d, out_h, out_w);
+    let col = hip_im3col(
+        input, n, c_in, d, h, w, kd, kh, kw, sd, sh, sw, pd, ph, pw, dd, dh, dw, out_d, out_h,
+        out_w,
+    );
 
     let out_buf = HipBuffer::alloc_zeros(n * c_out * out_vol * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc conv3d out: {e}"));
@@ -1276,14 +1359,12 @@ fn hip_conv3d<T: Scalar>(
         // SAFETY: offsets are within allocated buffers; borrow_ptr creates non-owning views.
         let col_ptr = unsafe { col.buf.ptr.byte_add(col_off) };
         let out_ptr = unsafe { out.buf.ptr.byte_add(out_off) };
-        let col_slice = HipStorage::new(
-            k_vol, out_vol,
-            unsafe { HipBuffer::borrow_ptr(col_ptr, k_vol * out_vol * core::mem::size_of::<T>()) },
-        );
-        let mut out_slice = HipStorage::new(
-            c_out, out_vol,
-            unsafe { HipBuffer::borrow_ptr(out_ptr, c_out * out_vol * core::mem::size_of::<T>()) },
-        );
+        let col_slice = HipStorage::new(k_vol, out_vol, unsafe {
+            HipBuffer::borrow_ptr(col_ptr, k_vol * out_vol * core::mem::size_of::<T>())
+        });
+        let mut out_slice = HipStorage::new(c_out, out_vol, unsafe {
+            HipBuffer::borrow_ptr(out_ptr, c_out * out_vol * core::mem::size_of::<T>())
+        });
         hip_matmul(&mut out_slice, weight, &col_slice);
         core::mem::forget(col_slice);
         core::mem::forget(out_slice);
@@ -1309,7 +1390,10 @@ fn hip_conv2d<T: Scalar>(
     dilation: (usize, usize),
     groups: usize,
 ) -> HipStorage<T> {
-    assert!(groups == 1, "GPU conv2d: groups > 1 not supported; use CPU backend");
+    assert!(
+        groups == 1,
+        "GPU conv2d: groups > 1 not supported; use CPU backend"
+    );
     let (sh, sw) = stride;
     let (ph, pw) = padding;
     let (dh, dw) = dilation;
@@ -1319,7 +1403,9 @@ fn hip_conv2d<T: Scalar>(
     let k_cols = c_in * kh * kw;
 
     // Step 1: im2col → col: (N*k_cols, out_spatial)
-    let col = hip_im2col(input, n, c_in, h, w, kh, kw, sh, sw, ph, pw, dh, dw, out_h, out_w);
+    let col = hip_im2col(
+        input, n, c_in, h, w, kh, kw, sh, sw, ph, pw, dh, dw, out_h, out_w,
+    );
 
     // Step 2: for each sample, GEMM weight (c_out x k_cols) @ col[b] (k_cols x out_spatial).
     let out_buf = HipBuffer::alloc_zeros(n * c_out * out_spatial * core::mem::size_of::<T>())
@@ -1331,14 +1417,12 @@ fn hip_conv2d<T: Scalar>(
         // SAFETY: offsets are within allocated buffers; borrow_ptr creates non-owning views.
         let col_ptr = unsafe { col.buf.ptr.byte_add(col_off) };
         let out_ptr = unsafe { out.buf.ptr.byte_add(out_off) };
-        let col_slice = HipStorage::new(
-            k_cols, out_spatial,
-            unsafe { HipBuffer::borrow_ptr(col_ptr, k_cols * out_spatial * core::mem::size_of::<T>()) },
-        );
-        let mut out_slice = HipStorage::new(
-            c_out, out_spatial,
-            unsafe { HipBuffer::borrow_ptr(out_ptr, c_out * out_spatial * core::mem::size_of::<T>()) },
-        );
+        let col_slice = HipStorage::new(k_cols, out_spatial, unsafe {
+            HipBuffer::borrow_ptr(col_ptr, k_cols * out_spatial * core::mem::size_of::<T>())
+        });
+        let mut out_slice = HipStorage::new(c_out, out_spatial, unsafe {
+            HipBuffer::borrow_ptr(out_ptr, c_out * out_spatial * core::mem::size_of::<T>())
+        });
         hip_matmul(&mut out_slice, weight, &col_slice);
         // Prevent borrowed buffers from being freed on drop.
         core::mem::forget(col_slice);
@@ -1352,9 +1436,15 @@ fn hip_conv2d<T: Scalar>(
 fn hip_conv_transpose2d<T: Scalar>(
     input: &HipStorage<T>,
     weight: &HipStorage<T>,
-    n_batch: usize, c_in: usize, h: usize, w: usize,
-    c_out: usize, kh: usize, kw: usize,
-    stride: (usize, usize), padding: (usize, usize),
+    n_batch: usize,
+    c_in: usize,
+    h: usize,
+    w: usize,
+    c_out: usize,
+    kh: usize,
+    kw: usize,
+    stride: (usize, usize),
+    padding: (usize, usize),
     output_padding: (usize, usize),
 ) -> HipStorage<T> {
     let (sh, sw) = stride;
@@ -1369,10 +1459,19 @@ fn hip_conv_transpose2d<T: Scalar>(
     let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc conv_transpose2d: {e}"));
     let (n_u, c_in_u, h_u, w_u, c_out_u, kh_u, kw_u, out_h_u, out_w_u, sh_u, sw_u, ph_u, pw_u) = (
-        n_batch as i32, c_in as i32, h as i32, w as i32,
-        c_out as i32, kh as i32, kw as i32,
-        out_h as i32, out_w as i32,
-        sh as i32, sw as i32, ph as i32, pw as i32,
+        n_batch as i32,
+        c_in as i32,
+        h as i32,
+        w as i32,
+        c_out as i32,
+        kh as i32,
+        kw as i32,
+        out_h as i32,
+        out_w as i32,
+        sh as i32,
+        sw as i32,
+        ph as i32,
+        pw as i32,
     );
     hip_launch(
         func,
@@ -1623,8 +1722,12 @@ fn hip_batch_norm_train<T: Scalar>(
                     (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
                     (&gamma.buf.ptr as *const *mut c_void).cast_mut().cast(),
                     (&beta.buf.ptr as *const *mut c_void).cast_mut().cast(),
-                    (&running_mean.buf.ptr as *const *mut c_void).cast_mut().cast(),
-                    (&running_var.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                    (&running_mean.buf.ptr as *const *mut c_void)
+                        .cast_mut()
+                        .cast(),
+                    (&running_var.buf.ptr as *const *mut c_void)
+                        .cast_mut()
+                        .cast(),
                     (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
                     (&eps_val as *const f32).cast_mut().cast(),
                     (&total_u32 as *const u32).cast_mut().cast(),
@@ -1640,8 +1743,12 @@ fn hip_batch_norm_train<T: Scalar>(
                     (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
                     (&gamma.buf.ptr as *const *mut c_void).cast_mut().cast(),
                     (&beta.buf.ptr as *const *mut c_void).cast_mut().cast(),
-                    (&running_mean.buf.ptr as *const *mut c_void).cast_mut().cast(),
-                    (&running_var.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                    (&running_mean.buf.ptr as *const *mut c_void)
+                        .cast_mut()
+                        .cast(),
+                    (&running_var.buf.ptr as *const *mut c_void)
+                        .cast_mut()
+                        .cast(),
                     (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
                     (&eps_f as *const f64).cast_mut().cast(),
                     (&total_u32 as *const u32).cast_mut().cast(),
@@ -1869,10 +1976,14 @@ pub(crate) fn hip_prod_all<T: Scalar>(a: &HipStorage<T>) -> T {
 /// Max pooling with argmax flat-index output.
 fn hip_max_pool2d_with_idx<T: Scalar>(
     a: &HipStorage<T>,
-    h: usize, w: usize,
-    kh: usize, kw: usize,
-    sh: usize, sw: usize,
-    ph: usize, pw: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    sh: usize,
+    sw: usize,
+    ph: usize,
+    pw: usize,
 ) -> (HipStorage<T>, HipStorage<T>) {
     let ctx = get_ctx();
     let nc = a.nrows;
@@ -1886,8 +1997,17 @@ fn hip_max_pool2d_with_idx<T: Scalar>(
     let idx_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc idx: {e}"));
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (
-        h as u32, w as u32, kh as u32, kw as u32, sh as u32, sw as u32,
-        ph as u32, pw as u32, out_h as u32, out_w as u32, nc as u32,
+        h as u32,
+        w as u32,
+        kh as u32,
+        kw as u32,
+        sh as u32,
+        sw as u32,
+        ph as u32,
+        pw as u32,
+        out_h as u32,
+        out_w as u32,
+        nc as u32,
     );
     hip_launch(
         func,
@@ -1910,7 +2030,10 @@ fn hip_max_pool2d_with_idx<T: Scalar>(
             (&nc_u as *const u32).cast_mut().cast(),
         ],
     );
-    (HipStorage::new(nc, out_h * out_w, out_buf), HipStorage::new(nc, out_h * out_w, idx_buf))
+    (
+        HipStorage::new(nc, out_h * out_w, out_buf),
+        HipStorage::new(nc, out_h * out_w, idx_buf),
+    )
 }
 
 fn hip_fuse_launch<T: Scalar>(
@@ -2364,7 +2487,16 @@ impl crate::backend::Backend for crate::backend::Hip {
         momentum: T,
         training: bool,
     ) -> HipStorage<T> {
-        hip_batch_norm_train(a, gamma, beta, running_mean, running_var, eps, momentum, training)
+        hip_batch_norm_train(
+            a,
+            gamma,
+            beta,
+            running_mean,
+            running_var,
+            eps,
+            momentum,
+            training,
+        )
     }
 
     fn cross_entropy_fused<T: Scalar>(
@@ -2414,21 +2546,57 @@ impl crate::backend::Backend for crate::backend::Hip {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn max_pool2d<T: Scalar>(a: &HipStorage<T>, h: usize, w: usize, kh: usize, kw: usize, sh: usize, sw: usize, ph: usize, pw: usize) -> HipStorage<T> {
+    fn max_pool2d<T: Scalar>(
+        a: &HipStorage<T>,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
+    ) -> HipStorage<T> {
         hip_max_pool2d(a, h, w, kh, kw, sh, sw, ph, pw)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn max_pool2d_with_indices<T: Scalar>(a: &HipStorage<T>, h: usize, w: usize, kh: usize, kw: usize, sh: usize, sw: usize, ph: usize, pw: usize) -> (HipStorage<T>, HipStorage<T>) {
+    fn max_pool2d_with_indices<T: Scalar>(
+        a: &HipStorage<T>,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
+    ) -> (HipStorage<T>, HipStorage<T>) {
         hip_max_pool2d_with_idx(a, h, w, kh, kw, sh, sw, ph, pw)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn avg_pool2d<T: Scalar>(a: &HipStorage<T>, h: usize, w: usize, kh: usize, kw: usize, sh: usize, sw: usize, ph: usize, pw: usize) -> HipStorage<T> {
+    fn avg_pool2d<T: Scalar>(
+        a: &HipStorage<T>,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
+    ) -> HipStorage<T> {
         hip_avg_pool2d(a, h, w, kh, kw, sh, sw, ph, pw)
     }
 
-    fn adaptive_avg_pool2d<T: Scalar>(a: &HipStorage<T>, in_h: usize, in_w: usize, out_h: usize, out_w: usize) -> HipStorage<T> {
+    fn adaptive_avg_pool2d<T: Scalar>(
+        a: &HipStorage<T>,
+        in_h: usize,
+        in_w: usize,
+        out_h: usize,
+        out_w: usize,
+    ) -> HipStorage<T> {
         hip_adaptive_avg_pool2d(a, in_h, in_w, out_h, out_w)
     }
 
@@ -2436,42 +2604,104 @@ impl crate::backend::Backend for crate::backend::Hip {
     fn conv2d<T: Scalar>(
         input: &HipStorage<T>,
         weight: &HipStorage<T>,
-        n: usize, c_in: usize, h: usize, w: usize,
-        c_out: usize, kh: usize, kw: usize,
-        stride: (usize, usize), padding: (usize, usize), dilation: (usize, usize),
+        n: usize,
+        c_in: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
         groups: usize,
     ) -> HipStorage<T> {
-        hip_conv2d(input, weight, n, c_in, h, w, c_out, kh, kw, stride, padding, dilation, groups)
+        hip_conv2d(
+            input, weight, n, c_in, h, w, c_out, kh, kw, stride, padding, dilation, groups,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn conv1d<T: Scalar>(
-        input: &HipStorage<T>, weight: &HipStorage<T>,
-        n_batch: usize, c_in: usize, length: usize,
-        c_out: usize, kernel_size: usize,
-        stride: usize, padding: usize, dilation: usize, groups: usize,
+        input: &HipStorage<T>,
+        weight: &HipStorage<T>,
+        n_batch: usize,
+        c_in: usize,
+        length: usize,
+        c_out: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+        dilation: usize,
+        groups: usize,
     ) -> HipStorage<T> {
-        hip_conv1d(input, weight, n_batch, c_in, length, c_out, kernel_size, stride, padding, dilation, groups)
+        hip_conv1d(
+            input,
+            weight,
+            n_batch,
+            c_in,
+            length,
+            c_out,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            groups,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn conv3d<T: Scalar>(
-        input: &HipStorage<T>, weight: &HipStorage<T>,
-        n_batch: usize, c_in: usize, d: usize, h: usize, w: usize,
-        c_out: usize, kd: usize, kh: usize, kw: usize,
-        stride: (usize, usize, usize), padding: (usize, usize, usize),
-        dilation: (usize, usize, usize), groups: usize,
+        input: &HipStorage<T>,
+        weight: &HipStorage<T>,
+        n_batch: usize,
+        c_in: usize,
+        d: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kd: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        dilation: (usize, usize, usize),
+        groups: usize,
     ) -> HipStorage<T> {
-        hip_conv3d(input, weight, n_batch, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation, groups)
+        hip_conv3d(
+            input, weight, n_batch, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation,
+            groups,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn conv_transpose2d<T: Scalar>(
-        input: &HipStorage<T>, weight: &HipStorage<T>,
-        n_batch: usize, c_in: usize, h: usize, w: usize,
-        c_out: usize, kh: usize, kw: usize,
-        stride: (usize, usize), padding: (usize, usize), output_padding: (usize, usize),
+        input: &HipStorage<T>,
+        weight: &HipStorage<T>,
+        n_batch: usize,
+        c_in: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
     ) -> HipStorage<T> {
-        hip_conv_transpose2d(input, weight, n_batch, c_in, h, w, c_out, kh, kw, stride, padding, output_padding)
+        hip_conv_transpose2d(
+            input,
+            weight,
+            n_batch,
+            c_in,
+            h,
+            w,
+            c_out,
+            kh,
+            kw,
+            stride,
+            padding,
+            output_padding,
+        )
     }
 }

@@ -488,10 +488,14 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     #[allow(clippy::too_many_arguments)]
     fn max_pool2d<T: Scalar>(
         a: &Self::Storage<T>,
-        h: usize, w: usize,
-        kh: usize, kw: usize,
-        sh: usize, sw: usize,
-        ph: usize, pw: usize,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
     ) -> Self::Storage<T> {
         let nc = Self::nrows(a);
         let out_h = (h + 2 * ph - kh) / sh + 1;
@@ -507,7 +511,11 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
                     let iw = ow * sw + kwc;
                     if ih >= ph && ih < h + ph && iw >= pw && iw < w + pw {
                         let v = Self::get(a, n, (ih - ph) * w + (iw - pw));
-                        best = if found { crate::scalar::ReductionOps::reduction_max(best, v) } else { v };
+                        best = if found {
+                            crate::scalar::ReductionOps::reduction_max(best, v)
+                        } else {
+                            v
+                        };
                         found = true;
                     }
                 }
@@ -521,10 +529,14 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     #[allow(clippy::too_many_arguments)]
     fn max_pool2d_with_indices<T: Scalar>(
         a: &Self::Storage<T>,
-        h: usize, w: usize,
-        kh: usize, kw: usize,
-        sh: usize, sw: usize,
-        ph: usize, pw: usize,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
     ) -> (Self::Storage<T>, Self::Storage<T>) {
         let nc = Self::nrows(a);
         let out_h = (h + 2 * ph - kh) / sh + 1;
@@ -557,7 +569,10 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
                 }
             }
         }
-        (Self::from_vec(nc, out_h * out_w, vals), Self::from_vec(nc, out_h * out_w, idxs))
+        (
+            Self::from_vec(nc, out_h * out_w, vals),
+            Self::from_vec(nc, out_h * out_w, idxs),
+        )
     }
 
     /// Lp norm: `(sum |x_i|^p)^(1/p)`, or `max|x_i|` for p=∞.
@@ -594,10 +609,14 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     #[allow(clippy::too_many_arguments)]
     fn avg_pool2d<T: Scalar>(
         a: &Self::Storage<T>,
-        h: usize, w: usize,
-        kh: usize, kw: usize,
-        sh: usize, sw: usize,
-        ph: usize, pw: usize,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
     ) -> Self::Storage<T> {
         let nc = Self::nrows(a);
         let out_h = (h + 2 * ph - kh) / sh + 1;
@@ -617,15 +636,21 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
                     }
                 }
             }
-            if cnt == 0 { T::zero() } else { sum / T::from_f64(cnt as f64) }
+            if cnt == 0 {
+                T::zero()
+            } else {
+                sum / T::from_f64(cnt as f64)
+            }
         })
     }
 
     /// Adaptive average pooling: pools to fixed (out_h, out_w).
     fn adaptive_avg_pool2d<T: Scalar>(
         a: &Self::Storage<T>,
-        in_h: usize, in_w: usize,
-        out_h: usize, out_w: usize,
+        in_h: usize,
+        in_w: usize,
+        out_h: usize,
+        out_w: usize,
     ) -> Self::Storage<T> {
         let nc = Self::nrows(a);
         Self::from_fn(nc, out_h * out_w, |n, op| {
@@ -643,7 +668,11 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
                     cnt += 1;
                 }
             }
-            if cnt == 0 { T::zero() } else { sum / T::from_f64(cnt as f64) }
+            if cnt == 0 {
+                T::zero()
+            } else {
+                sum / T::from_f64(cnt as f64)
+            }
         })
     }
 
@@ -706,9 +735,15 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     fn conv1d<T: Scalar>(
         input: &Self::Storage<T>,
         weight: &Self::Storage<T>,
-        n_batch: usize, c_in: usize, length: usize,
-        c_out: usize, kernel_size: usize,
-        stride: usize, padding: usize, dilation: usize, groups: usize,
+        n_batch: usize,
+        c_in: usize,
+        length: usize,
+        c_out: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+        dilation: usize,
+        groups: usize,
     ) -> Self::Storage<T> {
         assert!(c_in % groups == 0 && c_out % groups == 0);
         let c_in_g = c_in / groups;
@@ -736,10 +771,19 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     fn conv3d<T: Scalar>(
         input: &Self::Storage<T>,
         weight: &Self::Storage<T>,
-        n_batch: usize, c_in: usize, d: usize, h: usize, w: usize,
-        c_out: usize, kd: usize, kh: usize, kw: usize,
-        stride: (usize, usize, usize), padding: (usize, usize, usize),
-        dilation: (usize, usize, usize), groups: usize,
+        n_batch: usize,
+        c_in: usize,
+        d: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kd: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        dilation: (usize, usize, usize),
+        groups: usize,
     ) -> Self::Storage<T> {
         assert!(c_in % groups == 0 && c_out % groups == 0);
         let c_in_g = c_in / groups;
@@ -763,15 +807,25 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
                             let id = od * stride.0 + kdr * dilation.0;
                             let ih = oh * stride.1 + khr * dilation.1;
                             let iw = ow * stride.2 + kwc * dilation.2;
-                            if id >= padding.0 && id < d + padding.0
-                                && ih >= padding.1 && ih < h + padding.1
-                                && iw >= padding.2 && iw < w + padding.2
+                            if id >= padding.0
+                                && id < d + padding.0
+                                && ih >= padding.1
+                                && ih < h + padding.1
+                                && iw >= padding.2
+                                && iw < w + padding.2
                             {
-                                let x_val = Self::get(input,
+                                let x_val = Self::get(
+                                    input,
                                     b * c_in + g * c_in_g + ic,
-                                    (id - padding.0) * h * w + (ih - padding.1) * w + (iw - padding.2),
+                                    (id - padding.0) * h * w
+                                        + (ih - padding.1) * w
+                                        + (iw - padding.2),
                                 );
-                                let w_val = Self::get(weight, oc, ic * kd * kh * kw + kdr * kh * kw + khr * kw + kwc);
+                                let w_val = Self::get(
+                                    weight,
+                                    oc,
+                                    ic * kd * kh * kw + kdr * kh * kw + khr * kw + kwc,
+                                );
                                 acc = acc + x_val * w_val;
                             }
                         }
@@ -786,9 +840,16 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     fn conv_transpose2d<T: Scalar>(
         input: &Self::Storage<T>,
         weight: &Self::Storage<T>,
-        n_batch: usize, c_in: usize, h: usize, w: usize,
-        c_out: usize, kh: usize, kw: usize,
-        stride: (usize, usize), padding: (usize, usize), output_padding: (usize, usize),
+        n_batch: usize,
+        c_in: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
     ) -> Self::Storage<T> {
         let out_h = (h - 1) * stride.0 - 2 * padding.0 + kh + output_padding.0;
         let out_w = (w - 1) * stride.1 - 2 * padding.1 + kw + output_padding.1;
@@ -803,7 +864,8 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
                     for kwc in 0..kw {
                         let ih_pad = oh + padding.0;
                         let iw_pad = ow + padding.1;
-                        if ih_pad >= khr && iw_pad >= kwc
+                        if ih_pad >= khr
+                            && iw_pad >= kwc
                             && (ih_pad - khr) % stride.0 == 0
                             && (iw_pad - kwc) % stride.1 == 0
                         {
@@ -923,21 +985,25 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
                 for j in 0..seq_k {
                     let mut dot = T::zero();
                     for d in 0..head_dim {
-                        dot = dot
-                            + Self::get(q, bh * seq_q + i, d)
-                                * Self::get(k, bh * seq_k + j, d);
+                        dot =
+                            dot + Self::get(q, bh * seq_q + i, d) * Self::get(k, bh * seq_k + j, d);
                     }
                     scores[j] = dot * scale;
                 }
                 // Softmax over scores.
-                let max_s = scores.iter().fold(T::from_f64(f64::NEG_INFINITY), |acc, &x| {
-                    if x.to_f64() > acc.to_f64() { x } else { acc }
-                });
-                let sum_exp = scores.iter().fold(T::zero(), |acc, &x| {
-                    acc + (x - max_s).math_exp()
-                });
+                let max_s = scores
+                    .iter()
+                    .fold(T::from_f64(f64::NEG_INFINITY), |acc, &x| {
+                        if x.to_f64() > acc.to_f64() { x } else { acc }
+                    });
+                let sum_exp = scores
+                    .iter()
+                    .fold(T::zero(), |acc, &x| acc + (x - max_s).math_exp());
                 let inv = T::one() / sum_exp;
-                let weights: Vec<T> = scores.iter().map(|&x| (x - max_s).math_exp() * inv).collect();
+                let weights: Vec<T> = scores
+                    .iter()
+                    .map(|&x| (x - max_s).math_exp() * inv)
+                    .collect();
                 // out[bh*seq_q+i][d] = sum_j weights[j] * V[bh*seq_k+j][d]
                 for d in 0..head_dim {
                     let val = weights.iter().enumerate().fold(T::zero(), |acc, (j, &w)| {

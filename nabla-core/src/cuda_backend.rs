@@ -1376,9 +1376,11 @@ fn cuda_im2col<T: Scalar>(
     let ctx = get_ctx();
     let name = format!("k_im2col_{}", type_suffix::<T>());
     let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
-    let col_buf =
-        CuBuffer::alloc_async(&ctx.stream, n * k_cols * out_spatial * core::mem::size_of::<T>())
-            .unwrap_or_else(|e| panic!("CUDA alloc im2col: {e}"));
+    let col_buf = CuBuffer::alloc_async(
+        &ctx.stream,
+        n * k_cols * out_spatial * core::mem::size_of::<T>(),
+    )
+    .unwrap_or_else(|e| panic!("CUDA alloc im2col: {e}"));
     let col_elem = (k_cols * out_spatial) as u32;
     let grid_x = (col_elem + BLOCK_SIZE - 1) / BLOCK_SIZE;
     let (c_in_u, h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, dh_u, dw_u, out_h_u, out_w_u) = (
@@ -1444,7 +1446,10 @@ pub(crate) fn cuda_conv2d<T: Scalar>(
     dilation: (usize, usize),
     groups: usize,
 ) -> CudaStorage<T> {
-    assert!(groups == 1, "GPU conv2d: groups > 1 not supported; use CPU backend");
+    assert!(
+        groups == 1,
+        "GPU conv2d: groups > 1 not supported; use CPU backend"
+    );
     let (sh, sw) = stride;
     let (ph, pw) = padding;
     let (dh, dw) = dilation;
@@ -1454,7 +1459,9 @@ pub(crate) fn cuda_conv2d<T: Scalar>(
     let k_cols = c_in * kh * kw;
 
     // Step 1: im2col → col: (N*k_cols, out_spatial)
-    let col = cuda_im2col(input, n, c_in, h, w, kh, kw, sh, sw, ph, pw, dh, dw, out_h, out_w);
+    let col = cuda_im2col(
+        input, n, c_in, h, w, kh, kw, sh, sw, ph, pw, dh, dw, out_h, out_w,
+    );
 
     // Step 2: strided batched GEMM with stride_A=0 to broadcast weight across batches.
     //   weight (C_out x k_cols) @ col[b] (k_cols x out_spatial) = out[b] (C_out x out_spatial)
@@ -1477,20 +1484,20 @@ pub(crate) fn cuda_conv2d<T: Scalar>(
                 ctx.blas.0,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-                out_spatial as i32,            // cuBLAS m = our n (out_spatial)
-                c_out as i32,                  // cuBLAS n = our m (C_out)
-                k_cols as i32,                 // k
+                out_spatial as i32, // cuBLAS m = our n (out_spatial)
+                c_out as i32,       // cuBLAS n = our m (C_out)
+                k_cols as i32,      // k
                 &alpha_f,
                 col.buf.ptr as *const f32,
                 out_spatial as i32,            // ldb = ncols of col
                 (k_cols * out_spatial) as i64, // stride_B per batch
                 weight.buf.ptr as *const f32,
-                k_cols as i32,                 // lda = ncols of weight
-                0_i64,                         // stride_A = 0: broadcast weight
+                k_cols as i32, // lda = ncols of weight
+                0_i64,         // stride_A = 0: broadcast weight
                 &beta_f,
                 out.buf.ptr as *mut f32,
-                out_spatial as i32,            // ldc = ncols of out
-                (c_out * out_spatial) as i64,  // stride_C per batch
+                out_spatial as i32,           // ldc = ncols of out
+                (c_out * out_spatial) as i64, // stride_C per batch
                 n as i32,
             )
             .unwrap_or_else(|e| panic!("cuBLAS sgemm_strided_batched conv2d: {e}"));
@@ -1530,9 +1537,15 @@ pub(crate) fn cuda_conv2d<T: Scalar>(
 fn cuda_conv_transpose2d<T: Scalar>(
     input: &CudaStorage<T>,
     weight: &CudaStorage<T>,
-    n_batch: usize, c_in: usize, h: usize, w: usize,
-    c_out: usize, kh: usize, kw: usize,
-    stride: (usize, usize), padding: (usize, usize),
+    n_batch: usize,
+    c_in: usize,
+    h: usize,
+    w: usize,
+    c_out: usize,
+    kh: usize,
+    kw: usize,
+    stride: (usize, usize),
+    padding: (usize, usize),
     output_padding: (usize, usize),
 ) -> CudaStorage<T> {
     let (sh, sw) = stride;
@@ -1547,10 +1560,19 @@ fn cuda_conv_transpose2d<T: Scalar>(
     let out_buf = CuBuffer::alloc_async(&ctx.stream, total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc conv_transpose2d: {e}"));
     let (n_u, c_in_u, h_u, w_u, c_out_u, kh_u, kw_u, out_h_u, out_w_u, sh_u, sw_u, ph_u, pw_u) = (
-        n_batch as i32, c_in as i32, h as i32, w as i32,
-        c_out as i32, kh as i32, kw as i32,
-        out_h as i32, out_w as i32,
-        sh as i32, sw as i32, ph as i32, pw as i32,
+        n_batch as i32,
+        c_in as i32,
+        h as i32,
+        w as i32,
+        c_out as i32,
+        kh as i32,
+        kw as i32,
+        out_h as i32,
+        out_w as i32,
+        sh as i32,
+        sw as i32,
+        ph as i32,
+        pw as i32,
     );
     // SAFETY: all pointers are valid GPU buffers; scalar args are stack values.
     unsafe {
@@ -1558,7 +1580,8 @@ fn cuda_conv_transpose2d<T: Scalar>(
             func,
             ((total as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE, 1, 1),
             (BLOCK_SIZE, 1, 1),
-            0, ctx.stream.cu_stream(),
+            0,
+            ctx.stream.cu_stream(),
             &mut [
                 &input.buf.ptr as *const CUdeviceptr as *mut c_void,
                 &weight.buf.ptr as *const CUdeviceptr as *mut c_void,
@@ -1586,8 +1609,14 @@ fn cuda_conv_transpose2d<T: Scalar>(
 #[allow(clippy::too_many_arguments)]
 fn cuda_im1col<T: Scalar>(
     input: &CudaStorage<T>,
-    n: usize, c_in: usize, l: usize,
-    kl: usize, sl: usize, pl: usize, dl: usize, out_l: usize,
+    n: usize,
+    c_in: usize,
+    l: usize,
+    kl: usize,
+    sl: usize,
+    pl: usize,
+    dl: usize,
+    out_l: usize,
 ) -> CudaStorage<T> {
     let k_cols = c_in * kl;
     let ctx = get_ctx();
@@ -1599,7 +1628,13 @@ fn cuda_im1col<T: Scalar>(
     let col_elem = (k_cols * out_l) as u32;
     let grid_x = (col_elem + BLOCK_SIZE - 1) / BLOCK_SIZE;
     let (c_in_u, l_u, kl_u, sl_u, pl_u, dl_u, out_l_u) = (
-        c_in as u32, l as u32, kl as u32, sl as u32, pl as u32, dl as u32, out_l as u32,
+        c_in as u32,
+        l as u32,
+        kl as u32,
+        sl as u32,
+        pl as u32,
+        dl as u32,
+        out_l as u32,
     );
     // SAFETY: all pointers are valid GPU buffers; scalar args are stack values.
     unsafe {
@@ -1629,13 +1664,26 @@ fn cuda_im1col<T: Scalar>(
 #[allow(clippy::too_many_arguments)]
 fn cuda_im3col<T: Scalar>(
     input: &CudaStorage<T>,
-    n: usize, c_in: usize,
-    d: usize, h: usize, w: usize,
-    kd: usize, kh: usize, kw: usize,
-    sd: usize, sh: usize, sw: usize,
-    pd: usize, ph: usize, pw: usize,
-    dd: usize, dh: usize, dw: usize,
-    out_d: usize, out_h: usize, out_w: usize,
+    n: usize,
+    c_in: usize,
+    d: usize,
+    h: usize,
+    w: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
+    sd: usize,
+    sh: usize,
+    sw: usize,
+    pd: usize,
+    ph: usize,
+    pw: usize,
+    dd: usize,
+    dh: usize,
+    dw: usize,
+    out_d: usize,
+    out_h: usize,
+    out_w: usize,
 ) -> CudaStorage<T> {
     let k_vol = c_in * kd * kh * kw;
     let out_vol = out_d * out_h * out_w;
@@ -1695,22 +1743,28 @@ fn cuda_im3col<T: Scalar>(
 pub(crate) fn cuda_conv1d<T: Scalar>(
     input: &CudaStorage<T>,
     weight: &CudaStorage<T>,
-    n: usize, c_in: usize, l: usize,
-    c_out: usize, kl: usize,
-    stride: usize, padding: usize, dilation: usize, groups: usize,
+    n: usize,
+    c_in: usize,
+    l: usize,
+    c_out: usize,
+    kl: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    groups: usize,
 ) -> CudaStorage<T> {
-    assert!(groups == 1, "GPU conv1d: groups > 1 not supported; use CPU backend");
+    assert!(
+        groups == 1,
+        "GPU conv1d: groups > 1 not supported; use CPU backend"
+    );
     let out_l = (l + 2 * padding - dilation * (kl - 1) - 1) / stride + 1;
     let k_cols = c_in * kl;
 
     let col = cuda_im1col(input, n, c_in, l, kl, stride, padding, dilation, out_l);
 
     let ctx = get_ctx();
-    let out_buf = CuBuffer::alloc_async(
-        &ctx.stream,
-        n * c_out * out_l * core::mem::size_of::<T>(),
-    )
-    .unwrap_or_else(|e| panic!("CUDA alloc conv1d out: {e}"));
+    let out_buf = CuBuffer::alloc_async(&ctx.stream, n * c_out * out_l * core::mem::size_of::<T>())
+        .unwrap_or_else(|e| panic!("CUDA alloc conv1d out: {e}"));
     let mut out = CudaStorage::new(n * c_out, out_l, out_buf);
     // SAFETY: pointers are valid GPU buffers; alpha/beta are stack scalars copied by cuBLAS.
     unsafe {
@@ -1776,15 +1830,24 @@ pub(crate) fn cuda_conv1d<T: Scalar>(
 pub(crate) fn cuda_conv3d<T: Scalar>(
     input: &CudaStorage<T>,
     weight: &CudaStorage<T>,
-    n: usize, c_in: usize,
-    d: usize, h: usize, w: usize,
-    c_out: usize, kd: usize, kh: usize, kw: usize,
+    n: usize,
+    c_in: usize,
+    d: usize,
+    h: usize,
+    w: usize,
+    c_out: usize,
+    kd: usize,
+    kh: usize,
+    kw: usize,
     stride: (usize, usize, usize),
     padding: (usize, usize, usize),
     dilation: (usize, usize, usize),
     groups: usize,
 ) -> CudaStorage<T> {
-    assert!(groups == 1, "GPU conv3d: groups > 1 not supported; use CPU backend");
+    assert!(
+        groups == 1,
+        "GPU conv3d: groups > 1 not supported; use CPU backend"
+    );
     let (sd, sh, sw) = stride;
     let (pd, ph, pw) = padding;
     let (dd, dh, dw) = dilation;
@@ -1794,14 +1857,15 @@ pub(crate) fn cuda_conv3d<T: Scalar>(
     let out_vol = out_d * out_h * out_w;
     let k_vol = c_in * kd * kh * kw;
 
-    let col = cuda_im3col(input, n, c_in, d, h, w, kd, kh, kw, sd, sh, sw, pd, ph, pw, dd, dh, dw, out_d, out_h, out_w);
+    let col = cuda_im3col(
+        input, n, c_in, d, h, w, kd, kh, kw, sd, sh, sw, pd, ph, pw, dd, dh, dw, out_d, out_h,
+        out_w,
+    );
 
     let ctx = get_ctx();
-    let out_buf = CuBuffer::alloc_async(
-        &ctx.stream,
-        n * c_out * out_vol * core::mem::size_of::<T>(),
-    )
-    .unwrap_or_else(|e| panic!("CUDA alloc conv3d out: {e}"));
+    let out_buf =
+        CuBuffer::alloc_async(&ctx.stream, n * c_out * out_vol * core::mem::size_of::<T>())
+            .unwrap_or_else(|e| panic!("CUDA alloc conv3d out: {e}"));
     let mut out = CudaStorage::new(n * c_out, out_vol, out_buf);
     // SAFETY: pointers are valid GPU buffers; alpha/beta are stack scalars copied by cuBLAS.
     unsafe {
@@ -1978,10 +2042,14 @@ pub(crate) fn cuda_argmin_all<T: Scalar>(a: &CudaStorage<T>) -> (usize, usize) {
 
 fn cuda_max_pool2d<T: Scalar>(
     a: &CudaStorage<T>,
-    h: usize, w: usize,
-    kh: usize, kw: usize,
-    sh: usize, sw: usize,
-    ph: usize, pw: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    sh: usize,
+    sw: usize,
+    ph: usize,
+    pw: usize,
 ) -> CudaStorage<T> {
     let ctx = get_ctx();
     let nc = a.nrows;
@@ -1993,23 +2061,38 @@ fn cuda_max_pool2d<T: Scalar>(
     let out_buf = CuBuffer::alloc_async(&ctx.stream, total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (
-        h as u32, w as u32, kh as u32, kw as u32, sh as u32, sw as u32,
-        ph as u32, pw as u32, out_h as u32, out_w as u32, nc as u32,
+        h as u32,
+        w as u32,
+        kh as u32,
+        kw as u32,
+        sh as u32,
+        sw as u32,
+        ph as u32,
+        pw as u32,
+        out_h as u32,
+        out_w as u32,
+        nc as u32,
     );
     unsafe {
         result::launch_kernel(
             func,
             ((total as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE, 1, 1),
             (BLOCK_SIZE, 1, 1),
-            0, ctx.stream.cu_stream(),
+            0,
+            ctx.stream.cu_stream(),
             &mut [
                 &a.buf.ptr as *const CUdeviceptr as *mut c_void,
                 &out_buf.ptr as *const CUdeviceptr as *mut c_void,
-                &h_u as *const u32 as *mut c_void, &w_u as *const u32 as *mut c_void,
-                &kh_u as *const u32 as *mut c_void, &kw_u as *const u32 as *mut c_void,
-                &sh_u as *const u32 as *mut c_void, &sw_u as *const u32 as *mut c_void,
-                &ph_u as *const u32 as *mut c_void, &pw_u as *const u32 as *mut c_void,
-                &out_h_u as *const u32 as *mut c_void, &out_w_u as *const u32 as *mut c_void,
+                &h_u as *const u32 as *mut c_void,
+                &w_u as *const u32 as *mut c_void,
+                &kh_u as *const u32 as *mut c_void,
+                &kw_u as *const u32 as *mut c_void,
+                &sh_u as *const u32 as *mut c_void,
+                &sw_u as *const u32 as *mut c_void,
+                &ph_u as *const u32 as *mut c_void,
+                &pw_u as *const u32 as *mut c_void,
+                &out_h_u as *const u32 as *mut c_void,
+                &out_w_u as *const u32 as *mut c_void,
                 &nc_u as *const u32 as *mut c_void,
             ],
         )
@@ -2020,10 +2103,14 @@ fn cuda_max_pool2d<T: Scalar>(
 
 fn cuda_avg_pool2d<T: Scalar>(
     a: &CudaStorage<T>,
-    h: usize, w: usize,
-    kh: usize, kw: usize,
-    sh: usize, sw: usize,
-    ph: usize, pw: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    sh: usize,
+    sw: usize,
+    ph: usize,
+    pw: usize,
 ) -> CudaStorage<T> {
     let ctx = get_ctx();
     let nc = a.nrows;
@@ -2035,23 +2122,38 @@ fn cuda_avg_pool2d<T: Scalar>(
     let out_buf = CuBuffer::alloc_async(&ctx.stream, total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (
-        h as u32, w as u32, kh as u32, kw as u32, sh as u32, sw as u32,
-        ph as u32, pw as u32, out_h as u32, out_w as u32, nc as u32,
+        h as u32,
+        w as u32,
+        kh as u32,
+        kw as u32,
+        sh as u32,
+        sw as u32,
+        ph as u32,
+        pw as u32,
+        out_h as u32,
+        out_w as u32,
+        nc as u32,
     );
     unsafe {
         result::launch_kernel(
             func,
             ((total as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE, 1, 1),
             (BLOCK_SIZE, 1, 1),
-            0, ctx.stream.cu_stream(),
+            0,
+            ctx.stream.cu_stream(),
             &mut [
                 &a.buf.ptr as *const CUdeviceptr as *mut c_void,
                 &out_buf.ptr as *const CUdeviceptr as *mut c_void,
-                &h_u as *const u32 as *mut c_void, &w_u as *const u32 as *mut c_void,
-                &kh_u as *const u32 as *mut c_void, &kw_u as *const u32 as *mut c_void,
-                &sh_u as *const u32 as *mut c_void, &sw_u as *const u32 as *mut c_void,
-                &ph_u as *const u32 as *mut c_void, &pw_u as *const u32 as *mut c_void,
-                &out_h_u as *const u32 as *mut c_void, &out_w_u as *const u32 as *mut c_void,
+                &h_u as *const u32 as *mut c_void,
+                &w_u as *const u32 as *mut c_void,
+                &kh_u as *const u32 as *mut c_void,
+                &kw_u as *const u32 as *mut c_void,
+                &sh_u as *const u32 as *mut c_void,
+                &sw_u as *const u32 as *mut c_void,
+                &ph_u as *const u32 as *mut c_void,
+                &pw_u as *const u32 as *mut c_void,
+                &out_h_u as *const u32 as *mut c_void,
+                &out_w_u as *const u32 as *mut c_void,
                 &nc_u as *const u32 as *mut c_void,
             ],
         )
@@ -2062,8 +2164,10 @@ fn cuda_avg_pool2d<T: Scalar>(
 
 fn cuda_adaptive_avg_pool2d<T: Scalar>(
     a: &CudaStorage<T>,
-    in_h: usize, in_w: usize,
-    out_h: usize, out_w: usize,
+    in_h: usize,
+    in_w: usize,
+    out_h: usize,
+    out_w: usize,
 ) -> CudaStorage<T> {
     let ctx = get_ctx();
     let nc = a.nrows;
@@ -2073,19 +2177,26 @@ fn cuda_adaptive_avg_pool2d<T: Scalar>(
     let out_buf = CuBuffer::alloc_async(&ctx.stream, total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc: {e}"));
     let (in_h_u, in_w_u, out_h_u, out_w_u, nc_u) = (
-        in_h as u32, in_w as u32, out_h as u32, out_w as u32, nc as u32,
+        in_h as u32,
+        in_w as u32,
+        out_h as u32,
+        out_w as u32,
+        nc as u32,
     );
     unsafe {
         result::launch_kernel(
             func,
             ((total as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE, 1, 1),
             (BLOCK_SIZE, 1, 1),
-            0, ctx.stream.cu_stream(),
+            0,
+            ctx.stream.cu_stream(),
             &mut [
                 &a.buf.ptr as *const CUdeviceptr as *mut c_void,
                 &out_buf.ptr as *const CUdeviceptr as *mut c_void,
-                &in_h_u as *const u32 as *mut c_void, &in_w_u as *const u32 as *mut c_void,
-                &out_h_u as *const u32 as *mut c_void, &out_w_u as *const u32 as *mut c_void,
+                &in_h_u as *const u32 as *mut c_void,
+                &in_w_u as *const u32 as *mut c_void,
+                &out_h_u as *const u32 as *mut c_void,
+                &out_w_u as *const u32 as *mut c_void,
                 &nc_u as *const u32 as *mut c_void,
             ],
         )
@@ -2649,8 +2760,9 @@ pub(crate) fn cuda_prod_all<T: Scalar>(a: &CudaStorage<T>) -> T {
     let func = get_kernel(ctx, &func_name).unwrap_or_else(|e| panic!("{e}"));
     let grid1 = ((n as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE;
     // Phase 1: reduce input to partial products
-    let partial_buf = CuBuffer::alloc_async(&ctx.stream, grid1 as usize * core::mem::size_of::<T>())
-        .unwrap_or_else(|e| panic!("CUDA alloc partial: {e}"));
+    let partial_buf =
+        CuBuffer::alloc_async(&ctx.stream, grid1 as usize * core::mem::size_of::<T>())
+            .unwrap_or_else(|e| panic!("CUDA alloc partial: {e}"));
     let n_u32 = n as u32;
     unsafe {
         result::launch_kernel(
@@ -2697,10 +2809,14 @@ pub(crate) fn cuda_prod_all<T: Scalar>(a: &CudaStorage<T>) -> T {
 /// Max pooling with argmax index output. Returns (values, flat_indices as T).
 fn cuda_max_pool2d_with_idx<T: Scalar>(
     a: &CudaStorage<T>,
-    h: usize, w: usize,
-    kh: usize, kw: usize,
-    sh: usize, sw: usize,
-    ph: usize, pw: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    sh: usize,
+    sw: usize,
+    ph: usize,
+    pw: usize,
 ) -> (CudaStorage<T>, CudaStorage<T>) {
     let ctx = get_ctx();
     let nc = a.nrows;
@@ -2714,8 +2830,17 @@ fn cuda_max_pool2d_with_idx<T: Scalar>(
     let idx_buf = CuBuffer::alloc_async(&ctx.stream, total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("CUDA alloc idx: {e}"));
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (
-        h as u32, w as u32, kh as u32, kw as u32, sh as u32, sw as u32,
-        ph as u32, pw as u32, out_h as u32, out_w as u32, nc as u32,
+        h as u32,
+        w as u32,
+        kh as u32,
+        kw as u32,
+        sh as u32,
+        sw as u32,
+        ph as u32,
+        pw as u32,
+        out_h as u32,
+        out_w as u32,
+        nc as u32,
     );
     unsafe {
         result::launch_kernel(
@@ -2743,7 +2868,10 @@ fn cuda_max_pool2d_with_idx<T: Scalar>(
         )
         .unwrap_or_else(|e| panic!("CUDA launch {name}: {e}"));
     }
-    (CudaStorage::new(nc, out_h * out_w, out_buf), CudaStorage::new(nc, out_h * out_w, idx_buf))
+    (
+        CudaStorage::new(nc, out_h * out_w, out_buf),
+        CudaStorage::new(nc, out_h * out_w, idx_buf),
+    )
 }
 //
 // Wraps cudarc's CudaGraph API to capture a sequence of kernel launches into
@@ -3259,7 +3387,16 @@ impl crate::backend::Backend for crate::backend::Cuda {
         momentum: T,
         training: bool,
     ) -> CudaStorage<T> {
-        cuda_batch_norm_train(a, gamma, beta, running_mean, running_var, eps, momentum, training)
+        cuda_batch_norm_train(
+            a,
+            gamma,
+            beta,
+            running_mean,
+            running_var,
+            eps,
+            momentum,
+            training,
+        )
     }
 
     fn cross_entropy_fused<T: Scalar>(
@@ -3311,21 +3448,57 @@ impl crate::backend::Backend for crate::backend::Cuda {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn max_pool2d<T: Scalar>(a: &CudaStorage<T>, h: usize, w: usize, kh: usize, kw: usize, sh: usize, sw: usize, ph: usize, pw: usize) -> CudaStorage<T> {
+    fn max_pool2d<T: Scalar>(
+        a: &CudaStorage<T>,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
+    ) -> CudaStorage<T> {
         cuda_max_pool2d(a, h, w, kh, kw, sh, sw, ph, pw)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn max_pool2d_with_indices<T: Scalar>(a: &CudaStorage<T>, h: usize, w: usize, kh: usize, kw: usize, sh: usize, sw: usize, ph: usize, pw: usize) -> (CudaStorage<T>, CudaStorage<T>) {
+    fn max_pool2d_with_indices<T: Scalar>(
+        a: &CudaStorage<T>,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
+    ) -> (CudaStorage<T>, CudaStorage<T>) {
         cuda_max_pool2d_with_idx(a, h, w, kh, kw, sh, sw, ph, pw)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn avg_pool2d<T: Scalar>(a: &CudaStorage<T>, h: usize, w: usize, kh: usize, kw: usize, sh: usize, sw: usize, ph: usize, pw: usize) -> CudaStorage<T> {
+    fn avg_pool2d<T: Scalar>(
+        a: &CudaStorage<T>,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
+    ) -> CudaStorage<T> {
         cuda_avg_pool2d(a, h, w, kh, kw, sh, sw, ph, pw)
     }
 
-    fn adaptive_avg_pool2d<T: Scalar>(a: &CudaStorage<T>, in_h: usize, in_w: usize, out_h: usize, out_w: usize) -> CudaStorage<T> {
+    fn adaptive_avg_pool2d<T: Scalar>(
+        a: &CudaStorage<T>,
+        in_h: usize,
+        in_w: usize,
+        out_h: usize,
+        out_w: usize,
+    ) -> CudaStorage<T> {
         cuda_adaptive_avg_pool2d(a, in_h, in_w, out_h, out_w)
     }
 
@@ -3333,43 +3506,105 @@ impl crate::backend::Backend for crate::backend::Cuda {
     fn conv2d<T: Scalar>(
         input: &CudaStorage<T>,
         weight: &CudaStorage<T>,
-        n: usize, c_in: usize, h: usize, w: usize,
-        c_out: usize, kh: usize, kw: usize,
-        stride: (usize, usize), padding: (usize, usize), dilation: (usize, usize),
+        n: usize,
+        c_in: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
         groups: usize,
     ) -> CudaStorage<T> {
-        cuda_conv2d(input, weight, n, c_in, h, w, c_out, kh, kw, stride, padding, dilation, groups)
+        cuda_conv2d(
+            input, weight, n, c_in, h, w, c_out, kh, kw, stride, padding, dilation, groups,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn conv1d<T: Scalar>(
-        input: &CudaStorage<T>, weight: &CudaStorage<T>,
-        n_batch: usize, c_in: usize, length: usize,
-        c_out: usize, kernel_size: usize,
-        stride: usize, padding: usize, dilation: usize, groups: usize,
+        input: &CudaStorage<T>,
+        weight: &CudaStorage<T>,
+        n_batch: usize,
+        c_in: usize,
+        length: usize,
+        c_out: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+        dilation: usize,
+        groups: usize,
     ) -> CudaStorage<T> {
-        cuda_conv1d(input, weight, n_batch, c_in, length, c_out, kernel_size, stride, padding, dilation, groups)
+        cuda_conv1d(
+            input,
+            weight,
+            n_batch,
+            c_in,
+            length,
+            c_out,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            groups,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn conv3d<T: Scalar>(
-        input: &CudaStorage<T>, weight: &CudaStorage<T>,
-        n_batch: usize, c_in: usize, d: usize, h: usize, w: usize,
-        c_out: usize, kd: usize, kh: usize, kw: usize,
-        stride: (usize, usize, usize), padding: (usize, usize, usize),
-        dilation: (usize, usize, usize), groups: usize,
+        input: &CudaStorage<T>,
+        weight: &CudaStorage<T>,
+        n_batch: usize,
+        c_in: usize,
+        d: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kd: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        dilation: (usize, usize, usize),
+        groups: usize,
     ) -> CudaStorage<T> {
-        cuda_conv3d(input, weight, n_batch, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation, groups)
+        cuda_conv3d(
+            input, weight, n_batch, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation,
+            groups,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn conv_transpose2d<T: Scalar>(
-        input: &CudaStorage<T>, weight: &CudaStorage<T>,
-        n_batch: usize, c_in: usize, h: usize, w: usize,
-        c_out: usize, kh: usize, kw: usize,
-        stride: (usize, usize), padding: (usize, usize), output_padding: (usize, usize),
+        input: &CudaStorage<T>,
+        weight: &CudaStorage<T>,
+        n_batch: usize,
+        c_in: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
     ) -> CudaStorage<T> {
-        cuda_conv_transpose2d(input, weight, n_batch, c_in, h, w, c_out, kh, kw, stride, padding, output_padding)
+        cuda_conv_transpose2d(
+            input,
+            weight,
+            n_batch,
+            c_in,
+            h,
+            w,
+            c_out,
+            kh,
+            kw,
+            stride,
+            padding,
+            output_padding,
+        )
     }
 
     #[inline]

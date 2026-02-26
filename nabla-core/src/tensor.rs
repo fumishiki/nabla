@@ -2098,8 +2098,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let out = Self::from_storage(B::conv2d(
             &self.storage,
             &weight.storage,
-            n_batch, c_in, h, w, c_out, kh, kw,
-            stride, padding, dilation, groups,
+            n_batch,
+            c_in,
+            h,
+            w,
+            c_out,
+            kh,
+            kw,
+            stride,
+            padding,
+            dilation,
+            groups,
         ));
         if let Some(bi) = bias {
             let out_h = (h + 2 * padding.0 - dilation.0 * (kh - 1) - 1) / stride.0 + 1;
@@ -2135,8 +2144,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ) -> Self {
         assert!(c_in % groups == 0 && c_out % groups == 0);
         let out = Self::from_storage(B::conv1d(
-            &self.storage, &weight.storage,
-            n_batch, c_in, length, c_out, kernel_size, stride, padding, dilation, groups,
+            &self.storage,
+            &weight.storage,
+            n_batch,
+            c_in,
+            length,
+            c_out,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            groups,
         ));
         if let Some(bi) = bias {
             let out_len = (length + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1;
@@ -2170,8 +2188,18 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let out_h = (h - 1) * stride.0 - 2 * padding.0 + kh + output_padding.0;
         let out_w = (w - 1) * stride.1 - 2 * padding.1 + kw + output_padding.1;
         let out = Self::from_storage(B::conv_transpose2d(
-            &self.storage, &weight.storage,
-            n_batch, c_in, h, w, c_out, kh, kw, stride, padding, output_padding,
+            &self.storage,
+            &weight.storage,
+            n_batch,
+            c_in,
+            h,
+            w,
+            c_out,
+            kh,
+            kw,
+            stride,
+            padding,
+            output_padding,
         ));
         if let Some(bi) = bias {
             let bias_exp = B::from_fn(n_batch * c_out, out_h * out_w, |row, _col| {
@@ -2200,9 +2228,14 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ) -> Self {
         Self::from_storage(B::max_pool2d(
             &self.storage,
-            h, w, kh, kw,
-            stride.0, stride.1,
-            padding.0, padding.1,
+            h,
+            w,
+            kh,
+            kw,
+            stride.0,
+            stride.1,
+            padding.0,
+            padding.1,
         ))
     }
 
@@ -2223,9 +2256,14 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ) -> (Self, Self) {
         let (v, idx) = B::max_pool2d_with_indices(
             &self.storage,
-            h, w, kh, kw,
-            stride.0, stride.1,
-            padding.0, padding.1,
+            h,
+            w,
+            kh,
+            kw,
+            stride.0,
+            stride.1,
+            padding.0,
+            padding.1,
         );
         (Self::from_storage(v), Self::from_storage(idx))
     }
@@ -2243,9 +2281,14 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ) -> Self {
         Self::from_storage(B::avg_pool2d(
             &self.storage,
-            h, w, kh, kw,
-            stride.0, stride.1,
-            padding.0, padding.1,
+            h,
+            w,
+            kh,
+            kw,
+            stride.0,
+            stride.1,
+            padding.0,
+            padding.1,
         ))
     }
 
@@ -2412,7 +2455,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             batch_heads * seq_q,
             "nabla: sdpa Q nrows must equal batch_heads*seq_q"
         );
-        assert_eq!(q.ncols(), head_dim, "nabla: sdpa Q ncols must equal head_dim");
+        assert_eq!(
+            q.ncols(),
+            head_dim,
+            "nabla: sdpa Q ncols must equal head_dim"
+        );
         Self::from_storage(B::sdpa(
             &q.storage,
             &k.storage,
@@ -2485,8 +2532,21 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let out_w = (w + 2 * padding.2 - dilation.2 * (kw - 1) - 1) / stride.2 + 1;
         let out_spatial = out_d * out_h * out_w;
         let out = Self::from_storage(B::conv3d(
-            &self.storage, &weight.storage,
-            n_batch, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation, groups,
+            &self.storage,
+            &weight.storage,
+            n_batch,
+            c_in,
+            d,
+            h,
+            w,
+            c_out,
+            kd,
+            kh,
+            kw,
+            stride,
+            padding,
+            dilation,
+            groups,
         ));
         if let Some(bi) = bias {
             let bias_exp = B::from_fn(n_batch * c_out, out_spatial, |row, _col| {
