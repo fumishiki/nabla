@@ -1967,8 +1967,11 @@ unsafe fn launch_reduce(
 /// Read back a scalar from pinned host memory after stream sync.
 #[inline]
 unsafe fn reduce_readback<T: Scalar>(ctx: &CudaCtx) -> T {
-    cudarc::driver::sys::cuStreamSynchronize(ctx.stream.cu_stream());
-    core::ptr::read_volatile(ctx.reduce_host_ptr.0 as *const T)
+    // SAFETY: caller guarantees ctx.stream and reduce_host_ptr are valid.
+    unsafe {
+        cudarc::driver::sys::cuStreamSynchronize(ctx.stream.cu_stream());
+        core::ptr::read_volatile(ctx.reduce_host_ptr.0 as *const T)
+    }
 }
 
 /// Synchronize the CUDA compute stream, blocking until all queued GPU ops complete.
