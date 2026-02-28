@@ -53,6 +53,11 @@ pub mod cuda_backend;
 #[cfg(feature = "cuda")]
 pub use cuda_backend::{CuBuffer, NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached, cuda_synchronize};
 
+// ConditionalGraph/ConditionalKind require CUDA 12.4+; they compile only when
+// cudarc emits the cuda-12040+ cfg feature from its build.rs.
+#[cfg(feature = "cuda")]
+pub use cuda_backend::{ConditionalGraph, ConditionalKind};
+
 #[cfg(any(feature = "cuda", feature = "hip"))]
 pub use gpu_common::RtcStorage;
 

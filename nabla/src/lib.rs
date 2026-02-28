@@ -43,7 +43,18 @@ pub use nabla_core::wgsl;
 
 /// CUDA Graph capture/replay for eliminating kernel launch overhead.
 #[cfg(feature = "cuda")]
-pub use nabla_core::{NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached, cuda_synchronize};
+pub use nabla_core::{
+    KernelNodeState, NablaCudaGraph, PyGraph, PyGraphTrainingGraph, TrainingGraph,
+    cuda_copy_from_host, cuda_graph_capture, cuda_graph_capture_cached, cuda_synchronize,
+};
+
+/// CUDA Conditional Nodes: IF/WHILE/SWITCH control flow inside graphs (requires CUDA 12.4+).
+#[cfg(feature = "cuda")]
+pub use nabla_core::{ConditionalGraph, ConditionalKind};
+
+/// cublasLt epilogue-fused GEMM (Relu/Gelu/Bias variants, f32 only).
+#[cfg(feature = "cuda")]
+pub use nabla_core::{CudaError, CudaResult, Epilogue, cuda_matmul_epilogue};
 
 /// Dense linear algebra factorizations and solvers.
 #[cfg(feature = "cpu")]
@@ -514,5 +525,13 @@ pub mod prelude {
     pub use nabla_core::backend::Gpu;
 
     #[cfg(feature = "cuda")]
-    pub use nabla_core::{NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached, cuda_synchronize};
+    pub use nabla_core::{
+        CudaError, CudaResult, Epilogue, KernelNodeState, NablaCudaGraph,
+        PyGraph, PyGraphTrainingGraph, TrainingGraph,
+        cuda_copy_from_host, cuda_graph_capture, cuda_graph_capture_cached,
+        cuda_matmul_epilogue, cuda_synchronize,
+    };
+
+    #[cfg(feature = "cuda")]
+    pub use nabla_core::{ConditionalGraph, ConditionalKind};
 }

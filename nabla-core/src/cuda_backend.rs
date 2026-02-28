@@ -1181,6 +1181,220 @@ pub(crate) fn cuda_matmul<T: Scalar>(
     cublas_gemm(ctx, out, a, b);
 }
 
+// GPU expressions for epilogue activations used by cuda_matmul_epilogue_fallback.
+// Type-generic: `in0` is the typed pointer resolved by cuda_fuse_launch.
+// The expressions are valid for both `float` and `double` CUDA C.
+const EPILOGUE_RELU_EXPR: &str = "(in0[i] + fabs(in0[i])) * 0.5";
+const EPILOGUE_GELU_EXPR: &str =
+    "0.5 * in0[i] * (1.0 + tanh(0.7978845608 * (in0[i] + 0.044715 * in0[i] * in0[i] * in0[i])))";
+// Stable kernel cache keys: sha256-like hex prefix of the expression.
+const EPILOGUE_RELU_HASH: &str = "nabla_epilogue_relu_v1";
+const EPILOGUE_GELU_HASH: &str = "nabla_epilogue_gelu_v1";
+
+// 2-pass fallback for matmul_epilogue: plain GEMM then GPU activation kernel.
+// Used when cublasLt is unavailable (non-f32, unsupported epilogue, or runtime error).
+pub(crate) fn cuda_matmul_epilogue_fallback<T: Scalar>(
+    a: &CudaStorage<T>,
+    b: &CudaStorage<T>,
+    epilogue_id: u8,
+) -> CudaStorage<T> {
+    let mut gemm_out = cuda_zeros::<T>(a.nrows, b.ncols);
+    cuda_matmul(&mut gemm_out, a, b);
+    let m = gemm_out.nrows;
+    let n = gemm_out.ncols;
+    // Apply the activation as a single JIT-compiled GPU kernel (avoids D2H/H2D).
+    let in_ptr = &raw const gemm_out as *const CudaStorage<T> as *const u8;
+    match epilogue_id {
+        0 => cuda_fuse_launch::<T>(
+            &[in_ptr],
+            m,
+            n,
+            EPILOGUE_RELU_EXPR,
+            EPILOGUE_RELU_HASH,
+            1,
+            4,
+        ),
+        1 => cuda_fuse_launch::<T>(
+            &[in_ptr],
+            m,
+            n,
+            EPILOGUE_GELU_EXPR,
+            EPILOGUE_GELU_HASH,
+            1,
+            8,
+        ),
+        // Unknown epilogue: return plain matmul result.
+        _ => gemm_out,
+    }
+}
+
+// ── cublasLt epilogue-fused GEMM ─────────────────────────────────────────────
+//
+// Row-major C = A * B maps to col-major C^T = B^T * A^T. cuBLASLt uses col-major
+// layout descriptors, so we pass (B, A) as (A, B) arguments and swap (m, n).
+//
+// For epilogues that require a bias vector, `bias` must be a device pointer to
+// a contiguous row of `n` values (length of output columns in the logical sense,
+// which is `m` after the col-major swap).
+//
+// Only f32 supports TF32 tensor cores and bias epilogues; f64 falls back to
+// plain cublas_gemm (epilogue is silently ignored for non-f32 types).
+fn cublas_lt_gemm_f32(
+    ctx: &CudaCtx,
+    out: &mut CudaStorage<f32>,
+    a: &CudaStorage<f32>,
+    b: &CudaStorage<f32>,
+    epilogue: Epilogue,
+    bias: Option<CUdeviceptr>,
+) -> Result<(), CudaError> {
+    use cublaslt_result as lt;
+    use cublaslt_sys as lts;
+    use std::mem;
+
+    if out.n() == 0 {
+        return Ok(());
+    }
+
+    // Logical: out(m×n) = a(m×k) @ b(k×n)
+    // Col-major trick: pass (B, A) → col-major result = C^T, which in row-major IS C.
+    let m = a.nrows as u64;
+    let k = a.ncols as u64;
+    let n = b.ncols as u64;
+
+    // Create matrix layout descriptors (all col-major, matching cuBLASLt convention).
+    let layout_b = lt::create_matrix_layout(lts::cudaDataType_t::CUDA_R_32F, n, k, n as i64)?;
+    let layout_a = lt::create_matrix_layout(lts::cudaDataType_t::CUDA_R_32F, k, m, k as i64)?;
+    // Output layout: (n × m) col-major → row-major (m × n) when interpreted by caller.
+    let layout_c = lt::create_matrix_layout(lts::cudaDataType_t::CUDA_R_32F, n, m, n as i64)?;
+
+    // Create matmul descriptor: TF32 compute on f32 data.
+    let matmul_desc = lt::create_matmul_desc(
+        lts::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_TF32,
+        lts::cudaDataType_t::CUDA_R_32F,
+    )?;
+
+    // Map our Epilogue enum to the cublasLt enum value.
+    let lt_epilogue: lts::cublasLtEpilogue_t = match epilogue {
+        Epilogue::None => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_DEFAULT,
+        Epilogue::Relu => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_RELU,
+        Epilogue::Gelu => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_GELU,
+        Epilogue::Bias => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_BIAS,
+        Epilogue::ReluBias => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_RELU_BIAS,
+        Epilogue::GeluBias => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_GELU_BIAS,
+    };
+
+    // Set EPILOGUE attribute.
+    // SAFETY: matmul_desc is valid; lt_epilogue is a pod value whose size matches the attribute.
+    unsafe {
+        lt::set_matmul_desc_attribute(
+            matmul_desc,
+            lts::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_EPILOGUE,
+            &lt_epilogue as *const lts::cublasLtEpilogue_t as *const c_void,
+            mem::size_of::<lts::cublasLtEpilogue_t>(),
+        )?;
+    }
+
+    // For bias epilogues set the BIAS_POINTER attribute to the device pointer.
+    if let Some(bias_ptr) = bias {
+        if matches!(
+            epilogue,
+            Epilogue::Bias | Epilogue::ReluBias | Epilogue::GeluBias
+        ) {
+            // SAFETY: bias_ptr is a valid device pointer supplied by the caller.
+            unsafe {
+                lt::set_matmul_desc_attribute(
+                    matmul_desc,
+                    lts::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_BIAS_POINTER,
+                    &bias_ptr as *const CUdeviceptr as *const c_void,
+                    mem::size_of::<CUdeviceptr>(),
+                )?;
+            }
+        }
+    }
+
+    // Create preference and set workspace size.
+    let matmul_pref = lt::create_matmul_pref()?;
+    // SAFETY: matmul_pref is valid; size is a pod usize matching the preference attribute.
+    unsafe {
+        lt::set_matmul_pref_attribute(
+            matmul_pref,
+            lts::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+            &ctx.blas_lt_workspace_size as *const usize as *const c_void,
+            mem::size_of::<usize>(),
+        )?;
+    }
+
+    // Retrieve algorithm heuristic.
+    // SAFETY: all descriptors/layouts are valid; heuristic output is written by the library.
+    let heuristic = unsafe {
+        lt::get_matmul_algo_heuristic(
+            ctx.blas_lt.0,
+            matmul_desc,
+            layout_b, // A in col-major = B in row-major
+            layout_a, // B in col-major = A in row-major
+            layout_c,
+            layout_c,
+            matmul_pref,
+        )?
+    };
+
+    let alpha = 1.0f32;
+    let beta = 0.0f32;
+    let stream_ptr = ctx.stream.cu_stream();
+
+    // Execute the matmul.
+    // cudarc lt::matmul signature: (handle, desc, alpha, beta, a, a_layout, b, b_layout, c, c_layout, d, d_layout, algo, workspace, workspace_size, stream)
+    // SAFETY: all handles/layouts/pointers are valid; alpha/beta are stack scalars.
+    unsafe {
+        lt::matmul(
+            ctx.blas_lt.0,
+            matmul_desc,
+            &alpha as *const f32 as *const c_void,
+            &beta as *const f32 as *const c_void,
+            b.buf.ptr as *const c_void, // B row-major = A col-major
+            layout_b,
+            a.buf.ptr as *const c_void, // A row-major = B col-major
+            layout_a,
+            out.buf.ptr as *const c_void,
+            layout_c,
+            out.buf.ptr as *mut c_void,
+            layout_c,
+            &heuristic.algo,
+            ctx.blas_lt_workspace as *mut c_void,
+            ctx.blas_lt_workspace_size,
+            stream_ptr as cublaslt_sys::cudaStream_t,
+        )?;
+    }
+
+    // SAFETY: destroy calls are safe after the matmul has been enqueued on the stream.
+    unsafe {
+        let _ = lt::destroy_matmul_pref(matmul_pref);
+        let _ = lt::destroy_matmul_desc(matmul_desc);
+        let _ = lt::destroy_matrix_layout(layout_c);
+        let _ = lt::destroy_matrix_layout(layout_a);
+        let _ = lt::destroy_matrix_layout(layout_b);
+    }
+
+    Ok(())
+}
+
+/// Fused GEMM + epilogue on the CUDA backend (f32 only; f64 falls back to plain matmul).
+///
+/// `bias` must be `Some(ptr)` when `epilogue` is one of [`Epilogue::Bias`],
+/// [`Epilogue::ReluBias`], or [`Epilogue::GeluBias`]; it is ignored otherwise.
+/// `bias` must point to a contiguous f32 row-vector of length `out.ncols`.
+pub fn cuda_matmul_epilogue(
+    out: &mut CudaStorage<f32>,
+    a: &CudaStorage<f32>,
+    b: &CudaStorage<f32>,
+    epilogue: Epilogue,
+    bias: Option<CUdeviceptr>,
+) -> Result<(), CudaError> {
+    let ctx = get_ctx();
+    out.invalidate_cache();
+    cublas_lt_gemm_f32(ctx, out, a, b, epilogue, bias)
+}
+
 // cuBLAS strided-batched GEMM: row-major C[b] = alpha * A[b] @ B[b] + beta * C[b]
 //
 // Row-major C = A * B per batch maps to col-major: C^T = B^T * A^T
@@ -2982,6 +3196,850 @@ pub fn cuda_graph_capture_cached<F: FnOnce()>(name: &str, f: F) -> CudaResult<Ar
     Ok(graph)
 }
 
+/// Copy data from a host slice into an existing GPU buffer (in-place).
+/// The buffer size must match. Used with [`TrainingGraph`] to update inputs
+/// between graph replays without changing GPU memory addresses.
+pub fn cuda_copy_from_host<T: Scalar>(storage: &CudaStorage<T>, data: &[T]) {
+    assert_eq!(
+        storage.n(),
+        data.len(),
+        "cuda_copy_from_host: size mismatch (buffer={}, data={})",
+        storage.n(),
+        data.len()
+    );
+    let ctx = get_ctx();
+    // SAFETY: copying from host slice to pre-allocated GPU buffer of matching size.
+    unsafe {
+        result::memcpy_htod_async(storage.buf.ptr, data, ctx.stream.cu_stream())
+            .unwrap_or_else(|e| panic!("CUDA copy_from_host: {e}"));
+    }
+    // Invalidate host cache since GPU data changed.
+    if let Ok(mut cache) = storage.host_cache.lock() {
+        *cache = None;
+    }
+}
+
+/// High-level CUDA Graph wrapper for training loops.
+///
+/// Captures forward + backward computation as a single CUDA Graph.
+/// First iteration runs normally (warmup); subsequent iterations replay
+/// the captured graph with minimal CPU overhead (~1us per step).
+///
+/// # Example
+/// ```ignore
+/// use nabla::prelude::*;
+///
+/// let mut tg = TrainingGraph::new();
+///
+/// for (batch_x, batch_y) in data_loader {
+///     cuda_copy_from_host(&x_storage, &batch_x);
+///     cuda_copy_from_host(&y_storage, &batch_y);
+///
+///     tg.step(&mut || {
+///         let tape = GpuTape::<f32>::new();
+///         let xv = tape.var(&x_buf);
+///         let h = fuse!(v.max(0.0); (&xv * &w));
+///         let loss = cross_entropy(&h, &y_buf);
+///         tape.backward(&loss);
+///     })?;
+/// }
+/// ```
+pub struct TrainingGraph {
+    /// None = not yet captured (warmup phase).
+    graph: Option<NablaCudaGraph>,
+    /// Number of warmup iterations before capture (default: 1).
+    warmup_iters: usize,
+    /// Current iteration count.
+    iter_count: usize,
+}
+
+impl TrainingGraph {
+    /// Create a new training graph with default settings (5 warmup iterations).
+    /// 5 warmups let the allocator pool stabilize before capture, avoiding pool-miss mallocs during graph recording.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            graph: None,
+            warmup_iters: 5,
+            iter_count: 0,
+        }
+    }
+
+    /// Create with custom warmup iterations.
+    /// More warmups let the allocator cache stabilize for complex models.
+    #[must_use]
+    pub fn with_warmup(warmup_iters: usize) -> Self {
+        Self {
+            graph: None,
+            warmup_iters,
+            iter_count: 0,
+        }
+    }
+
+    /// Execute one training step.
+    ///
+    /// During warmup phase: runs the closure normally (eager mode).
+    /// After warmup: captures on the next call, then replays the graph.
+    ///
+    /// The closure must perform the EXACT same sequence of kernel launches
+    /// on every call (no dynamic control flow based on data values).
+    pub fn step<F: FnMut()>(&mut self, f: &mut F) -> CudaResult<()> {
+        self.iter_count += 1;
+
+        if self.iter_count <= self.warmup_iters {
+            // Warmup: run eagerly to populate allocator caches.
+            f();
+            cuda_synchronize();
+            Ok(())
+        } else if self.graph.is_none() {
+            // Capture on first post-warmup iteration.
+            // Set capturing flag so allocators redirect pool-miss mallocs to sync path.
+            let ctx = get_ctx();
+            ctx.capturing
+                .store(true, std::sync::atomic::Ordering::Release);
+            // SAFETY: drop guard resets capturing on panic or normal exit.
+            struct CapGuard<'a>(&'a std::sync::atomic::AtomicBool);
+            impl Drop for CapGuard<'_> {
+                fn drop(&mut self) {
+                    self.0.store(false, std::sync::atomic::Ordering::Release);
+                }
+            }
+            let _guard = CapGuard(&ctx.capturing);
+            let capture_result = cuda_graph_capture(|| f());
+            drop(_guard);
+            self.graph = Some(capture_result?);
+            Ok(())
+        } else {
+            // Replay captured graph — ~1us CPU overhead.
+            if let Some(g) = self.graph.as_ref() {
+                g.launch()
+            } else {
+                unreachable!()
+            }
+        }
+    }
+
+    /// Reset the graph, forcing re-capture on next step.
+    /// Use when model structure changes (e.g., dynamic sequence length).
+    pub fn reset(&mut self) {
+        self.graph = None;
+        self.iter_count = 0;
+    }
+
+    /// Check if the graph has been captured.
+    #[must_use]
+    pub fn is_captured(&self) -> bool {
+        self.graph.is_some()
+    }
+}
+
+impl Default for TrainingGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── PyGraph pointer indirection ──────────────────────────────────────────────
+//
+// PyGraph [2503.19779]: eliminate per-replay parameter copies by storing a
+// device-side pointer slot per tensor.  On replay, only 8 bytes are written
+// (the new CUdeviceptr) via cuGraphExecKernelNodeSetParams instead of copying
+// the full tensor payload.
+//
+// Implementation:
+//   1. After CUDA graph capture + instantiation we walk all nodes with
+//      cuGraphGetNodes / cuGraphNodeGetType / cuGraphKernelNodeGetParams.
+//   2. Each kernel node's argument bytes are snapshotted in KernelNodeState.
+//   3. update_node_param_ptr patches one 8-byte field in that snapshot and
+//      calls cuGraphExecKernelNodeSetParams to propagate the change to the
+//      executable graph -- zero tensor data movement.
+//
+// Invariants:
+//   - cu_graph / cu_graph_exec are non-null between construction and Drop.
+//   - cu_stream is borrowed from the global CudaCtx singleton (lifetime >= self).
+//   - All unsafe blocks document the invariant being relied upon.
+
+/// Snapshot of one captured kernel node's parameters.
+///
+/// Stores the complete `CUDA_KERNEL_NODE_PARAMS` as returned by
+/// `cuGraphKernelNodeGetParams(_v2)`, plus owned copies of the arg values so
+/// we can update them without invalidating any internal CUDA pointers.
+pub struct KernelNodeState {
+    node: cudarc::driver::sys::CUgraphNode,
+    /// Full param snapshot (version-polymorphic via the cudarc type alias).
+    params: cudarc::driver::sys::CUDA_KERNEL_NODE_PARAMS,
+    /// Flat u64 storage for all kernel arguments (CUdeviceptr is u64; u32 args
+    /// occupy the low 4 bytes, zero-padded to 8 bytes for alignment).
+    arg_bytes: Vec<u64>,
+    /// Pointers into arg_bytes[i] (one per argument) + null sentinel.
+    arg_ptrs: Vec<*mut c_void>,
+}
+
+// SAFETY: arg_ptrs are raw pointers into arg_bytes which we own exclusively.
+// KernelNodeState is only accessed from the single training thread.
+unsafe impl Send for KernelNodeState {}
+
+/// CUDA graph with mutable kernel-node parameter support (PyGraph style).
+///
+/// Owns the raw CUgraph / CUgraphExec handles so that
+/// cuGraphExecKernelNodeSetParams can be called without re-instantiation.
+pub struct PyGraph {
+    cu_graph: cudarc::driver::sys::CUgraph,
+    cu_graph_exec: cudarc::driver::sys::CUgraphExec,
+    cu_stream: cudarc::driver::sys::CUstream,
+    /// Kernel nodes in the order returned by cuGraphGetNodes.
+    pub kernel_nodes: Vec<KernelNodeState>,
+}
+
+// SAFETY: PyGraph is used from a single training thread; raw handles are valid
+// between construction and Drop.
+unsafe impl Send for PyGraph {}
+
+impl Drop for PyGraph {
+    fn drop(&mut self) {
+        // SAFETY: both handles are non-null (set in PyGraph::capture) and we
+        // are the sole owner.
+        unsafe {
+            cudarc::driver::sys::cuGraphExecDestroy(self.cu_graph_exec);
+            cudarc::driver::sys::cuGraphDestroy(self.cu_graph);
+        }
+    }
+}
+
+impl PyGraph {
+    /// Capture a CUDA graph and enumerate its kernel nodes.
+    pub fn capture<F: FnOnce()>(f: F) -> CudaResult<Self> {
+        let ctx = get_ctx();
+        let cu_stream = ctx.stream.cu_stream();
+
+        ctx.stream
+            .begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_GLOBAL)?;
+
+        ctx.capturing
+            .store(true, std::sync::atomic::Ordering::Release);
+        struct CapGuard<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for CapGuard<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _guard = CapGuard(&ctx.capturing);
+
+        f();
+        drop(_guard);
+
+        let cu_graph = unsafe {
+            // SAFETY: stream is in capture mode (begin_capture succeeded above).
+            let mut g = core::mem::MaybeUninit::uninit();
+            cudarc::driver::sys::cuStreamEndCapture(cu_stream, g.as_mut_ptr())
+                .result()
+                .map_err(CudaError::Driver)?;
+            g.assume_init()
+        };
+        if cu_graph.is_null() {
+            return Err(CudaError::NullPtr);
+        }
+
+        let cu_graph_exec = unsafe {
+            // SAFETY: cu_graph is a valid non-null graph from cuStreamEndCapture.
+            let mut exec = core::mem::MaybeUninit::uninit();
+            if let Err(e) =
+                cudarc::driver::sys::cuGraphInstantiateWithFlags(exec.as_mut_ptr(), cu_graph, 0)
+                    .result()
+            {
+                cudarc::driver::sys::cuGraphDestroy(cu_graph);
+                return Err(CudaError::Driver(e));
+            }
+            exec.assume_init()
+        };
+        if cu_graph_exec.is_null() {
+            unsafe {
+                cudarc::driver::sys::cuGraphDestroy(cu_graph);
+            }
+            return Err(CudaError::NullPtr);
+        }
+
+        let kernel_nodes = Self::collect_kernel_nodes(cu_graph)?;
+
+        Ok(Self { cu_graph, cu_graph_exec, cu_stream, kernel_nodes })
+    }
+
+    fn collect_kernel_nodes(
+        cu_graph: cudarc::driver::sys::CUgraph,
+    ) -> CudaResult<Vec<KernelNodeState>> {
+        use cudarc::driver::sys::{CUgraphNodeType, CUDA_KERNEL_NODE_PARAMS};
+
+        let node_count = unsafe {
+            // SAFETY: cu_graph is valid; passing null nodes ptr queries the count.
+            let mut n: usize = 0;
+            cudarc::driver::sys::cuGraphGetNodes(cu_graph, core::ptr::null_mut(), &mut n)
+                .result()
+                .map_err(CudaError::Driver)?;
+            n
+        };
+
+        if node_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut nodes = vec![core::ptr::null_mut(); node_count];
+        unsafe {
+            // SAFETY: nodes is sized to node_count from the count query above.
+            let mut n = node_count;
+            cudarc::driver::sys::cuGraphGetNodes(cu_graph, nodes.as_mut_ptr(), &mut n)
+                .result()
+                .map_err(CudaError::Driver)?;
+        }
+
+        let mut kernel_nodes = Vec::new();
+
+        for node in nodes {
+            let node_type = unsafe {
+                // SAFETY: node is a valid graph node handle from cuGraphGetNodes.
+                let mut t: CUgraphNodeType = core::mem::zeroed();
+                cudarc::driver::sys::cuGraphNodeGetType(node, &mut t)
+                    .result()
+                    .map_err(CudaError::Driver)?;
+                t
+            };
+
+            if node_type != CUgraphNodeType::CU_GRAPH_NODE_TYPE_KERNEL {
+                continue;
+            }
+
+            // Use v2 (CUDA 12+) or v1 (CUDA 11) depending on build-time detection.
+            let raw_params = unsafe {
+                // SAFETY: node is a kernel node (type checked above).
+                let mut p: CUDA_KERNEL_NODE_PARAMS = core::mem::zeroed();
+                #[cfg(any(
+                    feature = cuda-12000, feature = cuda-12010, feature = cuda-12020,
+                    feature = cuda-12030, feature = cuda-12040, feature = cuda-12050,
+                    feature = cuda-12060, feature = cuda-12080, feature = cuda-12090,
+                    feature = cuda-13000, feature = cuda-13010
+                ))]
+                cudarc::driver::sys::cuGraphKernelNodeGetParams_v2(node, &mut p)
+                    .result()
+                    .map_err(CudaError::Driver)?;
+                #[cfg(not(any(
+                    feature = cuda-12000, feature = cuda-12010, feature = cuda-12020,
+                    feature = cuda-12030, feature = cuda-12040, feature = cuda-12050,
+                    feature = cuda-12060, feature = cuda-12080, feature = cuda-12090,
+                    feature = cuda-13000, feature = cuda-13010
+                )))]
+                cudarc::driver::sys::cuGraphKernelNodeGetParams(node, &mut p)
+                    .result()
+                    .map_err(CudaError::Driver)?;
+                p
+            };
+
+            let n_args = if raw_params.kernelParams.is_null() {
+                0
+            } else {
+                let mut count = 0usize;
+                // SAFETY: kernelParams is a null-terminated *mut *mut c_void array
+                // produced by cudarc's launch_kernel; valid for the graph lifetime.
+                unsafe {
+                    while !(*raw_params.kernelParams.add(count)).is_null() {
+                        count += 1;
+                    }
+                }
+                count
+            };
+
+            let mut arg_bytes: Vec<u64> = vec![0u64; n_args];
+            if n_args > 0 {
+                // SAFETY: kernelParams[i] points to the snapshotted arg value
+                // inside the captured graph node. Reading 8 bytes covers both
+                // CUdeviceptr (u64) and u32 args (upper 4 bytes zero on LE).
+                unsafe {
+                    for i in 0..n_args {
+                        let src = (*raw_params.kernelParams.add(i)) as *const u64;
+                        arg_bytes[i] = src.read_unaligned();
+                    }
+                }
+            }
+
+            let mut arg_ptrs: Vec<*mut c_void> = arg_bytes
+                .iter_mut()
+                .map(|v| (v as *mut u64).cast::<c_void>())
+                .collect();
+            arg_ptrs.push(core::ptr::null_mut());
+
+            // Point params.kernelParams at our owned arg_ptrs storage.
+            let mut params = raw_params;
+            params.kernelParams = arg_ptrs.as_mut_ptr();
+            params.extra = core::ptr::null_mut();
+
+            kernel_nodes.push(KernelNodeState {
+                node,
+                params,
+                arg_bytes,
+                arg_ptrs,
+            });
+        }
+
+        Ok(kernel_nodes)
+    }
+
+    /// Replay the graph with a single CPU dispatch.
+    pub fn launch(&self) -> CudaResult<()> {
+        // SAFETY: cu_graph_exec and cu_stream are valid for the lifetime of self.
+        unsafe {
+            cudarc::driver::sys::cuGraphLaunch(self.cu_graph_exec, self.cu_stream)
+                .result()
+                .map_err(CudaError::Driver)
+        }
+    }
+
+    /// Update one CUdeviceptr argument in a captured kernel node (8-byte write only).
+    ///
+    /// - node_idx: index into self.kernel_nodes (order from cuGraphGetNodes).
+    /// - param_idx: 0-based index of the argument to update (must be a pointer arg).
+    /// - new_ptr: new CUdeviceptr (device address of the updated tensor buffer).
+    pub fn update_node_param_ptr(
+        &mut self,
+        node_idx: usize,
+        param_idx: usize,
+        new_ptr: CUdeviceptr,
+    ) -> CudaResult<()> {
+        let state = &mut self.kernel_nodes[node_idx];
+        // Patch the stored arg value; arg_ptrs[param_idx] still points into
+        // arg_bytes[param_idx] so the pointer in arg_ptrs remains valid.
+        state.arg_bytes[param_idx] = new_ptr;
+        // state.params.kernelParams already points to state.arg_ptrs which
+        // points into state.arg_bytes -- no re-assignment needed.
+
+        // SAFETY: cu_graph_exec is valid; state.node is a kernel node in this graph;
+        // params.kernelParams points to valid arg storage owned by KernelNodeState.
+        // Use v2 (CUDA 12+) or v1 (CUDA 11) based on build-time version detection.
+        unsafe {
+            #[cfg(any(
+                feature = "cuda-12000", feature = "cuda-12010", feature = "cuda-12020",
+                feature = "cuda-12030", feature = "cuda-12040", feature = "cuda-12050",
+                feature = "cuda-12060", feature = "cuda-12080", feature = "cuda-12090",
+                feature = "cuda-13000", feature = "cuda-13010"
+            ))]
+            let result = cudarc::driver::sys::cuGraphExecKernelNodeSetParams_v2(
+                self.cu_graph_exec,
+                state.node,
+                &state.params,
+            )
+            .result()
+            .map_err(CudaError::Driver);
+            #[cfg(not(any(
+                feature = "cuda-12000", feature = "cuda-12010", feature = "cuda-12020",
+                feature = "cuda-12030", feature = "cuda-12040", feature = "cuda-12050",
+                feature = "cuda-12060", feature = "cuda-12080", feature = "cuda-12090",
+                feature = "cuda-13000", feature = "cuda-13010"
+            )))]
+            let result = cudarc::driver::sys::cuGraphExecKernelNodeSetParams(
+                self.cu_graph_exec,
+                state.node,
+                &state.params,
+            )
+            .result()
+            .map_err(CudaError::Driver);
+            result
+        }
+    }
+
+    /// Number of captured kernel nodes.
+    #[must_use]
+    pub fn kernel_node_count(&self) -> usize {
+        self.kernel_nodes.len()
+    }
+
+    /// Number of arguments for the kernel node at node_idx.
+    #[must_use]
+    pub fn arg_count(&self, node_idx: usize) -> usize {
+        self.kernel_nodes[node_idx].arg_bytes.len()
+    }
+
+    /// Read the current stored value of argument param_idx for node_idx.
+    #[must_use]
+    pub fn get_param(&self, node_idx: usize, param_idx: usize) -> CUdeviceptr {
+        self.kernel_nodes[node_idx].arg_bytes[param_idx]
+    }
+}
+
+/// Training loop wrapper around PyGraph with warmup-capture-replay lifecycle.
+pub struct PyGraphTrainingGraph {
+    graph: Option<PyGraph>,
+    warmup_iters: usize,
+    iter_count: usize,
+}
+
+impl PyGraphTrainingGraph {
+    /// Create with default warmup (5 iterations).
+    #[must_use]
+    pub fn new() -> Self {
+        Self { graph: None, warmup_iters: 5, iter_count: 0 }
+    }
+
+    /// Create with custom warmup count.
+    #[must_use]
+    pub fn with_warmup(warmup_iters: usize) -> Self {
+        Self { graph: None, warmup_iters, iter_count: 0 }
+    }
+
+    /// Mutable access to the captured PyGraph (None before capture completes).
+    pub fn graph(&mut self) -> Option<&mut PyGraph> {
+        self.graph.as_mut()
+    }
+
+    /// Execute one training step (warmup / capture / replay).
+    pub fn step<F: FnMut()>(&mut self, f: &mut F) -> CudaResult<()> {
+        self.iter_count += 1;
+
+        if self.iter_count <= self.warmup_iters {
+            f();
+            cuda_synchronize();
+            Ok(())
+        } else if self.graph.is_none() {
+            let graph = PyGraph::capture(|| f())?;
+            self.graph = Some(graph);
+            Ok(())
+        } else {
+            self.graph.as_ref().ok_or(CudaError::NullPtr)?.launch()
+        }
+    }
+
+    /// Reset -- force re-capture on next step.
+    pub fn reset(&mut self) {
+        self.graph = None;
+        self.iter_count = 0;
+    }
+
+    /// True once the graph has been captured.
+    #[must_use]
+    pub fn is_captured(&self) -> bool {
+        self.graph.is_some()
+    }
+}
+
+impl Default for PyGraphTrainingGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── CUDA Conditional Nodes (CUDA 12.4+) ─────────────────────────────────────
+//
+// Conditional nodes embed IF/WHILE/SWITCH control flow directly inside a CUDA
+// graph, eliminating CPU round-trips for data-dependent branching.  The branch
+// condition is written on-device via cudaGraphSetConditional(handle, value) and
+// is evaluated each time the parent graph is replayed — no CPU involvement.
+//
+// Requires CUDA 12.4+ (cuda-12040 cudarc feature). Lambda runs CUDA 12.8.
+// The entire section is gated on cuda-12040+ so it compiles cleanly on older
+// toolchains without stubbing anything out.
+//
+// Architecture
+// ────────────
+//  ConditionalHandle  — RAII wrapper for CUgraphConditionalHandle
+//  ConditionalGraph   — owns one top-level CUgraph/CUgraphExec plus the body
+//                       graphs returned by cuGraphAddNode
+//  ConditionalKind    — mirrors CUgraphConditionalNodeType (IF/WHILE/SWITCH)
+
+/// Selects the conditional node type when building a [`ConditionalGraph`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionalKind {
+    /// Execute body once if condition != 0.  Pass 2 closures to [`ConditionalGraph::new`]
+    /// for IF/ELSE semantics (true-body at index 0, false-body at index 1).
+    If,
+    /// Execute body repeatedly while condition != 0 (evaluated at entry and after each iteration).
+    While,
+    /// Execute body[n] when condition == n; if condition >= num_cases, nothing runs.
+    /// Requires CUDA 12.8+ for full driver support.
+    Switch {
+        /// Total number of case graphs (body closures) to create.
+        num_cases: u32,
+    },
+}
+
+/// RAII wrapper for `CUgraphConditionalHandle`.
+///
+/// The handle exposes a device-visible u32 slot.  A kernel writes to it with
+/// `cudaGraphSetConditional(handle, value)` before each graph launch.
+struct ConditionalHandle {
+    raw: cudarc::driver::sys::CUgraphConditionalHandle,
+}
+
+// SAFETY: CUgraphConditionalHandle is an opaque u64 token; all mutation goes
+// through the CUDA driver which is internally synchronised per handle.
+unsafe impl Send for ConditionalHandle {}
+unsafe impl Sync for ConditionalHandle {}
+
+impl ConditionalHandle {
+    /// Create a handle scoped to `graph` / `cu_ctx`.
+    ///
+    /// `default_value` is applied to the condition slot at the start of every
+    /// graph launch (CU_GRAPH_COND_ASSIGN_DEFAULT flag), guaranteeing
+    /// deterministic re-entry even when a kernel does not write it.
+    ///
+    /// # Safety
+    /// `graph` and `cu_ctx` must be valid and must outlive this handle.
+    unsafe fn new(
+        graph: cudarc::driver::sys::CUgraph,
+        cu_ctx: cudarc::driver::sys::CUcontext,
+        default_value: u32,
+    ) -> CudaResult<Self> {
+        let mut raw: cudarc::driver::sys::CUgraphConditionalHandle = 0;
+        // SAFETY: all pointers valid; pHandle_out points to a local stack slot.
+        let r = unsafe {
+            cudarc::driver::sys::cuGraphConditionalHandleCreate(
+                &mut raw,
+                graph,
+                cu_ctx,
+                default_value,
+                cudarc::driver::sys::CU_GRAPH_COND_ASSIGN_DEFAULT,
+            )
+        };
+        if r != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+            return Err(CudaError::Driver(cudarc::driver::DriverError(r)));
+        }
+        Ok(Self { raw })
+    }
+
+    fn raw(&self) -> cudarc::driver::sys::CUgraphConditionalHandle {
+        self.raw
+    }
+}
+
+/// A CUDA graph that contains a single IF, WHILE, or SWITCH conditional node.
+///
+/// Once instantiated the graph is replayed cheaply: the driver reads the
+/// condition value from the device slot and dispatches into the appropriate
+/// body sub-graph — entirely on-GPU, no CPU synchronisation required.
+///
+/// # CUDA version requirement
+///
+/// Requires CUDA 12.4 or later (`cuda-12040` cudarc feature gate).
+/// The SWITCH type requires CUDA 12.8 (`cuda-12080`).
+pub struct ConditionalGraph {
+    /// Top-level parent graph containing the conditional node.
+    cu_graph: cudarc::driver::sys::CUgraph,
+    /// Instantiated executable, replayed on each [`launch()`](Self::launch).
+    cu_exec: cudarc::driver::sys::CUgraphExec,
+    /// Condition handle whose device slot controls which body executes.
+    handle: ConditionalHandle,
+}
+
+// SAFETY: CUgraph / CUgraphExec are process-global opaque handles. We never
+// alias them across threads; distinct graph objects are independently safe.
+unsafe impl Send for ConditionalGraph {}
+unsafe impl Sync for ConditionalGraph {}
+
+impl Drop for ConditionalGraph {
+    fn drop(&mut self) {
+        // SAFETY: each pointer is destroyed exactly once; fields are set to
+        // null_mut() after destruction to prevent double-free on panic.
+        if !self.cu_exec.is_null() {
+            // SAFETY: cu_exec is a valid, live executable graph handle.
+            unsafe { cudarc::driver::sys::cuGraphExecDestroy(self.cu_exec) };
+            self.cu_exec = std::ptr::null_mut();
+        }
+        if !self.cu_graph.is_null() {
+            // SAFETY: cu_graph is a valid, live graph handle.
+            unsafe { cudarc::driver::sys::cuGraphDestroy(self.cu_graph) };
+            self.cu_graph = std::ptr::null_mut();
+        }
+    }
+}
+
+impl ConditionalGraph {
+    /// Build a [`ConditionalGraph`] of the given `kind`.
+    ///
+    /// `default_value` is the condition slot's initial value on every graph
+    /// launch (before any kernel writes it).  Use `0` for IF/WHILE (skip by
+    /// default) or a meaningful case index for SWITCH.
+    ///
+    /// `bodies` is a slice of closures, one per body graph:
+    /// - **IF**    : 1 closure (true-body), or 2 (true-body + false-body).
+    /// - **WHILE** : exactly 1 closure (loop body).
+    /// - **SWITCH**: exactly `num_cases` closures, indexed by condition value.
+    ///
+    /// Each closure receives the `CUgraph` handle it must populate by adding
+    /// kernel/memset/memcpy nodes via the cudarc `sys` API.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError`] if any CUDA driver call fails.
+    pub fn new<F>(kind: ConditionalKind, default_value: u32, bodies: &[F]) -> CudaResult<Self>
+    where
+        F: Fn(cudarc::driver::sys::CUgraph) -> CudaResult<()>,
+    {
+        let ctx = get_ctx();
+        let cu_ctx = ctx.stream.context().cu_ctx();
+
+        // 1. Create a bare parent graph (no nodes yet).
+        let mut cu_graph: cudarc::driver::sys::CUgraph = std::ptr::null_mut();
+        // SAFETY: cuGraphCreate writes a valid handle into cu_graph on success.
+        let r = unsafe { cudarc::driver::sys::cuGraphCreate(&mut cu_graph, 0) };
+        if r != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+            return Err(CudaError::Driver(cudarc::driver::DriverError(r)));
+        }
+
+        // Inline cleanup helper — destroys cu_graph before returning an error.
+        macro_rules! bail {
+            ($e:expr) => {{
+                // SAFETY: cu_graph is valid at this point; destroyed at most once.
+                unsafe { cudarc::driver::sys::cuGraphDestroy(cu_graph) };
+                return Err($e);
+            }};
+        }
+
+        // 2. Allocate the conditional handle scoped to the parent graph.
+        // SAFETY: cu_graph is valid and will outlive the handle.
+        let handle = match unsafe { ConditionalHandle::new(cu_graph, cu_ctx, default_value) } {
+            Ok(h) => h,
+            Err(e) => bail!(e),
+        };
+
+        // 3. Determine node type and body-graph count.
+        let (cond_type, size) = match kind {
+            ConditionalKind::If => (
+                cudarc::driver::sys::CUgraphConditionalNodeType::CU_GRAPH_COND_TYPE_IF,
+                bodies.len() as u32,
+            ),
+            ConditionalKind::While => (
+                cudarc::driver::sys::CUgraphConditionalNodeType::CU_GRAPH_COND_TYPE_WHILE,
+                1u32,
+            ),
+            ConditionalKind::Switch { num_cases } => (
+                cudarc::driver::sys::CUgraphConditionalNodeType::CU_GRAPH_COND_TYPE_SWITCH,
+                num_cases,
+            ),
+        };
+
+        // phGraph_out receives `size` body-graph pointers allocated by the driver.
+        let mut body_graphs: Vec<cudarc::driver::sys::CUgraph> =
+            vec![std::ptr::null_mut(); size as usize];
+
+        // 4. Build CUgraphNodeParams with the conditional branch populated.
+        // SAFETY: CUgraphNodeParams_st is a C struct; zeroing padding/reserved
+        // fields is valid per the CUDA driver API specification.
+        let mut node_params: cudarc::driver::sys::CUgraphNodeParams =
+            unsafe { core::mem::zeroed() };
+        node_params.type_ =
+            cudarc::driver::sys::CUgraphNodeType::CU_GRAPH_NODE_TYPE_CONDITIONAL;
+        // SAFETY: type_ discriminant set above; writing the matching union arm
+        // is correct. All other arms remain zeroed (valid for a C union).
+        unsafe {
+            node_params.__bindgen_anon_1.conditional =
+                cudarc::driver::sys::CUDA_CONDITIONAL_NODE_PARAMS {
+                    handle: handle.raw(),
+                    type_: cond_type,
+                    size,
+                    phGraph_out: body_graphs.as_mut_ptr(),
+                    ctx: cu_ctx,
+                };
+        }
+
+        // 5. Add the conditional node to the parent graph (no predecessors).
+        let mut cond_node: cudarc::driver::sys::CUgraphNode = std::ptr::null_mut();
+        // SAFETY: cu_graph, node_params, body_graphs are all valid.
+        let r = unsafe {
+            cudarc::driver::sys::cuGraphAddNode(
+                &mut cond_node,
+                cu_graph,
+                std::ptr::null(),
+                0,
+                &mut node_params,
+            )
+        };
+        if r != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+            bail!(CudaError::Driver(cudarc::driver::DriverError(r)));
+        }
+
+        // 6. Populate each body graph via the caller-supplied closures.
+        for (i, body_fn) in bodies.iter().enumerate() {
+            let body = body_graphs[i];
+            if body.is_null() {
+                bail!(CudaError::NullPtr);
+            }
+            if let Err(e) = body_fn(body) {
+                bail!(e);
+            }
+        }
+
+        // 7. Instantiate the parent graph for efficient replay.
+        let mut cu_exec: cudarc::driver::sys::CUgraphExec = std::ptr::null_mut();
+        // SAFETY: cu_graph is fully constructed; cu_exec receives the exec handle.
+        // cuGraphInstantiateWithFlags(graph, flags=0) — zero flags = no special behaviour.
+        let r = unsafe {
+            cudarc::driver::sys::cuGraphInstantiateWithFlags(&mut cu_exec, cu_graph, 0u64)
+        };
+        if r != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+            bail!(CudaError::Driver(cudarc::driver::DriverError(r)));
+        }
+
+        Ok(Self {
+            cu_graph,
+            cu_exec,
+            handle,
+        })
+    }
+
+    /// Build an IF conditional with a single body (no ELSE branch).
+    ///
+    /// `body` receives the body `CUgraph` and must populate it with nodes.
+    /// The condition slot defaults to 0 (skip) at each graph launch start.
+    pub fn new_if<F>(body: F) -> CudaResult<Self>
+    where
+        F: Fn(cudarc::driver::sys::CUgraph) -> CudaResult<()>,
+    {
+        Self::new(ConditionalKind::If, 0, &[body])
+    }
+
+    /// Build an IF/ELSE conditional.
+    ///
+    /// `true_body` executes when condition != 0; `false_body` when condition == 0.
+    pub fn new_if_else<F>(true_body: F, false_body: F) -> CudaResult<Self>
+    where
+        F: Fn(cudarc::driver::sys::CUgraph) -> CudaResult<()>,
+    {
+        Self::new(ConditionalKind::If, 0, &[true_body, false_body])
+    }
+
+    /// Build a WHILE loop conditional.
+    ///
+    /// The body executes repeatedly while the condition device-slot is non-zero.
+    /// A kernel inside the body must eventually write 0 to stop iteration.
+    pub fn new_while<F>(body: F) -> CudaResult<Self>
+    where
+        F: Fn(cudarc::driver::sys::CUgraph) -> CudaResult<()>,
+    {
+        Self::new(ConditionalKind::While, 0, &[body])
+    }
+
+    /// Replay the conditional graph on nabla's default CUDA stream.
+    ///
+    /// A kernel should write the branch selector to the condition slot via
+    /// `cudaGraphSetConditional(handle, value)` before this call.
+    /// The `CU_GRAPH_COND_ASSIGN_DEFAULT` flag resets the slot to
+    /// `default_value` at the start of each launch for deterministic semantics.
+    pub fn launch(&self) -> CudaResult<()> {
+        let ctx = get_ctx();
+        // SAFETY: cu_exec and the stream are valid for this graph's lifetime.
+        let r = unsafe {
+            cudarc::driver::sys::cuGraphLaunch(self.cu_exec, ctx.stream.cu_stream())
+        };
+        if r != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+            return Err(CudaError::Driver(cudarc::driver::DriverError(r)));
+        }
+        Ok(())
+    }
+
+    /// Return the raw `CUgraphConditionalHandle` for passing to device kernels.
+    ///
+    /// Device code calls `cudaGraphSetConditional(handle, value)` to write the
+    /// branch selector.  The value is read when the graph is next launched.
+    pub fn device_handle(&self) -> cudarc::driver::sys::CUgraphConditionalHandle {
+        self.handle.raw()
+    }
+}
+
 // ── Fused element-wise kernel launch ────────────────────────────────────────
 
 fn cuda_fuse_launch<T: Scalar>(
@@ -3304,6 +4362,46 @@ impl crate::backend::Backend for crate::backend::Cuda {
     #[inline]
     fn matmul_into<T: Scalar>(out: &mut CudaStorage<T>, a: &CudaStorage<T>, b: &CudaStorage<T>) {
         cuda_matmul(out, a, b);
+    }
+
+    fn matmul_epilogue<T: Scalar>(
+        a: &CudaStorage<T>,
+        b: &CudaStorage<T>,
+        epilogue_id: u8,
+    ) -> CudaStorage<T> {
+        use std::any::TypeId;
+        // Fast path: cublasLt epilogue fusion is available for f32 relu (0) and gelu (1).
+        if TypeId::of::<T>() == TypeId::of::<f32>() && epilogue_id <= 1 {
+            let epilogue = if epilogue_id == 0 { Epilogue::Relu } else { Epilogue::Gelu };
+            // SAFETY: TypeId check above guarantees T == f32 at runtime.
+            // CudaStorage<T> = RtcStorage<CuBuffer, T>.  The only T-dependent field is
+            // `host_cache: Mutex<Option<Vec<T>>>`, which cuda_matmul_epilogue never reads
+            // (it calls invalidate_cache() on output and uses only buf/nrows/ncols from inputs).
+            // GPU buffer byte layout is determined by alloc_size, not by T's Rust type.
+            let (a_f32, b_f32) = unsafe {
+                (
+                    &*(a as *const CudaStorage<T> as *const CudaStorage<f32>),
+                    &*(b as *const CudaStorage<T> as *const CudaStorage<f32>),
+                )
+            };
+            let mut out_f32 = cuda_zeros::<f32>(a_f32.nrows, b_f32.ncols);
+            match cuda_matmul_epilogue(&mut out_f32, a_f32, b_f32, epilogue, None) {
+                Ok(()) => {
+                    // SAFETY: T == f32 is verified by TypeId above.
+                    // CudaStorage<f32> and CudaStorage<T=f32> are the same type; transmute
+                    // is a bitwise no-op that transfers ownership without re-running Drop.
+                    unsafe { std::mem::transmute::<CudaStorage<f32>, CudaStorage<T>>(out_f32) }
+                }
+                Err(_) => {
+                    // cublasLt failed (e.g. workspace exhausted, unsupported dimensions):
+                    // fall back to 2-pass via the default Backend trait implementation.
+                    cuda_matmul_epilogue_fallback(a, b, epilogue_id)
+                }
+            }
+        } else {
+            // Non-f32 or unknown epilogue: use default 2-pass path.
+            cuda_matmul_epilogue_fallback(a, b, epilogue_id)
+        }
     }
 
     #[inline]
