@@ -64,7 +64,7 @@ pub mod gpu;
 // ── cuda/hip ─────────────────────────────────────────────────────────────────
 
 #[cfg(any(feature = "cuda", feature = "hip"))]
-#[path = "cuda_hip/kernels.rs"]
+#[path = "cuda_hip/common/kernels.rs"]
 pub(crate) mod kernels_cu;
 
 #[cfg(any(feature = "cuda", feature = "hip"))]

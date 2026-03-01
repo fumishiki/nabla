@@ -1,7 +1,3 @@
-pub mod pool;
-pub mod fuse;
-pub mod rtc;
+pub mod common;
 
-pub(crate) use pool::*;
-pub(crate) use fuse::*;
-pub(crate) use rtc::*;
+pub(crate) use common::*;

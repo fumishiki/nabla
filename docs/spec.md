@@ -377,13 +377,15 @@ nabla/                       [workspace root]
 │       │   ├── shaders.rs    WGSL register-tile MMA codegen + kernel strings (898L)
 │       │   └── ops.rs        impl Backend for Gpu (wgpu) + all gpu_* fns (1103L)
 │       └── cuda_hip/         CUDA + HIP backends (feature = "cuda" | "hip")
-│           ├── mod.rs        re-exports
-│           ├── rtc.rs        RtcStorage + MemoryPool + rtc_backend_impl! macro (520L)
-│           ├── pool.rs       CUDA/HIP pooling kernels dispatch (585L)
-│           ├── fuse.rs       fuse! kernel codegen dispatch (537L)
+│           ├── mod.rs        re-exports common/*
+│           ├── common/       shared code (both CUDA and HIP)
+│           │   ├── mod.rs    re-exports rtc/pool/fuse
+│           │   ├── rtc.rs    RtcStorage + MemoryPool + rtc_backend_impl! macro (520L)
+│           │   ├── pool.rs   CUDA/HIP pooling kernels dispatch (585L)
+│           │   ├── fuse.rs   fuse! kernel codegen dispatch (537L)
+│           │   └── kernels.rs  CUDA/HIP C kernel source strings (NVRTC/hiprtc JIT) (2251L, data file)
 │           ├── cuda.rs       CUDA backend — intentionally monolithic (5574L, CudaCtx singleton)
-│           ├── hip.rs        HIP backend — mirrors CUDA structure (2386L)
-│           └── kernels.rs    CUDA/HIP C kernel source strings (NVRTC/hiprtc JIT) (2251L, data file)
+│           └── hip.rs        HIP backend — mirrors CUDA structure (2386L)
 │
 ├── nabla/                   ━━ Layer 3: Application ━━
 │   ├── src/
@@ -461,7 +463,7 @@ Dependencies:
 **Exemptions (400-800L rule does not apply)**:
 - `cuda_hip/cuda.rs` (5574L) — intentionally monolithic; `CudaCtx` singleton creates deep coupling. Do NOT split.
 - `cuda_hip/hip.rs` (2386L) — mirrors CUDA structure; same reason.
-- `cuda_hip/kernels.rs` (2251L) — data file (kernel source strings only); splitting adds no value.
+- `cuda_hip/common/kernels.rs` (2251L) — data file (kernel source strings only); splitting adds no value.
 - `wgpu/ops.rs` (1103L) — all `impl Backend for Gpu` methods; splitting would scatter a single trait impl.
 - `wgpu/shaders.rs` (898L) — WGSL codegen + shader strings tightly coupled; acceptable overshoot.
 
