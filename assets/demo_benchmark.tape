@@ -4,11 +4,14 @@
 Output assets/demo_benchmark.gif
 Set Shell "bash"
 Set FontSize 15
-Set Width 900
+Set Width 800
 Set Height 600
-Set Theme "Dracula"
-Set TypingSpeed 40ms
-Set Padding 20
+Set Theme "Catppuccin Mocha"
+Set WindowBar Colorful
+Set Margin 20
+Set MarginFill "#1E1E2E"
+Set BorderRadius 8
+Set TypingSpeed 60ms
 
 Type "# nabla vs PyTorch — MLP training benchmark (GH200)"
 Enter

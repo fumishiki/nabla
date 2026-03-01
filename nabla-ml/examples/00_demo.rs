@@ -2,6 +2,9 @@
 //! Run: cargo run --example 00_demo --features cpu
 
 use nabla::prelude::*;
+use std::io::{self, Write};
+use std::time::Duration;
+use std::thread::sleep;
 
 const BOLD: &str = "\x1b[1m";
 const CYAN: &str = "\x1b[36m";
@@ -11,14 +14,23 @@ const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
 macro_rules! code {
-    ($($line:expr),+ $(,)?) => { $( println!("{CYAN}{BOLD}  {}{RESET}", $line); )+ };
+    ($($line:expr),+ $(,)?) => { 
+        $( println!("{CYAN}{BOLD}  {}{RESET}", $line); )+ 
+        io::stdout().flush().unwrap();
+        sleep(Duration::from_millis(600));
+    };
 }
 macro_rules! out {
-    ($fmt:expr $(, $arg:expr)*) => { println!("{GREEN}  ➜ {}{RESET}", format!($fmt $(, $arg)*)); };
+    ($fmt:expr $(, $arg:expr)*) => { 
+        println!("{GREEN}  ➜ {}{RESET}", format!($fmt $(, $arg)*)); 
+        io::stdout().flush().unwrap();
+        sleep(Duration::from_millis(1500));
+    };
 }
 
 fn main() {
     println!("\n{BOLD}  ∇ nabla{RESET} {DIM}— GPU math for Rust, no C++ required{RESET}\n");
+    sleep(Duration::from_millis(500));
 
     // 1. Solve Ax = b
     println!("{YELLOW}  ── Solve Ax = b ──{RESET}");
@@ -32,13 +44,7 @@ fn main() {
     let x = a.solve(&b).expect("solve");
     out!("x = [{:.1}, {:.1}]", x.get(0, 0), x.get(1, 0));
 
-    // 2. SVD
-    println!("\n{YELLOW}  ── SVD ──{RESET}");
-    code!("a.svd()?");
-    let svd = a.svd().expect("svd");
-    out!("σ = [{:.4}, {:.4}]", svd.s()[0], svd.s()[1]);
-
-    // 3. Einsum
+    // 2. Einsum
     println!("\n{YELLOW}  ── Einsum ──{RESET}");
     code!("einsum!(c[i,j] = a[i,k] * b[k,j])");
     let m1 = mat![[1.0_f64, 2.0], [3.0, 4.0]];
@@ -46,36 +52,34 @@ fn main() {
     let prod: Tensor<f64> = einsum!(c[i,j] = m1[i,k] * m2[k,j]);
     out!(
         "[{:.0}, {:.0}; {:.0}, {:.0}]",
-        prod.get(0, 0),
-        prod.get(0, 1),
-        prod.get(1, 0),
-        prod.get(1, 1)
+        prod.get(0, 0), prod.get(0, 1), prod.get(1, 0), prod.get(1, 1)
     );
+
+    // 3. Kernel Fusion
+    println!("\n{YELLOW}  ── GPU Kernel Fusion ──{RESET}");
+    code!("fuse!(x.sin().powf(2.0) + x.cos())");
+    let x: Tensor<f64> = mat![[1.0_f64, 2.0]];
+    let y: Tensor<f64> = fuse!(x.sin().powf(2.0) + x.cos());
+    out!("y = [{:.2}, {:.2}]", y.get(0, 0), y.get(0, 1));
 
     // 4. Autodiff
     println!("\n{YELLOW}  ── Autodiff ──{RESET}");
     code!(
         "let tape = Tape::new();",
-        "let w = tape.variable(mat![[1, 2], [3, 4]]);",
-        "let loss = (w * x).norm_sq();",
-        "loss.backward();  w.grad()"
+        "let w = tape.var(mat![[1, 2], [3, 4]]);",
+        "let loss = (&w * &x).norm_sq();",
+        "loss.backward(); let dw = w.grad();"
     );
     let tape: std::rc::Rc<Tape<f64, DefaultBackend>> = Tape::new();
-    let w = tape
-        .variable(mat![[1.0_f64, 2.0], [3.0, 4.0]])
-        .expect("var");
+    let w = tape.variable(mat![[1.0_f64, 2.0], [3.0, 4.0]]).expect("var");
     let inp = tape.variable(mat![[1.0_f64], [1.0]]).expect("var");
     let o = w.matmul(&inp);
     let loss = o.emul(&o).sum_axis(1).sum_axis(0);
     loss.backward().expect("backward");
     let dw = w.grad().expect("grad");
-    out!("loss = {:.1}", loss.data().get(0, 0));
     out!(
         "∂L/∂W = [{:.0}, {:.0}; {:.0}, {:.0}]",
-        dw.get(0, 0),
-        dw.get(0, 1),
-        dw.get(1, 0),
-        dw.get(1, 1)
+        dw.get(0, 0), dw.get(0, 1), dw.get(1, 0), dw.get(1, 1)
     );
 
     // 5. Symbolic CAS
