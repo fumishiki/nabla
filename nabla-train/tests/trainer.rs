@@ -222,9 +222,9 @@ fn json_logger_writes_lines() {
 
 #[test]
 fn checkpoint_roundtrip_with_schedule() {
-    let mut module = ToyModule::new();
-    let mut opt = Sgd::new(0.1, &[(1, 1), (1, 1)]);
-    let mut scaler = GradScaler::new();
+    let module = ToyModule::new();
+    let opt = Sgd::new(0.1, &[(1, 1), (1, 1)]);
+    let scaler = GradScaler::new();
     let schedule = ScheduleState { base_lr: 0.1, schedule: LrSchedule::Step { step_size: 1, gamma: 0.9 } };
     let state = TrainState { epoch: 2, step: 3, grad_accum: 1, rng_state: Some(42) };
 

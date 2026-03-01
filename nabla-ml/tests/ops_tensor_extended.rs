@@ -469,6 +469,7 @@ fn topk_known() {
 
 
 
+    #[allow(dead_code)]
     fn smooth_l1_expected(pred: &[f64], target: &[f64], beta: f64) -> f64 {
         let mut sum = 0.0;
         for (p, t) in pred.iter().zip(target.iter()) {

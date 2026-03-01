@@ -7,10 +7,12 @@ use nabla::prelude::*;
 use nabla::{between, frange};
 use std::collections::HashMap;
 
+#[allow(dead_code)]
 fn linear_f64(rows: usize, cols: usize) -> Tensor<f64> {
     Tensor::from_fn(rows, cols, |i, j| (i * cols + j + 1) as f64)
 }
 
+#[allow(dead_code)]
 fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
     assert_eq!(got.shape(), expected.shape(), "shape mismatch");
     let (r, c) = got.shape();
