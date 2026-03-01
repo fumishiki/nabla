@@ -229,6 +229,8 @@ macro_rules! impl_complex_mathops {
         impl MathOps for $ty {
             delegate_math!(math_exp => exp, math_ln => ln, math_sin => sin,
                            math_cos => cos, math_tanh => tanh, math_sqrt => sqrt);
+            // tan(z) = sin(z) / cos(z)
+            #[inline] fn math_tan(self) -> Self { self.sin() / self.cos() }
             #[inline] fn math_log1p(self) -> Self { Complex::new(1.0 as $real + self.re, self.im).ln() }
             #[inline] fn math_abs(self) -> Self { Complex::new(self.norm(), 0.0) }
             #[inline] fn math_recip(self) -> Self { self.inv() }

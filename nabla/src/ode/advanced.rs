@@ -8,7 +8,7 @@ use nabla_core::tensor::Tensor;
 
 use super::{
     alloc_trajectory, apply_saveat, diff_inf_norm, inf_norm_vec, validate, DaeConfig, OdeSolution,
-    PararealConfig, StormerVerletConfig,
+    PararealConfig, StormerVerletConfig, SymplecticSolution,
 };
 
 // ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ where
 ///   `q_{n+1}   = q_n + h * p_{n+1/2} / mass`
 ///   `p_{n+1}   = p_{n+1/2} - (h/2) * grad_V(q_{n+1})`
 ///
-/// Returns `(times, q_trajectory, p_trajectory)`.
+/// Returns a [`SymplecticSolution`] containing time points and both q/p trajectories.
 ///
 /// # Errors
 ///
@@ -134,7 +134,7 @@ pub fn stormer_verlet<V>(
     p0: Tensor<f64, Cpu>,
     t_span: (f64, f64),
     cfg: &StormerVerletConfig,
-) -> Result<(Vec<f64>, Vec<Tensor<f64, Cpu>>, Vec<Tensor<f64, Cpu>>)>
+) -> Result<SymplecticSolution<f64, Cpu>>
 where
     V: Fn(&Tensor<f64, Cpu>) -> Tensor<f64, Cpu>,
 {
@@ -176,7 +176,11 @@ where
         ps.push(p.clone());
     }
 
-    Ok((times, qs, ps))
+    Ok(SymplecticSolution {
+        times,
+        q_states: qs,
+        p_states: ps,
+    })
 }
 
 // ---------------------------------------------------------------------------

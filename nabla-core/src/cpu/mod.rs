@@ -141,9 +141,9 @@ fn cpu_argext<T: Scalar>(a: &CpuStorage<T>, is_better: impl Fn(T, T) -> bool) ->
     (best / a.ncols, best % a.ncols)
 }
 
-impl super::private::Sealed for Cpu {}
+impl crate::backend::private::Sealed for Cpu {}
 
-impl super::Backend for Cpu {
+impl crate::backend::Backend for Cpu {
     type Storage<T: Scalar> = CpuStorage<T>;
 
     #[inline]
@@ -280,6 +280,7 @@ impl super::Backend for Cpu {
         log1p => math_log1p,
         sin   => math_sin,
         cos   => math_cos,
+        tan   => math_tan,
         tanh  => math_tanh,
         sqrt  => math_sqrt,
         abs   => math_abs,

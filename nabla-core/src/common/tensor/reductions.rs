@@ -25,16 +25,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         resolved
     }
 
-    /// Reduce along axis with a custom fold function and initial value from first element.
+    /// Reduce along axis with a custom fold function, seeded from the first element.
     fn reduce_axis<F: Fn(T, T) -> T>(&self, axis: usize, f: F) -> Self {
         match axis {
             0 => Self::from_fn(1, self.ncols(), |_, c| {
-                (0..self.nrows())
+                // Start from index 1 to avoid double-counting the first element.
+                (1..self.nrows())
                     .map(|r| self.get(r, c))
                     .fold(self.get(0, c), &f)
             }),
             1 => Self::from_fn(self.nrows(), 1, |r, _| {
-                (0..self.ncols())
+                (1..self.ncols())
                     .map(|c| self.get(r, c))
                     .fold(self.get(r, 0), &f)
             }),
@@ -56,6 +57,22 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[inline]
     pub fn sum(&self) -> T {
         self.sum_all()
+    }
+
+    /// Mean of all elements: `sum / count`.
+    #[must_use]
+    #[inline]
+    pub fn mean(&self) -> T {
+        let (m, n) = self.shape();
+        let count = T::from_f64((m * n) as f64);
+        self.sum_all() / count
+    }
+
+    /// Product of all elements (alias for [`prod_all`](Self::prod_all)).
+    #[must_use]
+    #[inline]
+    pub fn prod(&self) -> T {
+        self.prod_all()
     }
 
     /// Maximum element (alias for [`max_all`](Self::max_all)).
@@ -299,6 +316,41 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         })
     }
 
+    /// Variance along axis with degrees-of-freedom correction.
+    ///
+    /// `ddof=0` gives population variance (same as `var_axis`).
+    /// `ddof=1` gives sample (unbiased) variance with `N-1` denominator.
+    #[must_use]
+    pub fn var_axis_ddof(&self, axis: usize, ddof: usize) -> Self {
+        let n = self.axis_len(axis, "var_axis_ddof");
+        assert!(
+            n > ddof,
+            "nabla: var_axis_ddof requires axis length ({n}) > ddof ({ddof})"
+        );
+        let mean = self.mean_axis(axis);
+        let (mr, mc) = mean.shape();
+        // Compute sum of squared deviations, then divide by (n - ddof).
+        let sq_dev = match axis {
+            0 => Self::from_fn(mr, mc, |_, c| {
+                let mu = mean.get(0, c);
+                (0..self.nrows()).fold(T::zero(), |acc, r| {
+                    let d = self.get(r, c) - mu;
+                    acc + d * d
+                })
+            }),
+            _ => Self::from_fn(mr, mc, |r, _| {
+                let mu = mean.get(r, 0);
+                (0..self.ncols()).fold(T::zero(), |acc, c| {
+                    let d = self.get(r, c) - mu;
+                    acc + d * d
+                })
+            }),
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let inv_denom = T::from_f64(1.0 / (n - ddof) as f64);
+        &sq_dev * inv_denom
+    }
+
     /// Population standard deviation along axis: `sqrt(var_axis)`.
     #[must_use]
     pub fn std_axis(&self, axis: usize) -> Self {
@@ -316,6 +368,12 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn std_axis_keepdim(&self, axis: usize) -> Self {
         self.std_axis(axis)
+    }
+
+    /// Product along axis: axis 0 -> (1, ncols), axis 1 -> (nrows, 1).
+    #[must_use]
+    pub fn prod_axis(&self, axis: usize) -> Self {
+        self.reduce_axis(axis, |a, b| a * b)
     }
 
     /// Product of all elements.

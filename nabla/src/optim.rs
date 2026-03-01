@@ -217,6 +217,19 @@ impl GradScaler {
     pub fn scale(&self) -> f64 {
         self.scale
     }
+
+    /// Current scale factor (alias for [`GradScaler::scale`]).
+    ///
+    /// Use with `Variable::scale()` for mixed-precision backward:
+    /// ```ignore
+    /// let scaler = GradScaler::new();
+    /// let scaled_loss = loss_var.scale(T::from_f64(scaler.scale_factor()));
+    /// scaled_loss.backward()?;
+    /// ```
+    #[must_use]
+    pub fn scale_factor(&self) -> f64 {
+        self.scale
+    }
 }
 
 impl Default for GradScaler {

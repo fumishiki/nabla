@@ -158,6 +158,26 @@ pub fn vandermonde(nodes: &[f64]) -> Tensor<f64, Cpu> {
     Tensor::from_fn(m, m, |i, j| nodes[i].powi(j as i32))
 }
 
+/// Build a rectangular `m × ncols` Vandermonde matrix from node vector `nodes`.
+///
+/// `V[i, j] = nodes[i]^j` for `i` in `0..m`, `j` in `0..ncols`.
+///
+/// When `ncols == m` this is identical to [`vandermonde`].
+///
+/// # Errors
+///
+/// Returns an error if `ncols` is zero while `nodes` is non-empty.
+pub fn vandermonde_rect(nodes: &[f64], ncols: usize) -> Result<Tensor<f64, Cpu>> {
+    let m = nodes.len();
+    if m == 0 {
+        return Ok(Tensor::<f64, Cpu>::zeros(0, ncols));
+    }
+    if ncols == 0 {
+        return Err(Error::invalid("vandermonde_rect: ncols must be > 0"));
+    }
+    Ok(Tensor::from_fn(m, ncols, |i, j| nodes[i].powi(j as i32)))
+}
+
 // ---------------------------------------------------------------------------
 // balance — Parlett-Reinsch matrix balancing
 // ---------------------------------------------------------------------------

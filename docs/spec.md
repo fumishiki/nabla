@@ -550,6 +550,10 @@ Rust 制約: `Index` trait は `&Output` を返す → element access `a[(i, j)]
 
 **W28 additions**: `asin` `acos` `atan` `atan2` `sinh` `cosh` `asinh` `acosh` `atanh` `log2` `log10` — all element-wise. `epow(&b)` for tensor-tensor power. Owned operators: `a + b` / `a - b` (move semantics, allocation reuse).
 
+**W29 additions**: `.tan()` element-wise. Commutative scalar*Tensor: `f32 * &Tensor` / `f64 * &Tensor` (+ and -). Owned matmul: `a * b` / `a * &b` / `&a * b` (all ownership combos). `Tensor::from_vec(data, nrows, ncols)` constructor. `.mean()` / `.prod()` global reduction aliases.
+
+**W30 additions**: `Div<T>` operator for `&Tensor / scalar` and `scalar / &Tensor` (f32/f64). `zeros_vec(n)` / `ones_vec(n)` / `rand_vec(n)` / `randn_vec(n)` — single-arg column vector constructors. `prod_axis(axis)` reduction. `var_axis_ddof(axis, ddof)` for Bessel-corrected sample variance.
+
 ### 3.5 Broadcasting & fusion
 
 | Level | nabla | PyTorch | GPU | Alloc |
@@ -565,7 +569,7 @@ Rust 制約: `Index` trait は `&Output` を返す → element access `a[(i, j)]
 
 **Auto-capture**: `fuse!(expr)` — テンソル変数を AST から自動検出。明示形式 `fuse!(expr; x, y)` も引き続き有効。スカラー変数が式中にある場合のみ明示形式を使用。
 
-Element-wise methods: `.exp()` `.ln()` `.log1p()` `.powf(p)` `.sin()` `.cos()` `.tanh()` `.sqrt()` `.abs()` `.recip()` `.neg()` `.erf()` `.ceil()` `.floor()` `.round()` — all PyTorch-identical。Reduction: `.sum()` `.max()` `.min()` `.argmax()` `.argmin()`。
+Element-wise methods: `.exp()` `.ln()` `.log1p()` `.powf(p)` `.sin()` `.cos()` `.tan()` `.tanh()` `.sqrt()` `.abs()` `.recip()` `.neg()` `.erf()` `.ceil()` `.floor()` `.round()` — all PyTorch-identical。Reduction: `.sum()` `.max()` `.min()` `.argmax()` `.argmin()`。
 
 ### 3.6 Linear algebra
 
@@ -592,7 +596,9 @@ CPU dense via `faer`。GPU: Recursive GEMM TRSM (`gpu_trsm_lower`, W15)。
 | col space | `a.orth(tol)?` | — | `orth(A)` |
 | sign, log\|det\| | `a.slogdet()?` | `np.linalg.slogdet(A)` | `logabsdet(A)` |
 
-Structural: `Diagonal::new(v)`, `Symmetric::new(a, Side::Lower)?`, `Triangular::new(a, TriKind::Lower)?`。Factorization reuse: `lu.solve(&b)`, `lu.inverse()`, `lu.reconstruct()`。`?` = zero-cost `Result`（silent NaN 排除）。
+Structural: `Diagonal::new(v)`, `Symmetric::new(a, Side::Lower)?`, `Triangular::new(a, TriKind::Lower)?`。Factorization reuse: `lu.solve(&b)`, `lu.inverse()`, `lu.reconstruct()`。`?` = zero-cost `Result`（silent NaN 排除）。Constructors: `vandermonde_rect()` for rectangular Vandermonde matrices (W29).
+
+**W30**: `LinalgExt` now supports `f32` tensors (f32→f64 internal promotion for all 45+ methods). Previously f64-only; f32 tensors required manual cast.
 
 ### 3.7 Sparse
 
@@ -669,9 +675,13 @@ let g = sym!(exp(-x) * ln(y + 1.0));        // functions: sin/cos/exp/ln/tanh/sq
 
 **CAS extensions (W28)**: `substitute(expr, var, replacement)` for symbolic substitution. `gradient(expr, vars)`, `jacobian(exprs, vars)`, `hessian(expr, vars)` for multivariate calculus. Inverse trig/hyperbolic in ExprKind: Asin, Acos, Atan, Sinh, Cosh, Asinh, Acosh, Atanh with full differentiation rules.
 
+**CAS extensions (W29)**: `ExprKind::Tan` with full differentiation rules across Backend/Scalar/Tensor/GPU. `eval_tensor` now supports inverse trig/hyperbolic (asin/acos/atan/sinh/cosh/asinh/acosh/atanh). Owned `Expr` operators (Add/Sub/Mul/Div/Neg for all ownership combos). `(&Expr, f64)` mixed Sub/Div operators. `diff`/`simplify` added to prelude.
+
 **ODE solvers**: `euler` (1), `rk4` (4), `dormand_prince` (5(4) adaptive), `bdf1` (implicit), `bdf2` (2nd-order implicit, W27)。全 config に `saveat: Option<Vec<f64>>` オプション (W27) — 指定時刻のみ解を記録（線形補間）。Preparation pattern: `grad_prep(f, &x)` で prep/execute 分離。AD + CAS + ODE が**単一 crate に統合**。
 
 **W28**: `terminate` callback in `AdaptiveConfig` for early stopping. `OdeSolution::eval(t)` linear interpolation. `sol[i]` index access. Backward integration (reversed t_span). `parareal_solve_tensor` for Tensor state. `ensemble_euler_maruyama` for N-trajectory Monte Carlo. Builder methods: `.with_dt()`, `.with_tol()`, `.with_saveat()`.
+
+**W29**: `stormer_verlet` returns `SymplecticSolution` (not raw tuple). `ensemble_euler_maruyama` parallel via `std::thread::scope`. SDE backward integration support (euler_maruyama + milstein). `Bdf2Config` struct (separate from Bdf1Config). `SdeConfig::with_noise_dims()` builder. `euler`/`rk4`/`dormand_prince` added to prelude.
 
 ### 3.11 Utilities
 
@@ -730,6 +740,8 @@ let g = sym!(exp(-x) * ln(y + 1.0));        // functions: sin/cos/exp/ln/tanh/sq
 | Linear layer | Stateful module | `Linear::new(in, out).forward(&x)` |
 | Iterator | Element-wise | `t.elements()`, `t.indexed_iter()`, `t.item()`, `t.to_vec()` |
 | Scheduler | LR management | `LrScheduler::new(schedule, lr).step()` |
+
+**W29 additions**: `Module::train()`/`eval()` shorthand methods. `state_dict()`/`load_state_dict()` on `Module` trait + `Linear` impl. `save_tensors`/`load_tensors` generic over `T: Scalar` (io.rs). `Optimizer::step_slices()` simplified signature. `AdamW::from_module()` constructor.
 
 **命名原則**: NumPy/PyTorch と同名なら同名。Julia が短ければ Julia 寄り。どちらでもないなら **最短の明確な名前**。(Julia/Python alignment → §1 Design principles)
 
@@ -1090,6 +1102,8 @@ Pre-optimization (W19): exp 2.38ms → **46× gap reduced to ≈ parity** via: a
 | Euler-Maruyama | ✅ W27 | SDE solver, strong order 0.5, inline Xorshift64 + Box-Muller PRNG |
 | Milstein | ✅ W27 | SDE solver, strong order 1.0, noise derivative correction term |
 | Ensemble SDE | ✅ W28 | N-trajectory Monte Carlo via ensemble_euler_maruyama |
+| Ensemble parallel | ✅ W29 | ensemble_euler_maruyama parallel via std::thread::scope |
+| SDE backward | ✅ W29 | euler_maruyama + milstein backward integration support |
 
 ---
 
@@ -1118,6 +1132,10 @@ Named axes (`Tensor<T,B,Axes=()>` W11): compile error on axis mismatch。StaticM
 W27 ML abstractions: `Module<T,B>` trait (forward/parameters/named_parameters/parameters_mut), `Optimizer<T,B>` trait + `AdamW` struct, `Conv1dConfig`/`Conv2dConfig`/`Conv3dConfig` builder pattern, `embedding()` free function. Auto broadcasting for `&Tensor + &Tensor` (row/col/scalar). `range!` macro. `view()` copy warning. `sym!` proc macro (Pratt parser → `Expr::*` codegen, supports +/-/*/^/unary/functions). `MatrixLike<T>` trait (read-only common interface for Tensor/StaticMatrix/TensorView). `TensorView<'a,T,B>` zero-copy borrowed slice. SDE solvers: `euler_maruyama` + `milstein`.
 
 **N-D tensor policy (W27 決定)**: `NdTensor<T>` は CPU-only を正式方針とする。GPU 計算の単位は 2D (cuBLAS GEMM, FlashAttention, im*col+GEMM) であり、N-D 次元は shape/indexing の抽象に過ぎない。`Tensor<T,B>` の 2D 設計は GPU ハードウェアと一致しており、統合のメリットがない。N-D → 2D 変換は `slice_2d` / `into_2d` で対応。
+
+W28 Round 2 improvements: Inverse trig/hyperbolic (11 new element-wise ops on Backend+Scalar+CAS), `inv()`/`null_space()`/`orth()`/`slogdet()` linalg, `cond_p(p)` unification, `sum()`/`max()`/`min()` aliases, `epow` tensor power, `linear()` layer + `Linear` struct, CAS `substitute`/`gradient`/`jacobian`/`hessian`, ODE event detection + backward integration + `OdeSolution::eval(t)` + `parareal_solve_tensor` + ensemble SDE, autograd NN ops (relu/sigmoid/gelu/sum_axis/mean/cross_entropy on Variable), `Module` train/eval mode + `forward_with` multi-input + inspection methods, `AdamW` vectorized + `SGD` + `set_lr()` + `LrScheduler`, `elements()`/`indexed_iter()`/`item()`/`to_vec()` iterators, owned `Add/Sub`, sparse transpose/speye/addition, `discrete_lyapunov`/`discrete_sylvester`, `care` alias, `logspace`/`geomspace`, `topk` axis=0, `argsort_by`.
+
+W29 Round 3 improvements: **Math**: `tan()` element-wise across all layers (Backend/Scalar/Tensor/GPU), commutative scalar*Tensor ops (`f32/f64 * &Tensor`, + and -), owned matmul (all ownership combos), `from_vec(data, nrows, ncols)`, `mean()`/`prod()` aliases. **Linalg**: `vandermonde_rect()`. **CAS**: `ExprKind::Tan`, `eval_tensor` inverse trig/hyperbolic fix, owned `Expr` operators, `(&Expr, f64)` Sub/Div, `diff`/`simplify` in prelude. **ODE/SDE**: `stormer_verlet` → `SymplecticSolution`, `ensemble_euler_maruyama` parallel (`std::thread::scope`), SDE backward integration, `Bdf2Config` struct, `SdeConfig::with_noise_dims()`, `euler`/`rk4`/`dormand_prince` in prelude. **Autograd**: `Variable::ediv()`/`epow()`/`abs()`/`log1p()`/`silu()`. **Module/Optimizer**: `Module::train()`/`eval()` shorthand, `state_dict`/`load_state_dict`, io generic scalar, `Optimizer::step_slices()` simplified, `AdamW::from_module()`. **Bug fix**: `reduce_axis` double-count first element (loop start 0→1).
 
 ---
 
@@ -1405,6 +1423,8 @@ Auto-fusion cost model, CUDA Graph capture/replay (1.67×), best-fit dual-pool a
 | W25 | R3 math+ML+ergonomics: **Linalg**: `solve_tridiag` (Thomas O(n)), `hessenberg` (public API), `polar` (SVD-based), `toeplitz`/`circulant`/`vandermonde` constructors, `balance` (Parlett-Reinsch), `frechet_deriv` (block-triangular), `continuous_riccati` (Hamiltonian Schur). **ML training**: `adamw_step`, `LrSchedule`+`lr_at_step` (cosine/linear/1cycle), `rotary_embedding` (RoPE), `GradScaler` (AMP loss scaling), `kv_cache_append`. **IO**: `save_tensors`/`load_tensors` (NBLA binary format). **Ergonomics**: `eachrow`/`eachcol` iterators + `IntoIterator`, `map_axis`, `similar`/`similar_shape`, `filter_sum`/`count_where`, `backslash` (auto LU/QR), `fuse_!` (in-place), `tmap!` (unified CPU/GPU) |
 | W26 | 3-layer architecture restructuring: **Layer 1** (nabla-macros): split lib.rs → fuse.rs + mat.rs + grad.rs modules. **Layer 2** (nabla-core): split tensor.rs → tensor/{mod, constructors, ops, iter, display, ndtensor, static_matrix, dyntensor}, split cuda_backend.rs → cuda/{mod, kernels, graph, pool}. **Layer 3** (nabla): split lib.rs → {constructors, nn, optim, io, macros}.rs (slim prelude), split linalg.rs → linalg/{mod, decompose, solve, matrix_fn, equation, structured}. File size policy: >500 lines → module dir |
 | W27 | Notation layer improvements (3-persona evaluation → fixes): **CAS**: method chain `.sin_()/.cos_()/.powf(n)/.powi(n)`, `From<f64/i32> for Expr`, `var()` free fn. **ML abstractions**: `Module<T,B>` trait, `Optimizer<T,B>` trait + `AdamW` struct, `Conv1d/2d/3dConfig` builder pattern, `embedding()` free fn, `view()` copy warning. **ODE**: `saveat` option (all 7 configs), `bdf2` solver (2nd-order implicit). **Linalg**: `geig()` (generalized eigenvalue via Cholesky reduction), `cond1()` (1-norm condition number). **Broadcasting**: auto broadcast for `&Tensor +/- &Tensor` (row/col/scalar shape inference). **Macros**: `range!` alias for `frange!`. **Refactoring**: `einsum.rs` 1392→1178 lines (−15%), `macros.rs` → `notation.rs` rename, `stencil.rs` import fix, unused macro cleanup. **SDE**: `euler_maruyama` (strong order 0.5) + `milstein` (strong order 1.0), `SdeConfig`, inline Xorshift64+Box-Muller PRNG. **sym! macro**: Pratt parser proc macro for `sym!(sin(x^2) + cos(y))` → `Expr::*` codegen. **Traits**: `MatrixLike<T>` read-only common interface (Tensor/StaticMatrix/TensorView), `TensorView<'a,T,B>` zero-copy borrowed slice. **Arch decision**: NdTensor<T> CPU-only を正式方針化 (GPU計算単位=2D、N-D統合は不要) |
+| W28 | Round 2 notation improvements (3-persona re-evaluation → 40+ fixes): **Math**: 11 inverse trig/hyperbolic ops (asin/acos/atan/atan2/sinh/cosh/asinh/acosh/atanh/log2/log10) on Backend+Scalar+Dual+CAS+GPU. **Linalg**: `inv()`, `null_space()`, `orth()`, `slogdet()`, `cond_p(p)` unification, `cond_inf()`, `discrete_lyapunov`, `discrete_sylvester`, `care` alias. **CAS**: `substitute`, `gradient`, `jacobian`, `hessian`, 8 new ExprKind variants with diff rules, sym! macro extended. **ODE**: event detection (`terminate` callback), `OdeSolution::eval(t)` + `Index`, backward integration, `parareal_solve_tensor`, `ensemble_euler_maruyama`, builder pattern (`.with_dt()`). **Autograd**: `Variable::relu()/sigmoid()/gelu()/sum_axis_var()/mean_var()/cross_entropy()`, `Tape::no_grad()`. **Module**: train/eval mode, `forward_with` multi-input, inspection methods (children/named_children/buffers/apply), `Linear` layer struct. **Optimizer**: vectorized `AdamW`, `SGD`, `set_lr()`, `LrScheduler`. **Ergonomics**: `sum()/max()/min()` aliases, `epow`, `linear()`, `item()/to_vec()/elements()/indexed_iter()`, `similar_zeros<U>()`, `tensor_range!`, owned `Add/Sub/Neg`, `dropout_auto`, `topk` axis=0, `argsort_by`. **Sparse**: transpose/speye/addition. **Constructors**: `logspace`, `geomspace` |
+| W29 | Round 3 improvements (25 items — 14 important + 11 nice-to-have): **Math**: `tan()` across all layers, commutative scalar*Tensor (f32/f64 * &Tensor, + and -), owned matmul (all ownership combos), `from_vec(data,nrows,ncols)`, `mean()`/`prod()` aliases. **Linalg**: `vandermonde_rect()`. **CAS**: `ExprKind::Tan` + diff rules, `eval_tensor` inverse trig/hyperbolic fix, owned `Expr` operators (Add/Sub/Mul/Div/Neg all combos), `(&Expr,f64)` Sub/Div, `diff`/`simplify` prelude. **ODE/SDE**: `stormer_verlet` → `SymplecticSolution`, `ensemble_euler_maruyama` parallel (`std::thread::scope`), SDE backward integration, `Bdf2Config` struct, `SdeConfig::with_noise_dims()`, `euler`/`rk4`/`dormand_prince` prelude. **Autograd**: `Variable::ediv()`/`epow()`/`abs()`/`log1p()`/`silu()`. **Module/Optimizer**: `Module::train()`/`eval()` shorthand, `state_dict`/`load_state_dict` pattern, io generic scalar, `Optimizer::step_slices()` simplified, `AdamW::from_module()`. **Bug fix**: `reduce_axis` double-count first element (loop start 0→1) |
 
 ---
 

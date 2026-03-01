@@ -192,6 +192,13 @@ impl<T: RealScalar, const N: usize> MathOps for MultiDual<T, N> {
         let a: f64 = self.value.into();
         self.chain(a.cos(), -a.sin())
     }
+    // tan'(a) = sec²(a) = 1/cos²(a)
+    #[inline]
+    fn math_tan(self) -> Self {
+        let a: f64 = self.value.into();
+        let c = a.cos();
+        self.chain(a.tan(), 1.0 / (c * c))
+    }
     #[inline]
     fn math_tanh(self) -> Self {
         let a: f64 = self.value.into();

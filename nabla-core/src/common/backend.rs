@@ -2,6 +2,9 @@
 
 use crate::scalar::Scalar;
 
+#[cfg(feature = "cpu")]
+pub use crate::cpu::{Cpu, CpuStorage};
+
 pub(crate) mod private {
     pub trait Sealed {}
 }
@@ -179,6 +182,9 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
 
     /// Element-wise `cos(x)`.
     fn cos<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `tan(x)`.
+    fn tan<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
 
     /// Element-wise `tanh(x)`.
     fn tanh<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
@@ -1070,8 +1076,6 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     }
 }
 
-mod cpu;
-pub use cpu::{Cpu, CpuStorage};
 
 #[cfg(feature = "gpu")]
 /// GPU backend — wgpu + WGSL compute shaders (f32 only).

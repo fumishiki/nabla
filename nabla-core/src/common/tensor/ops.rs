@@ -1,7 +1,7 @@
 // tensor/ops.rs — Tensor arithmetic: element access, element-wise ops, broadcast,
 //                  transpose/permute, matrix multiply, and operator overloads.
 
-use core::ops::{Add, AddAssign, Mul, MulAssign, Neg, RangeBounds, Sub, SubAssign};
+use core::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, RangeBounds, Sub, SubAssign};
 
 use crate::backend::Backend;
 use crate::scalar::Scalar;
@@ -562,6 +562,27 @@ impl<T: Scalar, B: Backend> Mul<T> for &Tensor<T, B> {
     }
 }
 
+/// Scalar division: `&tensor / scalar`.
+impl<T: Scalar, B: Backend> Div<T> for &Tensor<T, B> {
+    type Output = Tensor<T, B>;
+
+    #[allow(clippy::suspicious_arithmetic_impl)]
+    #[inline]
+    fn div(self, rhs: T) -> Self::Output {
+        self * rhs.math_recip()
+    }
+}
+
+/// Scalar division: `tensor / scalar` (owned).
+impl<T: Scalar, B: Backend> Div<T> for Tensor<T, B> {
+    type Output = Self;
+
+    #[inline]
+    fn div(self, rhs: T) -> Self::Output {
+        &self / rhs
+    }
+}
+
 // ---- Owned / mixed-ref operator overloads ----
 
 /// `Tensor + Tensor` (owned + owned) — delegates to `&lhs + &rhs`.
@@ -633,3 +654,128 @@ impl<T: Scalar, B: Backend> Neg for Tensor<T, B> {
         -&self
     }
 }
+
+// ---- Owned matmul operator overloads (I-3) ----
+
+/// `Tensor * Tensor` (owned * owned) — delegates to `&lhs * &rhs`.
+impl<T: Scalar, B: Backend> Mul for Tensor<T, B> {
+    type Output = Self;
+
+    #[inline]
+    fn mul(self, rhs: Self) -> Self::Output {
+        &self * &rhs
+    }
+}
+
+/// `Tensor * &Tensor` (owned * ref) — delegates to `&lhs * rhs`.
+impl<T: Scalar, B: Backend> Mul<&Tensor<T, B>> for Tensor<T, B> {
+    type Output = Self;
+
+    #[inline]
+    fn mul(self, rhs: &Self) -> Self::Output {
+        &self * rhs
+    }
+}
+
+/// `&Tensor * Tensor` (ref * owned) — delegates to `self * &rhs`.
+impl<T: Scalar, B: Backend> Mul<Tensor<T, B>> for &Tensor<T, B> {
+    type Output = Tensor<T, B>;
+
+    #[inline]
+    fn mul(self, rhs: Tensor<T, B>) -> Self::Output {
+        self * &rhs
+    }
+}
+
+// ---- Commutative scalar operators (I-2) ----
+
+/// Generate `scalar * &Tensor`, `scalar * Tensor`, `scalar + &Tensor`, `scalar + Tensor`,
+/// `scalar - &Tensor`, `scalar - Tensor` for concrete scalar types.
+macro_rules! impl_scalar_lhs_ops {
+    ($($t:ty),*) => { $(
+        /// `scalar * &Tensor` — scalar scaling (commutative).
+        impl<B: Backend> Mul<&Tensor<$t, B>> for $t {
+            type Output = Tensor<$t, B>;
+
+            #[inline]
+            fn mul(self, rhs: &Tensor<$t, B>) -> Self::Output {
+                rhs * self
+            }
+        }
+
+        /// `scalar * Tensor` — scalar scaling (commutative, owned).
+        impl<B: Backend> Mul<Tensor<$t, B>> for $t {
+            type Output = Tensor<$t, B>;
+
+            #[inline]
+            fn mul(self, rhs: Tensor<$t, B>) -> Self::Output {
+                &rhs * self
+            }
+        }
+
+        /// `scalar + &Tensor` — broadcast scalar add (commutative).
+        impl<B: Backend> Add<&Tensor<$t, B>> for $t {
+            type Output = Tensor<$t, B>;
+
+            #[inline]
+            fn add(self, rhs: &Tensor<$t, B>) -> Self::Output {
+                let (m, n) = rhs.shape();
+                Tensor::from_fn(m, n, |r, c| self + rhs.get(r, c))
+            }
+        }
+
+        /// `scalar + Tensor` — broadcast scalar add (commutative, owned).
+        impl<B: Backend> Add<Tensor<$t, B>> for $t {
+            type Output = Tensor<$t, B>;
+
+            #[inline]
+            fn add(self, rhs: Tensor<$t, B>) -> Self::Output {
+                self + &rhs
+            }
+        }
+
+        /// `scalar - &Tensor` — broadcast scalar sub.
+        impl<B: Backend> Sub<&Tensor<$t, B>> for $t {
+            type Output = Tensor<$t, B>;
+
+            #[inline]
+            fn sub(self, rhs: &Tensor<$t, B>) -> Self::Output {
+                let (m, n) = rhs.shape();
+                Tensor::from_fn(m, n, |r, c| self - rhs.get(r, c))
+            }
+        }
+
+        /// `scalar - Tensor` — broadcast scalar sub (owned).
+        impl<B: Backend> Sub<Tensor<$t, B>> for $t {
+            type Output = Tensor<$t, B>;
+
+            #[inline]
+            fn sub(self, rhs: Tensor<$t, B>) -> Self::Output {
+                self - &rhs
+            }
+        }
+
+        /// `scalar / &Tensor` — element-wise reciprocal scaled by scalar.
+        impl<B: Backend> Div<&Tensor<$t, B>> for $t {
+            type Output = Tensor<$t, B>;
+
+            #[inline]
+            fn div(self, rhs: &Tensor<$t, B>) -> Self::Output {
+                let (m, n) = rhs.shape();
+                Tensor::from_fn(m, n, |r, c| self / rhs.get(r, c))
+            }
+        }
+
+        /// `scalar / Tensor` — element-wise reciprocal scaled by scalar (owned).
+        impl<B: Backend> Div<Tensor<$t, B>> for $t {
+            type Output = Tensor<$t, B>;
+
+            #[inline]
+            fn div(self, rhs: Tensor<$t, B>) -> Self::Output {
+                self / &rhs
+            }
+        }
+    )* };
+}
+
+impl_scalar_lhs_ops!(f32, f64);

@@ -8,12 +8,23 @@ use nabla_core::backend::Backend;
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 
+use crate::module::Module;
+
 /// Generic optimizer interface.
 pub trait Optimizer<T: Scalar, B: Backend> {
     /// Perform one optimization step: update `params` using `grads`.
     ///
     /// `params` and `grads` must have the same length and matching shapes.
     fn step(&mut self, params: &mut [&mut Tensor<T, B>], grads: &[&Tensor<T, B>]);
+
+    /// Simplified step: update owned parameter tensors using corresponding gradients.
+    ///
+    /// Convenience wrapper over [`Optimizer::step`] that accepts slices directly.
+    fn step_slices(&mut self, params: &mut [Tensor<T, B>], grads: &[Tensor<T, B>]) {
+        let mut param_refs: Vec<&mut Tensor<T, B>> = params.iter_mut().collect();
+        let grad_refs: Vec<&Tensor<T, B>> = grads.iter().collect();
+        self.step(&mut param_refs, &grad_refs);
+    }
 
     /// Reset all internal state (moments, step counter, etc.).
     fn reset(&mut self);
@@ -63,6 +74,26 @@ impl<T: Scalar, B: Backend> AdamW<T, B> {
             m,
             v,
         }
+    }
+
+    /// Create a new `AdamW` from raw parameter tensors.
+    ///
+    /// Infers shapes from the provided tensors and delegates to [`AdamW::new`].
+    /// Uses default hyperparameters (beta1=0.9, beta2=0.999, eps=1e-8, wd=0.01).
+    #[must_use]
+    pub fn from_params(lr: f64, params: &[&Tensor<T, B>]) -> Self {
+        let shapes: Vec<(usize, usize)> = params.iter().map(|p| p.shape()).collect();
+        Self::new(lr, &shapes)
+    }
+
+    /// Create a new `AdamW` from a module's parameters.
+    ///
+    /// Moment buffers are initialized as zeros matching each parameter shape.
+    /// Uses default hyperparameters (beta1=0.9, beta2=0.999, eps=1e-8, wd=0.01).
+    #[must_use]
+    pub fn from_module<M: Module<T, B>>(module: &M, lr: f64) -> Self {
+        let shapes: Vec<(usize, usize)> = module.parameters().iter().map(|p| p.shape()).collect();
+        Self::new(lr, &shapes)
     }
 
     /// Override beta1 (first moment decay).

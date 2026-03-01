@@ -11,7 +11,7 @@ use crate::backend::Cpu;
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 
-use super::ndtensor::NdTensor;
+use super::variants::NdTensor;
 use super::Tensor;
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {

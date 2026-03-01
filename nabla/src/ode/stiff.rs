@@ -7,7 +7,7 @@ use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 
 use super::{
-    alloc_trajectory, apply_saveat, diff_inf_norm, phi1, sc, validate, Bdf1Config,
+    alloc_trajectory, apply_saveat, diff_inf_norm, phi1, sc, validate, Bdf1Config, Bdf2Config,
     IfEulerScalarConfig, MetdConfig, OdeSolution,
 };
 
@@ -371,7 +371,7 @@ where
 /// obtain `y_1`, after which BDF-2 is used for all subsequent steps.
 ///
 /// The implicit equation at each step is solved via fixed-point (Picard)
-/// iteration, using the same convergence parameters as [`Bdf1Config`].
+/// iteration.
 ///
 /// # Errors
 ///
@@ -381,7 +381,7 @@ pub fn bdf2<T: Scalar, F>(
     f: F,
     y0: &Tensor<T, Cpu>,
     t_span: (f64, f64),
-    config: &Bdf1Config,
+    config: &Bdf2Config,
 ) -> Result<OdeSolution<T, Cpu>>
 where
     F: Fn(f64, &Tensor<T, Cpu>) -> Result<Tensor<T, Cpu>>,

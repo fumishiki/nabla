@@ -3,9 +3,13 @@
 //! Provides a common interface for neural network layers with trainable
 //! parameters, enabling generic training loops and model composition.
 
+use std::rc::Rc;
+
 use nabla_core::backend::{Backend, DefaultBackend};
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
+
+use crate::autograd::{Tape, Variable};
 
 /// Trait for neural network modules with trainable parameters.
 ///
@@ -23,6 +27,22 @@ pub trait Module<T: Scalar, B: Backend> {
         self.forward(x)
     }
 
+    /// Run forward pass with autograd tracking.
+    ///
+    /// Default implementation wraps parameters as `Variable`s on the given tape,
+    /// runs `forward` on the underlying tensor data, and returns the result as
+    /// a `Variable`.  Override for proper gradient flow through layer operations.
+    fn forward_var(
+        &self,
+        x: &Variable<T, B>,
+        tape: &Rc<Tape<T, B>>,
+    ) -> Variable<T, B> {
+        // Fallback: run forward on raw data, wrap output as a leaf.
+        // Subclasses should override for proper gradient tracking.
+        let out = self.forward(x.data());
+        tape.variable(out)
+    }
+
     /// Whether the module is in training mode.
     ///
     /// Default returns `true`. Implementors should store a `training: bool` field.
@@ -32,6 +52,16 @@ pub trait Module<T: Scalar, B: Backend> {
 
     /// Set training/evaluation mode.
     fn set_training(&mut self, training: bool);
+
+    /// Switch to training mode (shorthand for `set_training(true)`).
+    fn train(&mut self) {
+        self.set_training(true);
+    }
+
+    /// Switch to evaluation mode (shorthand for `set_training(false)`).
+    fn eval(&mut self) {
+        self.set_training(false);
+    }
 
     /// Collect all trainable parameters (immutable references).
     fn parameters(&self) -> Vec<&Tensor<T, B>>;
@@ -58,6 +88,49 @@ pub trait Module<T: Scalar, B: Backend> {
     fn buffers(&self) -> Vec<&Tensor<T, B>> {
         vec![]
     }
+
+    /// Return a snapshot of all named parameters (state dictionary).
+    ///
+    /// Default implementation delegates to [`Module::named_parameters`].
+    fn state_dict(&self) -> Vec<(&str, &Tensor<T, B>)> {
+        self.named_parameters()
+    }
+
+    /// Load parameters from a state dictionary, matching by name.
+    ///
+    /// Default implementation matches names from [`Module::named_parameters`]
+    /// and copies data from the provided dictionary entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a parameter name in the dictionary does not match
+    /// any known parameter, or if shapes are incompatible.
+    fn load_state_dict(
+        &mut self,
+        dict: &[(&str, &Tensor<T, B>)],
+    ) -> Result<(), crate::io::StateError> {
+        let mut params = self.named_parameters_mut();
+        for (name, src) in dict {
+            let dst = params
+                .iter_mut()
+                .find(|(n, _)| n == name)
+                .ok_or_else(|| crate::io::StateError::MissingKey((*name).to_owned()))?;
+            let (sr, sc) = src.shape();
+            let (dr, dc) = dst.1.shape();
+            if sr != dr || sc != dc {
+                return Err(crate::io::StateError::ShapeMismatch {
+                    key: (*name).to_owned(),
+                    expected: (dr, dc),
+                    got: (sr, sc),
+                });
+            }
+            *dst.1 = Tensor::from_fn(sr, sc, |r, c| src.get(r, c));
+        }
+        Ok(())
+    }
+
+    /// Mutable named parameter access for [`Module::load_state_dict`].
+    fn named_parameters_mut(&mut self) -> Vec<(&str, &mut Tensor<T, B>)>;
 
     /// Apply a function to every mutable parameter in-place.
     fn apply(&mut self, f: &dyn Fn(&mut Tensor<T, B>)) {
@@ -119,6 +192,29 @@ impl<T: Scalar, B: Backend> Module<T, B> for Linear<T, B> {
         }
     }
 
+    /// Autograd-tracked forward: `x @ weight^T + bias` using Variable ops.
+    fn forward_var(
+        &self,
+        x: &Variable<T, B>,
+        tape: &Rc<Tape<T, B>>,
+    ) -> Variable<T, B> {
+        // Wrap transposed weight as a tracked variable.
+        // Variable::transpose() is now available, but using pre-transposed data
+        // avoids an extra op on the tape.
+        let wt_data = self.weight.t();
+        let wt_var = tape.variable(wt_data);
+        // x @ weight^T via matmul
+        let out = x.matmul(&wt_var);
+        // Add bias if present.
+        match &self.bias {
+            Some(b) => {
+                let bias_var = tape.variable(b.clone());
+                out.add_var(&bias_var)
+            }
+            None => out,
+        }
+    }
+
     fn training(&self) -> bool {
         self.training
     }
@@ -147,6 +243,14 @@ impl<T: Scalar, B: Backend> Module<T, B> for Linear<T, B> {
         let mut params: Vec<&mut Tensor<T, B>> = vec![&mut self.weight];
         if let Some(ref mut b) = self.bias {
             params.push(b);
+        }
+        params
+    }
+
+    fn named_parameters_mut(&mut self) -> Vec<(&str, &mut Tensor<T, B>)> {
+        let mut params: Vec<(&str, &mut Tensor<T, B>)> = vec![("weight", &mut self.weight)];
+        if let Some(ref mut b) = self.bias {
+            params.push(("bias", b));
         }
         params
     }

@@ -5028,7 +5028,7 @@ impl crate::backend::Backend for crate::backend::Cuda {
         cuda_baddbmm(c, a, b, batch, m, k, n, beta, alpha)
     }
 
-    gpu_common::gpu_unary_ops!(CudaStorage; exp, ln, log1p, sin, cos, tanh, sqrt, abs, recip, erf, ceil, floor, round, asin, acos, atan, sinh, cosh, asinh, acosh, atanh, log2, log10);
+    gpu_common::gpu_unary_ops!(CudaStorage; exp, ln, log1p, sin, cos, tan, tanh, sqrt, abs, recip, erf, ceil, floor, round, asin, acos, atan, sinh, cosh, asinh, acosh, atanh, log2, log10);
     gpu_common::gpu_unary_ops!(CudaStorage; silu, mish, hardswish);
     gpu_common::gpu_binary_ops!(CudaStorage; add, sub, emul, ediv, atan2);
 

@@ -65,6 +65,12 @@ impl<T: RealScalar> Dual<T> {
         self.math_cos()
     }
 
+    /// Dual tan: delegates to `MathOps::math_tan`.
+    #[inline]
+    pub fn tan(self) -> Self {
+        self.math_tan()
+    }
+
     /// Dual tanh: delegates to `MathOps::math_tanh`.
     #[inline]
     pub fn tanh(self) -> Self {
@@ -354,6 +360,14 @@ impl<T: RealScalar> MathOps for Dual<T> {
         let a: f64 = self.value.into();
         let b: f64 = self.deriv.into();
         Self::new(T::from_f64(a.cos()), T::from_f64(-a.sin() * b))
+    }
+    // tan(a+bε) = tan(a) + sec²(a)*b·ε
+    #[inline]
+    fn math_tan(self) -> Self {
+        let a: f64 = self.value.into();
+        let b: f64 = self.deriv.into();
+        let c = a.cos();
+        Self::new(T::from_f64(a.tan()), T::from_f64(b / (c * c)))
     }
     // tanh(a+bε) = tanh(a) + (1-tanh²(a))*b·ε
     #[inline]

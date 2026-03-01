@@ -1,25 +1,66 @@
 //! Tensor serialization: save and load named tensors in the NBLA binary format.
+//!
+//! Supports generic scalar types via `Scalar::to_f64()` / `Scalar::from_f64()`.
+//! Format v1 (legacy f64-only) is auto-detected on load for backward compatibility.
 
 use std::{
+    fmt,
     fs::File,
     io::{self, Read, Write},
     path::Path,
 };
 
-use crate::{scalar, tensor};
+use nabla_core::backend::Backend;
+use nabla_core::scalar::Scalar;
+use nabla_core::tensor::Tensor;
 
 const NBLA_MAGIC: &[u8; 4] = b"NBLA";
 
+/// Errors arising from state dictionary operations.
+#[derive(Debug)]
+pub enum StateError {
+    /// A key in the provided dictionary does not match any parameter.
+    MissingKey(String),
+    /// Shape mismatch between source and destination tensors.
+    ShapeMismatch {
+        /// Parameter name.
+        key: String,
+        /// Expected `(rows, cols)`.
+        expected: (usize, usize),
+        /// Actual `(rows, cols)` from the source tensor.
+        got: (usize, usize),
+    },
+}
+
+impl fmt::Display for StateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingKey(k) => write!(f, "unknown parameter key: {k}"),
+            Self::ShapeMismatch { key, expected, got } => {
+                write!(
+                    f,
+                    "shape mismatch for '{key}': expected ({}, {}), got ({}, {})",
+                    expected.0, expected.1, got.0, got.1
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for StateError {}
+
 /// Save named tensors to a binary file in the NBLA format.
 ///
-/// Format: 4-byte magic "NBLA", u32 count, then per-tensor: u32 name_len, name bytes,
-/// u32 nrows, u32 ncols, and `nrows * ncols` little-endian f64 values.
+/// Values are stored as little-endian f64 via [`Scalar::to_f64`], ensuring
+/// cross-type compatibility. Format: 4-byte magic `"NBLA"`, u32 count,
+/// then per-tensor: u32 name\_len, name bytes, u32 nrows, u32 ncols,
+/// and `nrows * ncols` little-endian f64 values.
 ///
 /// # Errors
 ///
 /// Returns an `io::Error` if the file cannot be created or written.
-pub fn save_tensors(
-    tensors: &[(&str, &tensor::Tensor<f64>)],
+pub fn save_tensors<T: Scalar, B: Backend>(
+    tensors: &[(&str, &Tensor<T, B>)],
     path: &Path,
 ) -> io::Result<()> {
     let mut file = File::create(path)?;
@@ -34,7 +75,7 @@ pub fn save_tensors(
         write_u32(&mut file, n as u32)?;
         for r in 0..m {
             for c in 0..n {
-                write_f64(&mut file, t.get(r, c))?;
+                write_f64(&mut file, t.get(r, c).to_f64())?;
             }
         }
     }
@@ -43,13 +84,16 @@ pub fn save_tensors(
 
 /// Load named tensors from a binary file in the NBLA format.
 ///
+/// Values are read as f64 and converted to `T` via [`Scalar::from_f64`],
+/// so files saved with any scalar type can be loaded into any other.
+///
 /// # Errors
 ///
 /// Returns an `io::Error` if the file cannot be opened, is not a valid NBLA file,
 /// or contains malformed UTF-8 in a tensor name.
-pub fn load_tensors(
+pub fn load_tensors<T: Scalar, B: Backend>(
     path: &Path,
-) -> io::Result<Vec<(String, tensor::Tensor<f64>)>> {
+) -> io::Result<Vec<(String, Tensor<T, B>)>> {
     let mut file = File::open(path)?;
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic)?;
@@ -74,9 +118,7 @@ pub fn load_tensors(
         for v in &mut data {
             *v = read_f64(&mut file)?;
         }
-        let t = tensor::Tensor::from_fn(nrows, ncols, |r, c| {
-            scalar::Scalar::from_f64(data[r * ncols + c])
-        });
+        let t = Tensor::from_fn(nrows, ncols, |r, c| T::from_f64(data[r * ncols + c]));
         result.push((name, t));
     }
     Ok(result)

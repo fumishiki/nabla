@@ -33,14 +33,15 @@
 
 pub use nabla_core::{
     LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64, backend, error, layout,
-    matrix_like, scalar, tensor,
+    scalar, tensor,
 };
 
 #[cfg(feature = "gpu")]
 pub use nabla_core::gpu;
 
-/// WGSL shader generators (pure string ops, always compiled).
-pub use nabla_core::wgsl;
+#[cfg(feature = "gpu")]
+/// WGSL shader generators (wgpu backend only).
+pub use nabla_core::gpu::shaders as wgsl;
 
 /// CUDA Graph capture/replay for eliminating kernel launch overhead.
 #[cfg(feature = "cuda")]
@@ -170,7 +171,7 @@ pub mod prelude {
     #[cfg(feature = "cpu")]
     pub use nabla_core::tensor::{DynTensor, Matrix};
     pub use nabla_core::tensor::nn::{Conv1dConfig, Conv2dConfig, Conv3dConfig};
-    pub use nabla_core::matrix_like::MatrixLike;
+    pub use nabla_core::tensor::MatrixLike;
     pub use nabla_core::tensor::{MatmulCompat, Tensor, TensorView};
     pub use nabla_macros::{
         axis, block, einsum, fuse, generated, mat, mega_fuse, nabla_grad, named, named_zeros, sym,
@@ -190,9 +191,14 @@ pub mod prelude {
         },
         sparse::*,
     };
+    pub use crate::ode::{
+        euler, rk4, dormand_prince,
+        euler_with_config, rk4_with_config,
+        EulerConfig, Rk4Config, OdeProblem,
+    };
     pub use crate::{
         autograd::{Tape, Variable, clip_grad_norm, scale_grad, zero_grad},
-        cas::{Expr, ExprKind, hessian, jacobian, substitute, var},
+        cas::{Expr, ExprKind, diff, eval, eval_tensor, hessian, jacobian, simplify, substitute, var},
         constructors::{
             approx_eq, arange, cross, diagm, dot, eye, fill, from_fn, geomspace, kron, linspace,
             logspace, nd_zeros, norm, norm_ord, ones, rand, randn, tr, zeros,
@@ -202,8 +208,8 @@ pub mod prelude {
         nn::{embedding, kaiming_normal, kv_cache_append, linear, rotary_embedding, xavier_uniform},
         optimizer::{AdamW, Optimizer, SGD},
         ode::{
-            AdaptiveConfig, Bdf1Config, MetdConfig, OdeSolution, PararealConfig, SdeConfig,
-            StormerVerletConfig,
+            AdaptiveConfig, Bdf1Config, Bdf2Config, MetdConfig, OdeSolution, PararealConfig,
+            SdeConfig, StormerVerletConfig, SymplecticSolution,
         },
         optim::{GradScaler, LrSchedule, LrScheduler, adamw_step, lr_at_step},
     };
@@ -212,7 +218,7 @@ pub mod prelude {
     #[cfg(feature = "cpu")]
     pub use crate::linalg::{
         balance, care, circulant, continuous_riccati, frechet_deriv, hessenberg, polar,
-        solve_tridiag, toeplitz, vandermonde,
+        solve_tridiag, toeplitz, vandermonde, vandermonde_rect,
     };
     #[cfg(feature = "cpu")]
     pub use half::{bf16, f16};

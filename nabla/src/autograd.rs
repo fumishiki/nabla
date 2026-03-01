@@ -12,7 +12,7 @@
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
-use std::ops::{Add, Mul, Neg, Sub};
+use std::ops::{Add, Div, Mul, Neg, Sub};
 use std::rc::{Rc, Weak};
 
 use nabla_core::backend::Backend;
@@ -127,6 +127,18 @@ impl<T: Scalar, B: Backend> Tape<T, B> {
             tape: Rc::clone(self),
             _not_send: PhantomData,
         }
+    }
+
+    /// Alias for [`Tape::variable`].
+    pub fn var(self: &Rc<Self>, data: Tensor<T, B>) -> Variable<T, B> {
+        self.variable(data)
+    }
+
+    /// Create Variables from a slice of parameter tensors.
+    ///
+    /// Convenience method for wrapping module parameters as tracked leaves.
+    pub fn track_params(self: &Rc<Self>, params: &[&Tensor<T, B>]) -> Vec<Variable<T, B>> {
+        params.iter().map(|p| self.variable((*p).clone())).collect()
     }
 
     /// Execute `f` without recording operations on this tape.
@@ -302,6 +314,48 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let entry = TapeEntry::new(move |g| {
             Self::prop(&lr, &g.emul(&b_data));
             Self::prop(&rr, &g.emul(&a_data));
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Element-wise division.
+    ///
+    /// backward: `grad_a += out_grad / b`, `grad_b += out_grad * (-a / b²)`.
+    #[must_use]
+    pub fn ediv(&self, rhs: &Self) -> Self {
+        let out = self.data.ediv(&rhs.data);
+        let (lr, rr) = (self.input_refs(), rhs.input_refs());
+        let (a_data, b_data) = (self.data.clone(), rhs.data.clone());
+        let entry = TapeEntry::new(move |g| {
+            // d/da (a/b) = 1/b
+            Self::prop(&lr, &g.ediv(&b_data));
+            // d/db (a/b) = -a/b²
+            let neg_a = -&a_data;
+            let b_sq = b_data.emul(&b_data);
+            Self::prop(&rr, &g.emul(&neg_a.ediv(&b_sq)));
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Element-wise power `a^b`.
+    ///
+    /// backward: `grad_a += out_grad * b * a^(b-1)`, `grad_b += out_grad * a^b * ln(a)`.
+    #[must_use]
+    pub fn epow(&self, rhs: &Self) -> Self {
+        let out = self.data.epow(&rhs.data);
+        let (lr, rr) = (self.input_refs(), rhs.input_refs());
+        let (a_data, b_data) = (self.data.clone(), rhs.data.clone());
+        let result = out.clone();
+        let entry = TapeEntry::new(move |g| {
+            // d/da (a^b) = b * a^(b-1)
+            let one = T::one_impl();
+            let (m, n) = a_data.shape();
+            let a_pow_bm1 = Tensor::from_fn(m, n, |r, c| {
+                a_data.get(r, c).math_powf(b_data.get(r, c) - one)
+            });
+            Self::prop(&lr, &g.emul(&b_data.emul(&a_pow_bm1)));
+            // d/db (a^b) = a^b * ln(a)
+            Self::prop(&rr, &g.emul(&result.emul(&a_data.ln())));
         });
         Self::derived(&self.tape, out, entry)
     }
@@ -501,6 +555,67 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         Self::derived(&self.tape, out, entry)
     }
 
+    /// Element-wise absolute value.
+    ///
+    /// backward: `grad * sign(input)`.
+    #[must_use]
+    pub fn abs(&self) -> Self {
+        let out = self.data.abs();
+        let lr = self.input_refs();
+        let input = self.data.clone();
+        let entry = TapeEntry::new(move |g| {
+            let (m, n) = input.shape();
+            let sign = Tensor::from_fn(m, n, |r, c| {
+                let x = input.get(r, c).to_f64();
+                if x > 0.0 {
+                    T::one_impl()
+                } else if x < 0.0 {
+                    T::zero() - T::one_impl()
+                } else {
+                    T::zero()
+                }
+            });
+            Self::prop(&lr, &g.emul(&sign));
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Element-wise `ln(1 + x)`.
+    ///
+    /// backward: `grad / (1 + input)`.
+    #[must_use]
+    pub fn log1p(&self) -> Self {
+        let out = self.data.log1p();
+        let lr = self.input_refs();
+        let input = self.data.clone();
+        let entry = TapeEntry::new(move |g| {
+            let (m, n) = input.shape();
+            let ones = Tensor::fill(m, n, T::one_impl());
+            let denom = &ones + &input;
+            Self::prop(&lr, &g.ediv(&denom));
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Element-wise SiLU (Swish): `x * sigmoid(x)`.
+    ///
+    /// backward: `grad * sigmoid(x) * (1 + x * (1 - sigmoid(x)))`.
+    #[must_use]
+    pub fn silu(&self) -> Self {
+        let out = self.data.silu();
+        let lr = self.input_refs();
+        let input = self.data.clone();
+        let entry = TapeEntry::new(move |g| {
+            let sig = input.sigmoid();
+            let (m, n) = input.shape();
+            let ones = Tensor::fill(m, n, T::one_impl());
+            // dsilu = sigmoid * (1 + x * (1 - sigmoid))
+            let dsilu = sig.emul(&(&ones + &input.emul(&(&ones - &sig))));
+            Self::prop(&lr, &g.emul(&dsilu));
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
     /// Sum along `axis` (0 = column-wise → 1×n, 1 = row-wise → m×1).
     ///
     /// backward: broadcast grad back by expanding along the reduced axis.
@@ -586,6 +701,159 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         Self::derived(&self.tape, out, entry)
     }
 
+    /// Softmax along `axis`.
+    ///
+    /// backward: `grad * softmax - softmax * sum(grad * softmax, axis)`.
+    #[must_use]
+    pub fn softmax(&self, axis: usize) -> Self {
+        let out = self.data.softmax(axis);
+        let lr = self.input_refs();
+        let sm = out.clone();
+        let entry = TapeEntry::new(move |g| {
+            let gs = g.emul(&sm);
+            let sum_gs = gs.sum_axis(axis);
+            let (m, n) = sm.shape();
+            let delta = &gs - &sm.emul(&sum_gs.expand(m, n));
+            Self::prop(&lr, &delta);
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Reshape to `(nrows, ncols)`.
+    ///
+    /// backward: reshape grad back to original shape.
+    #[must_use]
+    pub fn reshape(&self, nrows: usize, ncols: usize) -> Self {
+        let (orig_r, orig_c) = self.data.shape();
+        let out = self.data.reshape(nrows, ncols);
+        let lr = self.input_refs();
+        let entry = TapeEntry::new(move |g| {
+            Self::prop(&lr, &g.reshape(orig_r, orig_c));
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Transpose.
+    ///
+    /// backward: transpose the gradient.
+    #[must_use]
+    pub fn transpose(&self) -> Self {
+        let out = self.data.t();
+        let lr = self.input_refs();
+        let entry = TapeEntry::new(move |g| {
+            Self::prop(&lr, &g.t());
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Linear forward: `x @ weight^T + bias` (all tracked).
+    ///
+    /// backward: `grad_x = g @ W`, `grad_w = g^T @ x`, `grad_b = sum(g, axis=0)`.
+    #[must_use]
+    pub fn linear_forward(&self, weight: &Self, bias: &Self) -> Self {
+        let out = &(&self.data * &weight.data.t()) + &bias.data;
+        let (xr, wr, br) = (self.input_refs(), weight.input_refs(), bias.input_refs());
+        let (x_data, w_data) = (self.data.clone(), weight.data.clone());
+        let entry = TapeEntry::new(move |g| {
+            Self::prop(&xr, &(g * &w_data));
+            Self::prop(&wr, &(&g.t() * &x_data));
+            Self::prop(&br, &g.sum_axis(0));
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Dropout with probability `p`. No-op when `training` is false.
+    ///
+    /// backward: `grad * mask * scale`.
+    #[must_use]
+    pub fn dropout(&self, p: f64, training: bool) -> Self {
+        if !training || p <= 0.0 {
+            return self.scale(T::one_impl()); // identity through tape
+        }
+        let (m, n) = self.data.shape();
+        if p >= 1.0 {
+            let out = Tensor::zeros(m, n);
+            let lr = self.input_refs();
+            let entry = TapeEntry::new(move |_g| {
+                Self::prop(&lr, &Tensor::zeros(m, n));
+            });
+            return Self::derived(&self.tape, out, entry);
+        }
+        let scale = T::from_f64(1.0 / (1.0 - p));
+        let threshold = (p * (u64::MAX as f64)) as u64;
+        let mut s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0xDEAD_BEEF_u64, |d| d.as_nanos() as u64);
+        // Build mask
+        let mask = Tensor::from_fn(m, n, |_r, _c| {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            if s < threshold { T::zero() } else { T::one_impl() }
+        });
+        let out = self.data.emul(&mask).emul(&Tensor::fill(m, n, scale));
+        let lr = self.input_refs();
+        let entry = TapeEntry::new(move |g| {
+            Self::prop(&lr, &g.emul(&mask).emul(&Tensor::fill(m, n, scale)));
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Element-wise clamp to `[lo, hi]`.
+    ///
+    /// backward: grad passes through where `lo <= x <= hi`, zero otherwise.
+    #[must_use]
+    pub fn clamp(&self, lo: T, hi: T) -> Self {
+        let out = self.data.clamp(lo, hi);
+        let lr = self.input_refs();
+        let input = self.data.clone();
+        let entry = TapeEntry::new(move |g| {
+            let (m, n) = input.shape();
+            let lo_f = lo.to_f64();
+            let hi_f = hi.to_f64();
+            let mask = Tensor::from_fn(m, n, |r, c| {
+                let v = input.get(r, c).to_f64();
+                if v >= lo_f && v <= hi_f { T::one_impl() } else { T::zero() }
+            });
+            Self::prop(&lr, &g.emul(&mask));
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Cross-entropy with integer class indices (as `T` values cast to usize).
+    ///
+    /// Converts indices to one-hot internally, then delegates to [`cross_entropy`].
+    #[must_use]
+    pub fn cross_entropy_indices(&self, targets: &Tensor<T, B>) -> Self {
+        let (batch, n) = self.data.shape();
+        let one_hot = Tensor::from_fn(batch, n, |r, c| {
+            let idx = targets.get(r, 0).to_f64() as usize;
+            if c == idx { T::one_impl() } else { T::zero() }
+        });
+        self.cross_entropy(&one_hot)
+    }
+
+    /// MSE loss: `mean((self - target)^2)` → scalar `(1,1)`.
+    ///
+    /// backward: `2 * (self - target) / n`.
+    #[must_use]
+    pub fn mse_loss(&self, target: &Self) -> Self {
+        let diff = &self.data - &target.data;
+        let (m, n) = diff.shape();
+        let count = T::from_f64((m * n) as f64);
+        let sq_sum = diff.emul(&diff).sum_all();
+        let out = Tensor::fill(1, 1, sq_sum / count);
+        let (lr, rr) = (self.input_refs(), target.input_refs());
+        let two_over_n = T::from_f64(2.0) / count;
+        let entry = TapeEntry::new(move |g| {
+            let g_val = g.get(0, 0);
+            let delta = &diff * (g_val * two_over_n);
+            Self::prop(&lr, &delta);
+            Self::prop(&rr, &(-&delta));
+        });
+        Self::derived(&self.tape, out, entry)
+    }
+
     // -----------------------------------------------------------------------
     // Backward pass
     // -----------------------------------------------------------------------
@@ -597,7 +865,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     ///
     /// # Errors
     ///
-    /// Always succeeds; the `Result` return allows callers to use `?`.
+    /// Returns `Err` if any gradient contains NaN or Inf.
     pub fn backward(&self) -> Result<()> {
         let (nrows, ncols) = self.data.shape();
         let seed = Tensor::fill(nrows, ncols, T::one_impl());
@@ -614,6 +882,18 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         for entry in entries.iter().rev() {
             let g_opt = entry.grad.borrow().clone();
             if let Some(g) = g_opt {
+                // Check for NaN/Inf in gradient before propagating.
+                let (m, n) = g.shape();
+                for r in 0..m {
+                    for c in 0..n {
+                        let v = g.get(r, c).to_f64();
+                        if v.is_nan() || v.is_infinite() {
+                            return Err(nabla_core::error::Error::eval(
+                                format!("NaN/Inf detected in gradient at ({r}, {c})")
+                            ));
+                        }
+                    }
+                }
                 (entry.backward)(&g);
             }
         }
@@ -665,6 +945,15 @@ impl<T: Scalar, B: Backend> Mul<T> for &Variable<T, B> {
 
     fn mul(self, rhs: T) -> Self::Output {
         self.scale(rhs)
+    }
+}
+
+/// Scalar divide (`&variable / scalar`) — delegates to `scale(1/rhs)`.
+impl<T: Scalar, B: Backend> Div<T> for &Variable<T, B> {
+    type Output = Variable<T, B>;
+
+    fn div(self, rhs: T) -> Self::Output {
+        self.scale(T::one_impl() / rhs)
     }
 }
 
@@ -763,21 +1052,11 @@ where
 /// `max_norm`, scales every gradient down uniformly so the total norm equals
 /// `max_norm`.  Returns the total norm **before** clipping.
 pub fn clip_grad_norm<T: Scalar, B: Backend>(grads: &mut [Tensor<T, B>], max_norm: f64) -> f64 {
-    let total_norm_sq: f64 = grads
+    let total_norm = grads
         .iter()
-        .map(|g| {
-            let (m, n) = g.shape();
-            let mut s = 0.0_f64;
-            for r in 0..m {
-                for c in 0..n {
-                    let v = g.get(r, c).to_f64();
-                    s += v * v;
-                }
-            }
-            s
-        })
-        .sum();
-    let total_norm = total_norm_sq.sqrt();
+        .map(|g| g.norm().to_f64().powi(2))
+        .sum::<f64>()
+        .sqrt();
     if total_norm > max_norm {
         let scale = T::from_f64(max_norm / total_norm);
         for g in grads.iter_mut() {
@@ -790,8 +1069,7 @@ pub fn clip_grad_norm<T: Scalar, B: Backend>(grads: &mut [Tensor<T, B>], max_nor
 /// Zero out all gradients in-place, preserving their shapes.
 pub fn zero_grad<T: Scalar, B: Backend>(grads: &mut [Tensor<T, B>]) {
     for g in grads.iter_mut() {
-        let (m, n) = g.shape();
-        *g = Tensor::zeros(m, n);
+        *g = &*g * T::zero();
     }
 }
 

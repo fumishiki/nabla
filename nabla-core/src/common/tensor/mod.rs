@@ -8,14 +8,6 @@
 
 /// Tensor constructors: zeros, ones, identity, rand, fill, linspace, etc.
 pub mod constructors;
-/// Debug/Display formatting for tensors.
-pub mod display;
-/// Array/Matrix traits and DynTensor enum for runtime dispatch.
-pub mod dyntensor;
-/// Row and column iterators over tensors.
-pub mod iter;
-/// N-dimensional tensor stored as a flat Vec<T>.
-pub mod ndtensor;
 /// Neural network operations: activations, normalization, loss, convolution, pooling, attention.
 pub mod nn;
 /// Tensor arithmetic: element access, element-wise ops, broadcast, transpose, matmul, overloads.
@@ -24,17 +16,13 @@ pub mod ops;
 pub mod reductions;
 /// Shape manipulation: reshape, concat, stack, gather, scatter, sort, topk, CPU-gated impls.
 pub mod shape;
-/// Stack-allocated fixed-size matrix.
-pub mod static_matrix;
-/// Zero-copy read-only view into a tensor subregion.
-pub mod view;
+/// NdTensor, StaticMatrix, DynTensor: alternative tensor representations.
+pub mod variants;
 
-pub use dyntensor::{Array, DynTensor, Matrix};
-pub use iter::{ColIter, RowIter};
-pub use ndtensor::NdTensor;
-pub use static_matrix::StaticMatrix;
-pub use view::TensorView;
+pub use constructors::{ColIter, RowIter, TensorView};
+pub use variants::{Array, DynTensor, Matrix, NdTensor, StaticMatrix};
 
+use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Bound, RangeBounds};
 
@@ -355,6 +343,8 @@ impl_tensor_math! {
     sin;
     /// Element-wise `cos(x)`.
     cos;
+    /// Element-wise `tan(x)`.
+    tan;
     /// Element-wise `tanh(x)`.
     tanh;
     /// Element-wise `sqrt(x)`.
@@ -397,4 +387,182 @@ impl_tensor_math! {
 #[inline]
 pub(super) fn two<T: Scalar>() -> T {
     T::one() + T::one()
+}
+
+// ============================================================================
+// Display formatting (formerly display.rs)
+// ============================================================================
+
+fn display_indices(len: usize) -> Vec<Option<usize>> {
+    if len > 6 {
+        let mut v: Vec<Option<usize>> = (0..3).map(Some).collect();
+        v.push(None);
+        v.extend((len - 3..len).map(Some));
+        v
+    } else {
+        (0..len).map(Some).collect()
+    }
+}
+
+/// Write a matrix in `[[a, b], [c, d]]` style.
+///
+/// `prefix` is written before the outer `[`; when `None` a space is inserted
+/// between rows (Display style), otherwise `, ` (Debug style).
+///
+/// When `rows > 6` or `cols > 6`, only the first 3 and last 3 entries along
+/// each over-sized dimension are shown, separated by `...`.
+pub(crate) fn fmt_matrix(
+    rows: usize,
+    cols: usize,
+    mut elem: impl FnMut(usize, usize, &mut fmt::Formatter<'_>) -> fmt::Result,
+    f: &mut fmt::Formatter<'_>,
+    prefix: Option<&str>,
+) -> fmt::Result {
+    // Build the sequence of row / column indices to display.
+    // When a dimension exceeds 6, show indices 0,1,2 and (n-3),(n-2),(n-1).
+    let row_indices = display_indices(rows);
+    let col_indices = display_indices(cols);
+
+    if let Some(p) = prefix {
+        write!(f, "{p}")?;
+    }
+    write!(f, "[")?;
+    let mut first_row = true;
+    for row_slot in row_indices {
+        if !first_row {
+            if prefix.is_some() {
+                write!(f, ", ")?;
+            } else {
+                writeln!(f)?;
+                write!(f, " ")?;
+            }
+        }
+        first_row = false;
+        match row_slot {
+            None => {
+                // Row ellipsis: emit a placeholder row
+                write!(f, "[...]")?;
+            }
+            Some(r) => {
+                write!(f, "[")?;
+                let mut first_col = true;
+                for col_slot in col_indices.iter().copied() {
+                    if !first_col {
+                        write!(f, ", ")?;
+                    }
+                    first_col = false;
+                    match col_slot {
+                        None => write!(f, "...")?,
+                        Some(c) => elem(r, c, f)?,
+                    }
+                }
+                write!(f, "]")?;
+            }
+        }
+    }
+    write!(f, "]")
+}
+
+impl<T: Scalar + fmt::Display, B: Backend> fmt::Display for Tensor<T, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (rows, cols) = self.shape();
+        fmt_matrix(
+            rows,
+            cols,
+            |r, c, f| write!(f, "{}", self.get(r, c)),
+            f,
+            None,
+        )
+    }
+}
+
+impl<T: Scalar + fmt::Debug, B: Backend> fmt::Debug for Tensor<T, B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (rows, cols) = self.shape();
+        let prefix = format!("Tensor({rows}x{cols})");
+        fmt_matrix(
+            rows,
+            cols,
+            |r, c, f| write!(f, "{:?}", self.get(r, c)),
+            f,
+            Some(&prefix),
+        )
+    }
+}
+
+// ============================================================================
+// MatrixLike trait (formerly matrix_like.rs)
+// ============================================================================
+
+/// Common read-only matrix interface (Julia `AbstractMatrix` equivalent).
+///
+/// Implemented by [`Tensor<T,B>`], [`StaticMatrix<T,R,C>`], and
+/// [`TensorView<T,B>`](crate::tensor::TensorView).
+pub trait MatrixLike<T: Scalar> {
+    /// Number of rows.
+    fn nrows(&self) -> usize;
+    /// Number of columns.
+    fn ncols(&self) -> usize;
+    /// Shape as `(rows, cols)`.
+    fn shape(&self) -> (usize, usize) {
+        (self.nrows(), self.ncols())
+    }
+    /// Element access (read-only).
+    fn get(&self, row: usize, col: usize) -> T;
+    /// Total number of elements.
+    fn len(&self) -> usize {
+        self.nrows() * self.ncols()
+    }
+    /// Whether the matrix is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+// -- impl for Tensor<T, B, Axes> --
+
+impl<T: Scalar, B: Backend, Axes> MatrixLike<T> for Tensor<T, B, Axes> {
+    #[inline]
+    fn nrows(&self) -> usize {
+        self.nrows()
+    }
+
+    #[inline]
+    fn ncols(&self) -> usize {
+        self.ncols()
+    }
+
+    #[inline]
+    fn shape(&self) -> (usize, usize) {
+        self.shape()
+    }
+
+    #[inline]
+    fn get(&self, row: usize, col: usize) -> T {
+        self.get(row, col)
+    }
+}
+
+// -- impl for StaticMatrix<T, R, C> --
+
+impl<T: Scalar, const R: usize, const C: usize> MatrixLike<T> for StaticMatrix<T, R, C> {
+    #[inline]
+    fn nrows(&self) -> usize {
+        self.nrows()
+    }
+
+    #[inline]
+    fn ncols(&self) -> usize {
+        self.ncols()
+    }
+
+    #[inline]
+    fn shape(&self) -> (usize, usize) {
+        self.shape()
+    }
+
+    #[inline]
+    fn get(&self, row: usize, col: usize) -> T {
+        self.get(row, col)
+    }
 }

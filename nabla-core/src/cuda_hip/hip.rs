@@ -2338,7 +2338,7 @@ impl crate::backend::Backend for crate::backend::Hip {
         hip_matmul(out, a, b);
     }
 
-    gpu_common::gpu_unary_ops!(HipStorage; exp, ln, log1p, sin, cos, tanh, sqrt, abs, recip, erf, ceil, floor, round, asin, acos, atan, sinh, cosh, asinh, acosh, atanh, log2, log10);
+    gpu_common::gpu_unary_ops!(HipStorage; exp, ln, log1p, sin, cos, tan, tanh, sqrt, abs, recip, erf, ceil, floor, round, asin, acos, atan, sinh, cosh, asinh, acosh, atanh, log2, log10);
     gpu_common::gpu_binary_ops!(HipStorage; add, sub, emul, ediv, atan2);
 
 

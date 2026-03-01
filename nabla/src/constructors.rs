@@ -118,6 +118,34 @@ pub fn randn<T: scalar::Scalar>(nrows: usize, ncols: usize) -> tensor::Tensor<T>
     tensor::Tensor::from_fn(nrows, ncols, |r, c| data[r * ncols + c])
 }
 
+/// Column vector of zeros with shape `(n, 1)`.
+#[must_use]
+#[inline]
+pub fn zeros_vec<T: scalar::Scalar>(n: usize) -> tensor::Tensor<T> {
+    zeros(n, 1)
+}
+
+/// Column vector of ones with shape `(n, 1)`.
+#[must_use]
+#[inline]
+pub fn ones_vec<T: scalar::Scalar>(n: usize) -> tensor::Tensor<T> {
+    ones(n, 1)
+}
+
+/// Uniform random column vector in `[0, 1)` with shape `(n, 1)`.
+#[must_use]
+#[inline]
+pub fn rand_vec<T: scalar::Scalar>(n: usize) -> tensor::Tensor<T> {
+    rand(n, 1)
+}
+
+/// Standard normal random column vector with shape `(n, 1)`.
+#[must_use]
+#[inline]
+pub fn randn_vec<T: scalar::Scalar>(n: usize) -> tensor::Tensor<T> {
+    randn(n, 1)
+}
+
 /// 1-D half-open range tensor: `[start, start+step, ..., < stop]`.
 #[must_use]
 pub fn arange<T: scalar::Scalar>(start: T, stop: T, step: T) -> tensor::Tensor<T> {

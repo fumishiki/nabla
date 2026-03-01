@@ -115,6 +115,42 @@ impl<T: Scalar, B: Backend> OdeSolution<T, B> {
     }
 }
 
+/// Solution trajectory for symplectic (Hamiltonian) solvers that track both
+/// generalized coordinates `q` and momenta `p`.
+pub struct SymplecticSolution<T: Scalar, B: Backend> {
+    /// Accepted time points.
+    pub times: Vec<f64>,
+    /// Generalized coordinate trajectory.
+    pub q_states: Vec<Tensor<T, B>>,
+    /// Generalized momentum trajectory.
+    pub p_states: Vec<Tensor<T, B>>,
+}
+
+impl<T: Scalar, B: Backend> SymplecticSolution<T, B> {
+    /// Number of accepted steps stored in the solution.
+    #[must_use]
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.times.len()
+    }
+
+    /// Returns `true` when no steps have been stored.
+    #[must_use]
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.times.is_empty()
+    }
+
+    /// Borrow the final (q, p) pair, or `None` if empty.
+    #[must_use]
+    #[inline]
+    pub fn final_state(&self) -> Option<(&Tensor<T, B>, &Tensor<T, B>)> {
+        self.q_states
+            .last()
+            .and_then(|q| self.p_states.last().map(|p| (q, p)))
+    }
+}
+
 impl<T: Scalar, B: Backend> std::ops::Index<usize> for OdeSolution<T, B> {
     type Output = Tensor<T, B>;
 
@@ -212,6 +248,52 @@ impl Bdf1Config {
     }
 
     /// Set the convergence tolerance and maximum iterations.
+    pub fn with_tol(mut self, tol: f64) -> Self {
+        self.tol = tol;
+        self
+    }
+
+    /// Set specific output times for the solution.
+    pub fn with_saveat(mut self, times: Vec<f64>) -> Self {
+        self.saveat = Some(times);
+        self
+    }
+}
+
+/// Configuration for the BDF-2 (second-order Backward Differentiation Formula) solver.
+///
+/// Identical fields to [`Bdf1Config`] but exists as a distinct type for clarity.
+pub struct Bdf2Config {
+    /// Fixed step size.
+    pub dt: f64,
+    /// Fixed-point iteration convergence tolerance.
+    pub tol: f64,
+    /// Maximum fixed-point iterations per step.
+    pub max_iter: usize,
+    /// Optional output times. When `Some`, only record solution at these times
+    /// (using linear interpolation); when `None`, record every accepted step.
+    pub saveat: Option<Vec<f64>>,
+}
+
+impl Default for Bdf2Config {
+    fn default() -> Self {
+        Self {
+            dt: 1e-3,
+            tol: 1e-8,
+            max_iter: 50,
+            saveat: None,
+        }
+    }
+}
+
+impl Bdf2Config {
+    /// Set the fixed step size.
+    pub fn with_dt(mut self, dt: f64) -> Self {
+        self.dt = dt;
+        self
+    }
+
+    /// Set the convergence tolerance.
     pub fn with_tol(mut self, tol: f64) -> Self {
         self.tol = tol;
         self
@@ -549,6 +631,131 @@ pub(crate) fn apply_saveat<T: Scalar, B: Backend>(
 }
 
 // ---------------------------------------------------------------------------
+// EulerConfig / Rk4Config — fixed-step solver configurations with saveat
+// ---------------------------------------------------------------------------
+
+/// Configuration for the Euler fixed-step ODE solver.
+pub struct EulerConfig {
+    /// Fixed step size.
+    pub dt: f64,
+    /// Optional output times. When `Some`, only record solution at these times
+    /// (using linear interpolation); when `None`, record every accepted step.
+    pub saveat: Option<Vec<f64>>,
+}
+
+impl EulerConfig {
+    /// Create a new Euler configuration with the given step size.
+    #[must_use]
+    pub fn new(dt: f64) -> Self {
+        Self { dt, saveat: None }
+    }
+
+    /// Set specific output times for the solution.
+    #[must_use]
+    pub fn with_saveat(mut self, saveat: Vec<f64>) -> Self {
+        self.saveat = Some(saveat);
+        self
+    }
+}
+
+/// Configuration for the RK4 fixed-step ODE solver.
+pub struct Rk4Config {
+    /// Fixed step size.
+    pub dt: f64,
+    /// Optional output times. When `Some`, only record solution at these times
+    /// (using linear interpolation); when `None`, record every accepted step.
+    pub saveat: Option<Vec<f64>>,
+}
+
+impl Rk4Config {
+    /// Create a new RK4 configuration with the given step size.
+    #[must_use]
+    pub fn new(dt: f64) -> Self {
+        Self { dt, saveat: None }
+    }
+
+    /// Set specific output times for the solution.
+    #[must_use]
+    pub fn with_saveat(mut self, saveat: Vec<f64>) -> Self {
+        self.saveat = Some(saveat);
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OdeProblem — thin wrapper for problem/solve pattern
+// ---------------------------------------------------------------------------
+
+/// An ODE initial value problem bundling the right-hand side, initial state,
+/// and time span. Provides convenience `solve_*` methods that delegate to the
+/// underlying solvers.
+pub struct OdeProblem<T: Scalar, B: Backend, F> {
+    /// Right-hand side function `f(t, y) -> dy/dt`.
+    pub f: F,
+    /// Initial state at `t_span.0`.
+    pub y0: Tensor<T, B>,
+    /// Integration interval `(t_start, t_end)`.
+    pub t_span: (f64, f64),
+}
+
+impl<T: Scalar, B: Backend, F> OdeProblem<T, B, F>
+where
+    F: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>>,
+{
+    /// Create a new ODE problem.
+    #[must_use]
+    pub fn new(f: F, y0: Tensor<T, B>, t_span: (f64, f64)) -> Self {
+        Self { f, y0, t_span }
+    }
+
+    /// Solve with the Euler method using a fixed step size.
+    ///
+    /// # Errors
+    /// Returns an error if parameters are invalid or `f` returns an error.
+    pub fn solve_euler(self, dt: f64) -> Result<OdeSolution<T, B>> {
+        euler(self.f, &self.y0, self.t_span, dt)
+    }
+
+    /// Solve with the Euler method using a configuration struct.
+    ///
+    /// # Errors
+    /// Returns an error if parameters are invalid or `f` returns an error.
+    pub fn solve_euler_config(self, config: &EulerConfig) -> Result<OdeSolution<T, B>> {
+        euler_with_config(self.f, &self.y0, self.t_span, config)
+    }
+
+    /// Solve with the classic RK4 method using a fixed step size.
+    ///
+    /// # Errors
+    /// Returns an error if parameters are invalid or `f` returns an error.
+    pub fn solve_rk4(self, dt: f64) -> Result<OdeSolution<T, B>> {
+        rk4(self.f, &self.y0, self.t_span, dt)
+    }
+
+    /// Solve with the classic RK4 method using a configuration struct.
+    ///
+    /// # Errors
+    /// Returns an error if parameters are invalid or `f` returns an error.
+    pub fn solve_rk4_config(self, config: &Rk4Config) -> Result<OdeSolution<T, B>> {
+        rk4_with_config(self.f, &self.y0, self.t_span, config)
+    }
+}
+
+impl<T: Scalar, B: Backend, F> OdeProblem<T, B, F>
+where
+    F: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>>,
+    T::Real: Into<f64>,
+{
+    /// Solve with the adaptive Dormand-Prince RK45 method.
+    ///
+    /// # Errors
+    /// Returns an error if the configuration is invalid or `f` returns an error.
+    pub fn solve_adaptive(self, config: &AdaptiveConfig) -> Result<OdeSolution<T, B>> {
+        dormand_prince(self.f, &self.y0, self.t_span, config)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Euler — first-order fixed-step integrator
 // ---------------------------------------------------------------------------
 
@@ -588,6 +795,27 @@ where
     }
 
     Ok(OdeSolution { times, states })
+}
+
+/// Euler method with a configuration struct supporting `saveat`.
+///
+/// Equivalent to [`euler`] but accepts an [`EulerConfig`] to optionally
+/// specify output times via `saveat`.
+///
+/// # Errors
+///
+/// Returns an error if `t_span` or `dt` are invalid, or if `f` returns an error.
+pub fn euler_with_config<T: Scalar, B: Backend, F>(
+    f: F,
+    y0: &Tensor<T, B>,
+    t_span: (f64, f64),
+    config: &EulerConfig,
+) -> Result<OdeSolution<T, B>>
+where
+    F: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>>,
+{
+    let sol = euler(f, y0, t_span, config.dt)?;
+    Ok(apply_saveat(sol, &config.saveat))
 }
 
 // ---------------------------------------------------------------------------
@@ -639,6 +867,27 @@ where
     }
 
     Ok(OdeSolution { times, states })
+}
+
+/// RK4 method with a configuration struct supporting `saveat`.
+///
+/// Equivalent to [`rk4`] but accepts an [`Rk4Config`] to optionally
+/// specify output times via `saveat`.
+///
+/// # Errors
+///
+/// Returns an error if `t_span` or `dt` are invalid, or if `f` returns an error.
+pub fn rk4_with_config<T: Scalar, B: Backend, F>(
+    f: F,
+    y0: &Tensor<T, B>,
+    t_span: (f64, f64),
+    config: &Rk4Config,
+) -> Result<OdeSolution<T, B>>
+where
+    F: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>>,
+{
+    let sol = rk4(f, y0, t_span, config.dt)?;
+    Ok(apply_saveat(sol, &config.saveat))
 }
 
 // ---------------------------------------------------------------------------

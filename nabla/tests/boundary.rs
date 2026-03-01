@@ -1022,7 +1022,7 @@ fn stormer_verlet_harmonic() {
         mass: 1.0,
         saveat: None,
     };
-    let (_, qs, ps) = stormer_verlet(
+    let sol = stormer_verlet(
         |q| q.clone(), // grad_V(q) = q
         mat![[1.0_f64]],
         mat![[0.0_f64]],
@@ -1031,7 +1031,7 @@ fn stormer_verlet_harmonic() {
     )
     .expect("stormer_verlet failed");
     // Check energy conservation: H = (q^2 + p^2)/2 ≈ 0.5 at every step
-    for (q, p) in qs.iter().zip(ps.iter()) {
+    for (q, p) in sol.q_states.iter().zip(sol.p_states.iter()) {
         let qv = q.get(0, 0);
         let pv = p.get(0, 0);
         let h = (qv * qv + pv * pv) * 0.5;
@@ -1809,6 +1809,7 @@ fn nabla_grad_chain() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[cfg(feature = "gpu")]
 fn wgpu_register_tile_shader_gen() {
     let shader = nabla::wgsl::gen_matmul_register_tile(4, 4, 64, 64, 8);
     assert!(shader.contains("workgroup_size"), "missing workgroup_size");
@@ -1827,6 +1828,7 @@ fn wgpu_register_tile_shader_gen() {
 }
 
 #[test]
+#[cfg(feature = "gpu")]
 fn wgpu_select_register_tile_params() {
     assert_eq!(
         nabla::wgsl::select_register_tile_params(32, 32, 32),

@@ -1147,3 +1147,230 @@ impl Triangular<f64> {
         }
     }
 }
+
+// ===========================================================================
+// LinalgExt for Tensor<f32, Cpu> — promote to f64, delegate, demote back
+// ===========================================================================
+
+/// Promote an f32 tensor to f64.
+#[inline]
+fn promote_f32(t: &Tensor<f32, Cpu>) -> Tensor<f64, Cpu> {
+    let (m, n) = t.shape();
+    Tensor::<f64, Cpu>::from_fn(m, n, |r, c| f64::from(t.get(r, c)))
+}
+
+impl LinalgExt for Tensor<f32, Cpu> {
+    fn partial_piv_lu(&self) -> Result<PartialPivLu<f64>> {
+        promote_f32(self).partial_piv_lu()
+    }
+
+    fn full_piv_lu(&self) -> Result<FullPivLu<f64>> {
+        promote_f32(self).full_piv_lu()
+    }
+
+    fn qr(&self) -> Qr<f64> {
+        promote_f32(self).qr()
+    }
+
+    fn col_piv_qr(&self) -> ColPivQr<f64> {
+        promote_f32(self).col_piv_qr()
+    }
+
+    fn llt(&self, side: Side) -> Result<Llt<f64>> {
+        promote_f32(self).llt(side)
+    }
+
+    fn ldlt(&self, side: Side) -> Result<Ldlt<f64>> {
+        promote_f32(self).ldlt(side)
+    }
+
+    fn lblt(&self, side: Side) -> Lblt<f64> {
+        promote_f32(self).lblt(side)
+    }
+
+    fn svd(&self) -> Result<Svd<f64>> {
+        promote_f32(self).svd()
+    }
+
+    fn thin_svd(&self) -> Result<Svd<f64>> {
+        promote_f32(self).thin_svd()
+    }
+
+    fn singular_values(&self) -> Result<Vec<f64>> {
+        promote_f32(self).singular_values()
+    }
+
+    fn self_adjoint_eigen(&self, side: Side) -> Result<SelfAdjointEigen<f64>> {
+        promote_f32(self).self_adjoint_eigen(side)
+    }
+
+    fn self_adjoint_eigenvalues(&self, side: Side) -> Result<Vec<f64>> {
+        promote_f32(self).self_adjoint_eigenvalues(side)
+    }
+
+    fn sym(&self, side: Side) -> Result<Symmetric<f64>> {
+        promote_f32(self).sym(side)
+    }
+
+    fn solve(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).solve(rhs)
+    }
+
+    fn solve_transpose(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).solve_transpose(rhs)
+    }
+
+    fn solve_adjoint(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).solve_adjoint(rhs)
+    }
+
+    fn rsolve(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).rsolve(rhs)
+    }
+
+    fn rsolve_transpose(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).rsolve_transpose(rhs)
+    }
+
+    fn rsolve_adjoint(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).rsolve_adjoint(rhs)
+    }
+
+    fn solve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()> {
+        promote_f32(self).solve_in_place(rhs)
+    }
+
+    fn solve_transpose_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()> {
+        promote_f32(self).solve_transpose_in_place(rhs)
+    }
+
+    fn solve_adjoint_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()> {
+        promote_f32(self).solve_adjoint_in_place(rhs)
+    }
+
+    fn rsolve_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()> {
+        promote_f32(self).rsolve_in_place(rhs)
+    }
+
+    fn solve_lstsq(&self, rhs: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).solve_lstsq(rhs)
+    }
+
+    fn solve_lstsq_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()> {
+        promote_f32(self).solve_lstsq_in_place(rhs)
+    }
+
+    fn solve_lower_triangular_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()> {
+        promote_f32(self).solve_lower_triangular_in_place(rhs)
+    }
+
+    fn solve_upper_triangular_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()> {
+        promote_f32(self).solve_upper_triangular_in_place(rhs)
+    }
+
+    fn solve_unit_lower_triangular_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()> {
+        promote_f32(self).solve_unit_lower_triangular_in_place(rhs)
+    }
+
+    fn solve_unit_upper_triangular_in_place(&self, rhs: &mut Tensor<f64, Cpu>) -> Result<()> {
+        promote_f32(self).solve_unit_upper_triangular_in_place(rhs)
+    }
+
+    fn partial_piv_lu_reconstruct(&self) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).partial_piv_lu_reconstruct()
+    }
+
+    fn partial_piv_lu_inverse(&self) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).partial_piv_lu_inverse()
+    }
+
+    fn llt_reconstruct(&self, side: Side) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).llt_reconstruct(side)
+    }
+
+    fn llt_inverse(&self, side: Side) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).llt_inverse(side)
+    }
+
+    fn ldlt_reconstruct(&self, side: Side) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).ldlt_reconstruct(side)
+    }
+
+    fn ldlt_inverse(&self, side: Side) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).ldlt_inverse(side)
+    }
+
+    fn lblt_reconstruct(&self, side: Side) -> Tensor<f64, Cpu> {
+        promote_f32(self).lblt_reconstruct(side)
+    }
+
+    fn det(&self) -> Result<f64> {
+        promote_f32(self).det()
+    }
+
+    fn logdet(&self) -> Result<f64> {
+        promote_f32(self).logdet()
+    }
+
+    fn svd_into(&self) -> Result<(Tensor<f64, Cpu>, Vec<f64>, Tensor<f64, Cpu>)> {
+        promote_f32(self).svd_into()
+    }
+
+    fn qr_into(&self) -> (Tensor<f64, Cpu>, Tensor<f64, Cpu>) {
+        promote_f32(self).qr_into()
+    }
+
+    fn cond(&self) -> Result<f64> {
+        promote_f32(self).cond()
+    }
+
+    fn rank(&self, tol: f64) -> Result<usize> {
+        promote_f32(self).rank(tol)
+    }
+
+    fn pinv(&self) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).pinv()
+    }
+
+    fn matrix_power(&self, n: i32) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).matrix_power(n)
+    }
+
+    fn eig_into(&self) -> Result<(Vec<(f64, f64)>, Tensor<f64, Cpu>)> {
+        promote_f32(self).eig_into()
+    }
+
+    fn geig(&self, b: &Self) -> Result<Vec<(f64, f64)>> {
+        let a64 = promote_f32(self);
+        let b64 = promote_f32(b);
+        a64.geig(&b64)
+    }
+
+    fn cond1(&self) -> Result<f64> {
+        promote_f32(self).cond1()
+    }
+
+    fn cond_inf(&self) -> Result<f64> {
+        promote_f32(self).cond_inf()
+    }
+
+    fn cond_p(&self, p: f64) -> Result<f64> {
+        promote_f32(self).cond_p(p)
+    }
+
+    fn inv(&self) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).inv()
+    }
+
+    fn null_space(&self, tol: f64) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).null_space(tol)
+    }
+
+    fn orth(&self, tol: f64) -> Result<Tensor<f64, Cpu>> {
+        promote_f32(self).orth(tol)
+    }
+
+    fn slogdet(&self) -> Result<(f64, f64)> {
+        promote_f32(self).slogdet()
+    }
+}

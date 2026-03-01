@@ -6,7 +6,7 @@ use nabla_core::error::Result;
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 
-use super::{alloc_trajectory, apply_saveat, sc, validate, OdeSolution};
+use super::{alloc_trajectory, apply_saveat, sc, time_direction, validate, OdeSolution};
 
 // ---------------------------------------------------------------------------
 // PRNG: xorshift64 + Box-Muller for N(0, 1) samples
@@ -118,6 +118,17 @@ impl SdeConfig {
         self
     }
 
+    /// Set the number of independent Wiener process dimensions.
+    ///
+    /// When `None` (default), the noise dimension equals the total number of
+    /// state elements (`rows * cols`).  Set this to decouple noise dimensionality
+    /// from state size, e.g. for systems driven by fewer noise sources than
+    /// state variables.
+    pub fn with_noise_dims(mut self, dims: usize) -> Self {
+        self.noise_dims = Some(dims);
+        self
+    }
+
     /// Set specific output times for the solution.
     pub fn with_saveat(mut self, times: Vec<f64>) -> Self {
         self.saveat = Some(times);
@@ -162,6 +173,9 @@ where
 {
     validate(t_span, config.dt)?;
 
+    let dir = time_direction(t_span);
+    let remaining = |t: f64| (t_span.1 - t) * dir;
+
     let (rows, cols) = x0.shape();
     let n_noise = config.noise_dims.unwrap_or(rows * cols);
     let sqrt_dt = config.dt.sqrt();
@@ -173,18 +187,19 @@ where
     let mut t = t_span.0;
     let mut x = x0.clone();
 
-    while t < t_span.1 {
-        let h = config.dt.min(t_span.1 - t);
-        let h_sqrt = if (h - config.dt).abs() < 1e-14 {
+    while remaining(t) > 1e-14 {
+        let h_abs = config.dt.min(remaining(t).abs());
+        let h = dir * h_abs;
+        let h_sqrt = if (h_abs - config.dt).abs() < 1e-14 {
             sqrt_dt
         } else {
-            h.sqrt()
+            h_abs.sqrt()
         };
 
         let f_val = drift(t, &x)?;
         let g_val = diffusion(t, &x)?;
 
-        // Generate dW: each element ~ N(0, h) = N(0,1) * sqrt(h).
+        // Generate dW: each element ~ N(0, |h|) = N(0,1) * sqrt(|h|).
         fill_normal(&mut rng, &mut noise_buf);
         let dw = Tensor::<T, B>::from_fn(rows, cols, |i, j| {
             let idx = i * cols + j;
@@ -196,7 +211,7 @@ where
             T::from_f64(z * h_sqrt)
         });
 
-        // X_{n+1} = X_n + f * dt + g * dW
+        // X_{n+1} = X_n + f * h + g * dW  (h is signed for direction)
         let h_t: T = sc(h);
         x = &(&x + &(&f_val * h_t)) + &g_val.emul(&dw);
         t += h;
@@ -215,7 +230,8 @@ where
 /// Run `n_trajectories` independent Euler-Maruyama paths with different seeds.
 ///
 /// Each trajectory uses a seed derived from `config.seed + trajectory_index`,
-/// producing statistically independent Wiener paths.
+/// producing statistically independent Wiener paths.  Trajectories are
+/// computed in parallel using `std::thread::scope`.
 ///
 /// # Arguments
 /// * `drift` — `f(t, X)` deterministic drift term
@@ -239,27 +255,40 @@ pub fn ensemble_euler_maruyama<T, B, F, G>(
 where
     T: Scalar,
     B: Backend,
-    F: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>>,
-    G: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>>,
+    F: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>> + Sync,
+    G: Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>> + Sync,
 {
-    let mut results = Vec::with_capacity(n_trajectories);
-    for i in 0..n_trajectories {
-        let traj_config = SdeConfig {
-            dt: config.dt,
-            seed: config.seed.wrapping_add(i as u64),
-            noise_dims: config.noise_dims,
-            saveat: config.saveat.clone(),
-        };
-        let sol = euler_maruyama(
-            |t, x| drift(t, x),
-            |t, x| diffusion(t, x),
-            x0,
-            t_span,
-            &traj_config,
-        )?;
-        results.push(sol);
-    }
-    Ok(results)
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..n_trajectories)
+            .map(|i| {
+                let traj_config = SdeConfig {
+                    dt: config.dt,
+                    seed: config.seed.wrapping_add(i as u64),
+                    noise_dims: config.noise_dims,
+                    saveat: config.saveat.clone(),
+                };
+                s.spawn(move || {
+                    euler_maruyama(
+                        |t, x| drift(t, x),
+                        |t, x| diffusion(t, x),
+                        x0,
+                        t_span,
+                        &traj_config,
+                    )
+                })
+            })
+            .collect();
+
+        let mut results = Vec::with_capacity(n_trajectories);
+        for handle in handles {
+            // Thread panics are propagated by scope; join returns the Result.
+            match handle.join() {
+                Ok(sol) => results.push(sol?),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        Ok(results)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +332,9 @@ where
 {
     validate(t_span, config.dt)?;
 
+    let dir = time_direction(t_span);
+    let remaining = |t: f64| (t_span.1 - t) * dir;
+
     let (rows, cols) = x0.shape();
     let n_noise = config.noise_dims.unwrap_or(rows * cols);
     let sqrt_dt = config.dt.sqrt();
@@ -316,20 +348,22 @@ where
 
     let half: T = sc(0.5);
 
-    while t < t_span.1 {
-        let h = config.dt.min(t_span.1 - t);
-        let h_sqrt = if (h - config.dt).abs() < 1e-14 {
+    while remaining(t) > 1e-14 {
+        let h_abs = config.dt.min(remaining(t).abs());
+        let h = dir * h_abs;
+        let h_sqrt = if (h_abs - config.dt).abs() < 1e-14 {
             sqrt_dt
         } else {
-            h.sqrt()
+            h_abs.sqrt()
         };
         let h_t: T = sc(h);
+        let h_abs_t: T = sc(h_abs);
 
         let f_val = drift(t, &x)?;
         let g_val = diffusion(t, &x)?;
         let gp_val = diffusion_deriv(t, &x)?;
 
-        // Generate dW.
+        // Generate dW (magnitude scales with |h|, sign is independent).
         fill_normal(&mut rng, &mut noise_buf);
         let dw = Tensor::<T, B>::from_fn(rows, cols, |i, j| {
             let idx = i * cols + j;
@@ -341,13 +375,13 @@ where
             T::from_f64(z * h_sqrt)
         });
 
-        // dW^2 - dt (element-wise).
+        // dW^2 - |dt| (element-wise, Milstein correction uses absolute step).
         let dw_sq_minus_dt = Tensor::<T, B>::from_fn(rows, cols, |i, j| {
             let w = dw.get(i, j);
-            w * w - h_t
+            w * w - h_abs_t
         });
 
-        // X_{n+1} = X_n + f*dt + g*dW + 0.5 * g * g' * (dW^2 - dt)
+        // X_{n+1} = X_n + f*h + g*dW + 0.5 * g * g' * (dW^2 - |h|)
         let drift_term = &f_val * h_t;
         let diffusion_term = g_val.emul(&dw);
         let milstein_correction = &g_val.emul(&gp_val).emul(&dw_sq_minus_dt) * half;

@@ -41,7 +41,7 @@ pub use {
     solve::{Diagonal, LinalgExt, Symmetric, TriKind, Triangular},
     structured::{
         balance, care, circulant, continuous_riccati, frechet_deriv, hessenberg, polar, toeplitz,
-        vandermonde,
+        vandermonde, vandermonde_rect,
     },
     svd::Svd,
 };
