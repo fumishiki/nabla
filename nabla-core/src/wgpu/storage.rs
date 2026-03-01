@@ -1,3 +1,4 @@
+// wgpu/storage.rs — GpuStorage<T>, GpuContext, and dispatch helpers.
 // wgpu/context.rs — GpuContext singleton, pipeline cache, GPU storage type.
 //
 // Design:

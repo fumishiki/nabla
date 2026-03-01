@@ -1,7 +1,6 @@
-pub(crate) mod context;
+pub(crate) mod storage;
 pub mod shaders;
 pub(crate) mod ops;
-pub mod layout;
 
-pub(crate) use context::*;
+pub(crate) use storage::*;
 pub(crate) use ops::*;

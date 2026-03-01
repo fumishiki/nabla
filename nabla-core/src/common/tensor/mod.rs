@@ -9,7 +9,13 @@
 /// Tensor constructors: zeros, ones, identity, rand, fill, linspace, etc.
 pub mod constructors;
 /// Neural network operations: activations, normalization, loss, convolution, pooling, attention.
-pub mod nn;
+/// Convolution (1d/2d/3d/transpose) and pooling ops.
+pub mod nn_conv;
+/// Activations, normalization, losses, and attention.
+pub mod nn_ops;
+pub use nn_conv::*;
+#[allow(unused_imports)]
+pub use nn_ops::*;
 /// Tensor arithmetic: element access, element-wise ops, broadcast, transpose, matmul, overloads.
 pub mod ops;
 /// Reduction operations: sum, mean, norm, min/max, argmin/argmax, variance, cumsum, cumprod.

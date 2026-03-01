@@ -30,10 +30,6 @@ compile_error!("nabla-core: enable at least one backend feature (cpu / wgpu / cu
 
 // ── common ──────────────────────────────────────────────────────────────────
 
-/// Error types for nabla operations.
-#[path = "common/error.rs"]
-pub mod error;
-
 /// Scalar numeric types supported by nabla.
 #[path = "common/scalar/mod.rs"]
 pub mod scalar;
@@ -42,9 +38,16 @@ pub mod scalar;
 #[path = "common/tensor/mod.rs"]
 pub mod tensor;
 
-/// Compute backend trait + DefaultBackend alias.
+/// Compute backend trait + DefaultBackend alias (includes error types).
 #[path = "common/backend.rs"]
 pub mod backend;
+
+// error is a submodule of backend; re-export at crate root for path compat.
+pub use backend::error;
+
+/// F₂ binary matrix layout for GPU shared memory swizzling.
+#[path = "common/layout.rs"]
+pub mod layout;
 
 // ── cpu ─────────────────────────────────────────────────────────────────────
 
@@ -57,10 +60,6 @@ pub(crate) mod cpu;
 #[cfg(feature = "gpu")]
 #[path = "wgpu/mod.rs"]
 pub mod gpu;
-
-/// F₂ binary matrix layout for GPU shared memory swizzling.
-#[path = "wgpu/layout.rs"]
-pub mod layout;
 
 // ── cuda/hip ─────────────────────────────────────────────────────────────────
 

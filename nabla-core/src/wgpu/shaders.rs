@@ -1,6 +1,6 @@
 // wgpu/shaders.rs — WGSL shader generation for all GPU compute operations.
 
-use super::context::{ShaderOp, PipelineKey};
+use super::storage::{ShaderOp, PipelineKey};
 
 // ── WGSL shader generation ───────────────────────────────────────────────────
 

@@ -7,7 +7,7 @@ use wgpu::util::DeviceExt;
 
 use crate::scalar::Scalar;
 
-use super::context::*;
+use super::storage::*;
 use super::shaders::*;
 
 // ── Params buffer helpers ─────────────────────────────────────────────────────

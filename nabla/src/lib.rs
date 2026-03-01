@@ -170,7 +170,7 @@ pub mod prelude {
     pub use nabla_core::tensor::{Array, NdTensor, StaticMatrix};
     #[cfg(feature = "cpu")]
     pub use nabla_core::tensor::{DynTensor, Matrix};
-    pub use nabla_core::tensor::nn::{Conv1dConfig, Conv2dConfig, Conv3dConfig};
+    pub use nabla_core::tensor::nn_conv::{Conv1dConfig, Conv2dConfig, Conv3dConfig};
     pub use nabla_core::tensor::MatrixLike;
     pub use nabla_core::tensor::{MatmulCompat, Tensor, TensorView};
     pub use nabla_macros::{
