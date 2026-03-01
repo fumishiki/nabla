@@ -3,8 +3,8 @@
 
 use nabla::prelude::*;
 use std::io::{self, Write};
-use std::time::Duration;
 use std::thread::sleep;
+use std::time::Duration;
 
 const BOLD: &str = "\x1b[1m";
 const CYAN: &str = "\x1b[36m";
@@ -14,15 +14,15 @@ const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
 macro_rules! code {
-    ($($line:expr),+ $(,)?) => { 
-        $( println!("{CYAN}{BOLD}  {}{RESET}", $line); )+ 
+    ($($line:expr),+ $(,)?) => {
+        $( println!("{CYAN}{BOLD}  {}{RESET}", $line); )+
         io::stdout().flush().unwrap();
         sleep(Duration::from_millis(600));
     };
 }
 macro_rules! out {
-    ($fmt:expr $(, $arg:expr)*) => { 
-        println!("{GREEN}  ➜ {}{RESET}", format!($fmt $(, $arg)*)); 
+    ($fmt:expr $(, $arg:expr)*) => {
+        println!("{GREEN}  ➜ {}{RESET}", format!($fmt $(, $arg)*));
         io::stdout().flush().unwrap();
         sleep(Duration::from_millis(1500));
     };
@@ -52,7 +52,10 @@ fn main() {
     let prod: Tensor<f64> = einsum!(c[i,j] = m1[i,k] * m2[k,j]);
     out!(
         "[{:.0}, {:.0}; {:.0}, {:.0}]",
-        prod.get(0, 0), prod.get(0, 1), prod.get(1, 0), prod.get(1, 1)
+        prod.get(0, 0),
+        prod.get(0, 1),
+        prod.get(1, 0),
+        prod.get(1, 1)
     );
 
     // 3. Kernel Fusion
@@ -71,7 +74,9 @@ fn main() {
         "loss.backward(); let dw = w.grad();"
     );
     let tape: std::rc::Rc<Tape<f64, DefaultBackend>> = Tape::new();
-    let w = tape.variable(mat![[1.0_f64, 2.0], [3.0, 4.0]]).expect("var");
+    let w = tape
+        .variable(mat![[1.0_f64, 2.0], [3.0, 4.0]])
+        .expect("var");
     let inp = tape.variable(mat![[1.0_f64], [1.0]]).expect("var");
     let o = w.matmul(&inp);
     let loss = o.emul(&o).sum_axis(1).sum_axis(0);
@@ -79,7 +84,10 @@ fn main() {
     let dw = w.grad().expect("grad");
     out!(
         "∂L/∂W = [{:.0}, {:.0}; {:.0}, {:.0}]",
-        dw.get(0, 0), dw.get(0, 1), dw.get(1, 0), dw.get(1, 1)
+        dw.get(0, 0),
+        dw.get(0, 1),
+        dw.get(1, 0),
+        dw.get(1, 1)
     );
 
     // 5. Symbolic CAS
