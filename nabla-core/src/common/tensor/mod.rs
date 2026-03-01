@@ -1,13 +1,20 @@
 
+/// Tensor constructors and iterators.
 pub mod constructors;
+/// Convolution operations.
 pub mod nn_conv;
+/// Neural-network operations (activation, norm, pooling).
 pub mod nn_ops;
 pub use nn_conv::*;
 #[allow(unused_imports)]
 pub use nn_ops::*;
+/// Element-wise and binary tensor operations.
 pub mod ops;
+/// Reduction operations (sum, mean, max, etc.).
 pub mod reductions;
+/// Shape manipulation (reshape, transpose, broadcast).
 pub mod shape;
+/// Tensor variants: `NdTensor`, `StaticMatrix`, `DynTensor`, and related traits.
 pub mod variants;
 
 pub use constructors::{ColIter, RowIter, TensorView};

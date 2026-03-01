@@ -12,6 +12,7 @@ use crate::backend::Cpu;
 
 
 #[derive(Clone)]
+/// N-dimensional tensor backed by a flat `Vec<T>`.
 pub struct NdTensor<T: Scalar> {
     pub(super) data: Vec<T>,
     pub(super) shape: Vec<usize>,
@@ -325,6 +326,7 @@ impl<T: Scalar> Index<&[usize]> for NdTensor<T> {
 
 
 #[derive(Clone, Copy)]
+/// Stack-allocated `R x C` matrix with const-generic dimensions.
 pub struct StaticMatrix<T: Scalar, const R: usize, const C: usize> {
     data: [[T; C]; R],
 }
@@ -585,6 +587,7 @@ impl<T: Scalar + fmt::Debug, const R: usize, const C: usize> fmt::Debug for Stat
 }
 
 
+/// Dynamic dispatch trait for 2-D array read access.
 pub trait Array<T: Scalar> {
     /// Number of rows.
     fn nrows(&self) -> usize;
@@ -600,6 +603,7 @@ pub trait Array<T: Scalar> {
 }
 
 #[cfg(feature = "cpu")]
+/// CPU-backed 2-D matrix with dynamic dispatch for transpose and matmul.
 pub trait Matrix<T: Scalar>: Array<T> {
     /// Transpose into a CPU-backed [`Tensor`].
     fn t_dyn(&self) -> Tensor<T, Cpu>;
@@ -673,6 +677,7 @@ impl<T: Scalar, const R: usize, const C: usize> Matrix<T> for StaticMatrix<T, R,
 
 
 #[cfg(feature = "cpu")]
+/// Dynamically-typed tensor for runtime backend dispatch.
 pub enum DynTensor {
     /// CPU backend (always available).
     Cpu(Tensor<f32, Cpu>),

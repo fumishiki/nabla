@@ -5,6 +5,7 @@ use core::ops::{Add, Div, Mul, Neg, Sub};
 use super::{MathOps, RealScalar, ReductionOps, Scalar, erf_approx};
 
 
+/// Complex number `a + bi` over a real scalar `T`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub struct Complex<T: RealScalar> {
@@ -14,8 +15,10 @@ pub struct Complex<T: RealScalar> {
     pub im: T,
 }
 
+/// 32-bit complex number (`Complex<f32>`).
 #[allow(non_camel_case_types)]
 pub type c32 = Complex<f32>;
+/// 64-bit complex number (`Complex<f64>`).
 #[allow(non_camel_case_types)]
 pub type c64 = Complex<f64>;
 

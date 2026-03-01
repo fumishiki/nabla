@@ -5,6 +5,7 @@ use core::ops::{Add, Div, Mul, Neg, Sub};
 use super::{MathOps, RealScalar, ReductionOps, Scalar, erf_approx};
 
 
+/// Multi-lane dual number for computing `N` partial derivatives simultaneously.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MultiDual<T: RealScalar, const N: usize> {
     /// Primal value.

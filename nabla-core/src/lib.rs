@@ -28,12 +28,15 @@
 compile_error!("nabla-core: enable at least one backend feature (cpu / wgpu / cuda / hip)");
 
 
+/// Scalar trait and primitive numeric types (f32, f64, complex, dual).
 #[path = "common/scalar/mod.rs"]
 pub mod scalar;
 
+/// Tensor types and all element-wise / linear-algebra operations.
 #[path = "common/tensor/mod.rs"]
 pub mod tensor;
 
+/// Backend abstraction layer: CPU, wgpu, CUDA, HIP.
 #[path = "common/backend.rs"]
 pub mod backend;
 

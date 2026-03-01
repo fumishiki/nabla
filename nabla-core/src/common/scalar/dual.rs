@@ -5,6 +5,7 @@ use core::ops::{Add, Div, Mul, Neg, Sub};
 use super::{MathOps, RealScalar, ReductionOps, Scalar, erf_approx};
 
 
+/// Dual number `value + deriv·ε` for forward-mode automatic differentiation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Dual<T: RealScalar> {
     /// Primal value.
