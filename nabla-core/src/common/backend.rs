@@ -1252,10 +1252,6 @@ pub struct Cuda;
 pub struct Hip;
 
 /// Default backend selected at compile time based on enabled features.
-#[cfg(not(any(feature = "cpu", feature = "gpu", feature = "cuda", feature = "hip")))]
-pub type DefaultBackend = Cpu;
-
-/// Default backend selected at compile time based on enabled features.
 #[cfg(feature = "cuda")]
 pub type DefaultBackend = Cuda;
 
