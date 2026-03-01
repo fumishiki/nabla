@@ -13,12 +13,12 @@ fn approx_eq(a: f64, b: f64) -> bool {
 }
 
 #[allow(dead_code)]
-fn linear_f64(rows: usize, cols: usize) -> Tensor<f64> {
+fn linear_f64(rows: usize, cols: usize) -> Tensor<f64, Cpu> {
     Tensor::from_fn(rows, cols, |i, j| (i * cols + j + 1) as f64)
 }
 
 #[allow(dead_code)]
-fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
+fn assert_approx_grid(got: &Tensor<f64, Cpu>, expected: &Tensor<f64, Cpu>, tol: f64) {
     assert_eq!(got.shape(), expected.shape(), "shape mismatch");
     let (r, c) = got.shape();
     for i in 0..r {
@@ -53,8 +53,8 @@ fn cas_eval_unbound_error() {
 fn cas_eval_tensor_roundtrip() {
     let x = Expr::var("x");
     let s = simplify(&(&x * &Expr::lit(2.0)));
-    let t: Tensor<f64> = linear_f64(2, 2);
-    let mut vars: HashMap<&str, &Tensor<f64>> = HashMap::new();
+    let t: Tensor<f64, Cpu> = linear_f64(2, 2);
+    let mut vars: HashMap<&str, &Tensor<f64, Cpu>> = HashMap::new();
     vars.insert("x", &t);
     let result = eval_tensor(&s, &vars).expect("eval_tensor failed");
     assert!((result.get(0, 0) - 2.0).abs() < 1e-10);
@@ -201,7 +201,7 @@ fn ode_rk4_generic_type() {
 fn bdf1_linear_decay() {
     // dy/dt = -100y, y(0) = 1 => y(t) = exp(-100t)
     use nabla::ode::{Bdf1Config, bdf1};
-    let y0 = Tensor::<f64>::fill(1, 1, 1.0);
+    let y0 = Tensor::<f64, Cpu>::fill(1, 1, 1.0);
     let sol = bdf1(
         |_t, y| Ok(y * (-100.0_f64)),
         &y0,
@@ -232,7 +232,7 @@ fn if_euler_scalar_stiff_stable() {
         saveat: None,
     };
     let sol = if_euler_scalar(
-        |_t, _y| Ok(Tensor::<f64>::zeros(1, 1)),
+        |_t, _y| Ok(Tensor::<f64, Cpu>::zeros(1, 1)),
         &y0,
         (0.0, 0.5),
         &config,
@@ -252,15 +252,15 @@ fn dae_simple_constraint() {
     // x' = 1, 0 = z - x  =>  x(t) = t, z(t) = t
     // x0 = 0, z0 = 0, t ∈ [0, 1]
     use nabla::ode::{DaeConfig, dae_solve};
-    let x0 = Tensor::<f64>::fill(1, 1, 0.0);
-    let z0 = Tensor::<f64>::fill(1, 1, 0.0);
+    let x0 = Tensor::<f64, Cpu>::fill(1, 1, 0.0);
+    let z0 = Tensor::<f64, Cpu>::fill(1, 1, 0.0);
     let sol = dae_solve(
-        |_x, _z, _t| Tensor::<f64>::fill(1, 1, 1.0), // f: x' = 1
+        |_x, _z, _t| Tensor::<f64, Cpu>::fill(1, 1, 1.0), // f: x' = 1
         |x, z, _t| {
             // g: 0 = z - x
             let zv = z.get(0, 0);
             let xv = x.get(0, 0);
-            Tensor::<f64>::fill(1, 1, zv - xv)
+            Tensor::<f64, Cpu>::fill(1, 1, zv - xv)
         },
         x0,
         z0,
@@ -285,14 +285,14 @@ fn dae_quadratic_constraint() {
     // x' = z, 0 = z - 2*t  =>  z(t) = 2t, x(t) = t^2
     // x0 = 0, z0 = 0
     use nabla::ode::{DaeConfig, dae_solve};
-    let x0 = Tensor::<f64>::fill(1, 1, 0.0);
-    let z0 = Tensor::<f64>::fill(1, 1, 0.0);
+    let x0 = Tensor::<f64, Cpu>::fill(1, 1, 0.0);
+    let z0 = Tensor::<f64, Cpu>::fill(1, 1, 0.0);
     let sol = dae_solve(
         |_x, z, _t| z.clone(), // f: x' = z
         |_x, z, t| {
             // g: 0 = z - 2t
             let zv = z.get(0, 0);
-            Tensor::<f64>::fill(1, 1, zv - 2.0 * t)
+            Tensor::<f64, Cpu>::fill(1, 1, zv - 2.0 * t)
         },
         x0,
         z0,
@@ -318,8 +318,8 @@ fn metd_linear_decay() {
     // dy/dt = -y  →  L = [-1] (1x1 matrix), N = 0
     // y(0) = 1, exact: y(t) = exp(-t), so y(1) ≈ 0.3679
     use nabla::ode::{MetdConfig, metd_solve};
-    let l: Tensor<f64> = mat![[-1.0_f64]];
-    let y0: Tensor<f64> = mat![[1.0_f64]];
+    let l: Tensor<f64, Cpu> = mat![[-1.0_f64]];
+    let y0: Tensor<f64, Cpu> = mat![[1.0_f64]];
     let cfg = MetdConfig {
         dt: 0.01,
         order: 8,
@@ -327,7 +327,7 @@ fn metd_linear_decay() {
     };
     let sol = metd_solve(
         &l,
-        |_t, _y| Tensor::<f64>::zeros(1, 1), // N(t,y) = 0
+        |_t, _y| Tensor::<f64, Cpu>::zeros(1, 1), // N(t,y) = 0
         y0,
         (0.0, 1.0),
         &cfg,

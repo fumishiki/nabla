@@ -11,11 +11,11 @@ fn approx_eq(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-10
 }
 
-fn linear_f64(rows: usize, cols: usize) -> Tensor<f64> {
+fn linear_f64(rows: usize, cols: usize) -> Tensor<f64, Cpu> {
     Tensor::from_fn(rows, cols, |i, j| (i * cols + j + 1) as f64)
 }
 
-fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
+fn assert_approx_grid(got: &Tensor<f64, Cpu>, expected: &Tensor<f64, Cpu>, tol: f64) {
     assert_eq!(got.shape(), expected.shape(), "shape mismatch");
     let (r, c) = got.shape();
     for i in 0..r {
@@ -157,7 +157,7 @@ fn nabla_grad_chain() {
 fn gradient_prep_x_squared() {
     // f(x) = sum(x^2), grad = 2x
     let f = |x: &Variable<f64, Cpu>| x.emul(x).sum_all_var();
-    let x: Tensor<f64> = mat![[2.0_f64, 3.0]];
+    let x: Tensor<f64, Cpu> = mat![[2.0_f64, 3.0]];
     let prep = gradient_prep(&f, &x);
     let g = gradient(&f, &x, &prep).expect("gradient returned None");
     assert!(approx_eq(g.get(0, 0), 4.0));
@@ -166,7 +166,7 @@ fn gradient_prep_x_squared() {
 
 #[test]
 fn grad_single_use() {
-    let x: Tensor<f64> = mat![[3.0_f64, 4.0]];
+    let x: Tensor<f64, Cpu> = mat![[3.0_f64, 4.0]];
     let g =
         grad(|xv: &Variable<f64, Cpu>| xv.emul(xv).sum_all_var(), &x).expect("grad returned None");
     assert!(approx_eq(g.get(0, 0), 6.0));
@@ -186,7 +186,7 @@ fn symmetric_eigen() {
 #[test]
 fn expm_diagonal() {
     // For diagonal A = diag(1.0, 2.0), exp(A) = diag(e, e^2)
-    let mut a = Tensor::<f64>::zeros(2, 2);
+    let mut a = Tensor::<f64, Cpu>::zeros(2, 2);
     a[(0, 0)] = 1.0;
     a[(1, 1)] = 2.0;
     let e = expm(&a).expect("expm failed");
@@ -449,7 +449,7 @@ fn linear_layout_compose() {
 
 #[test]
 fn h_alias_matches_adjoint() {
-    let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let a: Tensor<f64, Cpu> = mat![[1.0, 2.0], [3.0, 4.0]];
     let h = a.h();
     let adj = a.adjoint();
     assert_approx_grid(&h, &adj, 1e-12);
@@ -468,8 +468,8 @@ fn h_alias_matches_adjoint() {
 
 #[test]
 fn linalg_short_aliases() -> Result<()> {
-    let a: Tensor<f64> = mat![[4.0, 1.0], [1.0, 3.0]];
-    let b: Tensor<f64> = mat![[1.0], [2.0]];
+    let a: Tensor<f64, Cpu> = mat![[4.0, 1.0], [1.0, 3.0]];
+    let b: Tensor<f64, Cpu> = mat![[1.0], [2.0]];
 
     let _ = a.lu()?;
     let _ = a.chol()?;

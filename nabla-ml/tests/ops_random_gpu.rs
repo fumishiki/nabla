@@ -13,7 +13,7 @@ mod cpu {
     }
 
     #[allow(dead_code)]
-    fn linear_f64(rows: usize, cols: usize) -> Tensor<f64> {
+    fn linear_f64(rows: usize, cols: usize) -> Tensor<f64, Cpu> {
         Tensor::from_fn(rows, cols, |i, j| (i * cols + j + 1) as f64)
     }
 
@@ -135,14 +135,14 @@ mod cpu {
 
     #[test]
     fn free_construction_aliases() {
-        let z: Tensor<f64> = zeros(2, 3);
+        let z: Tensor<f64, Cpu> = Tensor::zeros(2, 3);
         assert_eq!(z.shape(), (2, 3));
         assert!(z.as_slice().iter().all(|&v| v == 0.0));
 
-        let o: Tensor<f64> = ones(2, 3);
+        let o: Tensor<f64, Cpu> = Tensor::fill(2, 3, 1.0);
         assert!(o.as_slice().iter().all(|&v| v == 1.0));
 
-        let f: Tensor<f64> = fill(2, 3, 2.5);
+        let f: Tensor<f64, Cpu> = Tensor::fill(2, 3, 2.5);
         assert!(f.as_slice().iter().all(|&v| v == 2.5));
 
         let id: Tensor<f64> = eye(3);

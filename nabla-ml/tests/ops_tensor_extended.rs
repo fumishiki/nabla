@@ -11,11 +11,11 @@ fn approx_eq(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-10
 }
 
-fn linear_f64(rows: usize, cols: usize) -> Tensor<f64> {
+fn linear_f64(rows: usize, cols: usize) -> Tensor<f64, Cpu> {
     Tensor::from_fn(rows, cols, |i, j| (i * cols + j + 1) as f64)
 }
 
-fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
+fn assert_approx_grid(got: &Tensor<f64, Cpu>, expected: &Tensor<f64, Cpu>, tol: f64) {
     assert_eq!(got.shape(), expected.shape(), "shape mismatch");
     let (r, c) = got.shape();
     for i in 0..r {
@@ -32,8 +32,8 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
 
 #[test]
 fn cat_axis1_equals_hcat() {
-    let a: Tensor<f64> = mat![[1.0_f64], [2.0]];
-    let b: Tensor<f64> = mat![[3.0_f64], [4.0]];
+    let a: Tensor<f64, Cpu> = mat![[1.0_f64], [2.0]];
+    let b: Tensor<f64, Cpu> = mat![[3.0_f64], [4.0]];
     let cat_result = Tensor::cat(&[&a, &b], 1);
     let hcat_result = Tensor::hcat(&[&a, &b]);
     assert_approx_grid(&cat_result, &hcat_result, 1e-10);
@@ -78,7 +78,7 @@ fn squeeze_axis0_on_single_row() {
 
 #[test]
 fn view_same_as_reshape() {
-    let a: Tensor<f64> = linear_f64(2, 6);
+    let a: Tensor<f64, Cpu> = linear_f64(2, 6);
     let v = a.view(3, 4);
     let r = a.reshape(3, 4);
     assert_approx_grid(&v, &r, 1e-10);
@@ -410,13 +410,13 @@ fn sparse_sugar_api() -> Result<()> {
         2,
         &[(0, 0, 4.0_f64), (0, 1, 1.0), (1, 0, 1.0), (1, 1, 3.0)],
     )?;
-    let b: Tensor<f64> = mat![[1.0], [2.0]];
+    let b: Tensor<f64, Cpu> = mat![[1.0], [2.0]];
 
     let x_short = s.chol_solve(&b)?;
     let x_long = s.cholesky_solve(Side::Lower, &b)?;
     assert_approx_grid(&x_short, &x_long, 1e-10);
 
-    let d: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let d: Tensor<f64, Cpu> = mat![[1.0, 2.0], [3.0, 4.0]];
     let y_ref = s.matmul_dense(&d)?;
     let y_borrowed = &s * &d;
     let y_owned = s.clone() * &d;

@@ -10,7 +10,7 @@ fn main() {
     let svd = a.svd()?;
     let s = svd.s();
     println!("Singular values: {:.4}, {:.4}, {:.4}", s[0], s[1], s[2]);
-    let diff_norm = |m: &Tensor<f64>| (&a - m).norm();
+    let diff_norm = |m: &Tensor<f64, Cpu>| (&a - m).norm();
 
     let recon = svd.reconstruct_rank(s.len());
     let err = diff_norm(&recon);

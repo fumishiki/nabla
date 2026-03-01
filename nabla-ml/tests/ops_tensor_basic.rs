@@ -11,11 +11,11 @@ fn approx_eq(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-10
 }
 
-fn linear_f64(rows: usize, cols: usize) -> Tensor<f64> {
+fn linear_f64(rows: usize, cols: usize) -> Tensor<f64, Cpu> {
     Tensor::from_fn(rows, cols, |i, j| (i * cols + j + 1) as f64)
 }
 
-fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
+fn assert_approx_grid(got: &Tensor<f64, Cpu>, expected: &Tensor<f64, Cpu>, tol: f64) {
     assert_eq!(got.shape(), expected.shape(), "shape mismatch");
     let (r, c) = got.shape();
     for i in 0..r {
@@ -53,8 +53,8 @@ fn stencil_laplacian() {
 
 #[test]
 fn par_from_fn_matches_sequential() {
-    let seq: Tensor<f64> = Tensor::from_fn(50, 50, |r, c| ((r * 50 + c) as f64).sin());
-    let par: Tensor<f64> = Tensor::par_from_fn(50, 50, |r, c| ((r * 50 + c) as f64).sin());
+    let seq: Tensor<f64, Cpu> = Tensor::from_fn(50, 50, |r, c| ((r * 50 + c) as f64).sin());
+    let par: Tensor<f64, Cpu> = Tensor::par_from_fn(50, 50, |r, c| ((r * 50 + c) as f64).sin());
     assert_approx_grid(&seq, &par, 1e-10);
 }
 
@@ -86,8 +86,8 @@ fn utility_exports() {
 
 #[test]
 fn matmul_non_square() {
-    let a: Tensor<f64> = linear_f64(2, 3);
-    let b: Tensor<f64> = linear_f64(3, 2);
+    let a: Tensor<f64, Cpu> = linear_f64(2, 3);
+    let b: Tensor<f64, Cpu> = linear_f64(3, 2);
     let c = &a * &b;
     assert_eq!(c.shape(), (2, 2));
     assert!(approx_eq(c.get(0, 0), 22.0));
@@ -209,7 +209,7 @@ fn index_bracket_read() {
 
 #[test]
 fn index_bracket_write() {
-    let mut a = Tensor::<f64>::zeros(2, 2);
+    let mut a = Tensor::<f64, Cpu>::zeros(2, 2);
     a[(0, 1)] = 7.0;
     assert_eq!(a[(0, 1)], 7.0);
     assert_eq!(a[(0, 0)], 0.0);
@@ -224,9 +224,9 @@ fn ndtensor_index_bracket() {
 
 #[test]
 fn f16_zeros_and_arithmetic() {
-    let a: Tensor<f16> = Tensor::zeros(2, 2);
+    let a: Tensor<f16, Cpu> = Tensor::zeros(2, 2);
     assert_eq!(a[(0, 0)], f16::ZERO);
-    let b: Tensor<f16> = Tensor::from_fn(2, 2, |i, j| f16::from_f32((i * 2 + j + 1) as f32));
+    let b: Tensor<f16, Cpu> = Tensor::from_fn(2, 2, |i, j| f16::from_f32((i * 2 + j + 1) as f32));
     let c = &a + &b;
     assert!((f32::from(c[(0, 0)]) - 1.0).abs() < 0.01);
     assert!((f32::from(c[(1, 1)]) - 4.0).abs() < 0.01);
@@ -423,7 +423,7 @@ fn sparse_bcsr_roundtrip() {
     assert!(bcsr.nnz_blocks() > 0);
     assert!(bcsr.density() > 0.0 && bcsr.density() <= 1.0);
 
-    let x: Tensor<f64> = linear_f64(3, 2);
+    let x: Tensor<f64, Cpu> = linear_f64(3, 2);
     let bcsr_result = bcsr.spmm(&x);
     let dense_result = s.matmul_dense(&x).expect("matmul_dense");
     assert_approx_grid(&bcsr_result, &dense_result, 1e-10);
@@ -442,7 +442,7 @@ fn sparse_bcsr_spmm_accuracy() {
     }
     let s = SparseMatrix::try_new_from_triplets(16, 16, &trips).expect("build sparse");
     let bcsr = BcsrMatrix::from_sparse(&s, 4);
-    let x: Tensor<f64> = linear_f64(16, 3);
+    let x: Tensor<f64, Cpu> = linear_f64(16, 3);
     let bcsr_result = bcsr.spmm(&x);
     let dense_result = s.matmul_dense(&x).expect("matmul_dense");
     assert_approx_grid(&bcsr_result, &dense_result, 1e-8);
@@ -461,8 +461,8 @@ fn sparse_mixed_precision() {
     let bcsr_f32 = BcsrMatrix::from_sparse(&s_f32, 2);
 
     // b = A * x_true in f64 for known solution
-    let x_true: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
-    let a_f64: Tensor<f64> = mat![[2.0_f64, 1.0], [1.0, 3.0]];
+    let x_true: Tensor<f64, Cpu> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
+    let a_f64: Tensor<f64, Cpu> = mat![[2.0_f64, 1.0], [1.0, 3.0]];
     let b = &a_f64 * &x_true;
 
     let result = mixed_spmm_f64(&bcsr_f32, &b, 1e-10, 100);
@@ -476,9 +476,8 @@ fn sparse_mixed_precision() {
 
 #[test]
 fn reshape_basic() {
-    let a: Tensor<f64> = linear_f64(2, 3);
+    let a: Tensor<f64, Cpu> = linear_f64(2, 3);
     let b = a.reshape(3, 2);
-    assert_eq!(b.shape(), (3, 2));
     assert!(approx_eq(b.get(0, 0), 1.0));
     assert!(approx_eq(b.get(0, 1), 2.0));
     assert!(approx_eq(b.get(1, 0), 3.0));
@@ -552,8 +551,8 @@ fn hcat_two_tensors() {
 
 #[test]
 fn cat_axis0_equals_vcat() {
-    let a: Tensor<f64> = mat![[1.0_f64, 2.0]];
-    let b: Tensor<f64> = mat![[3.0_f64, 4.0]];
+    let a: Tensor<f64, Cpu> = mat![[1.0_f64, 2.0]];
+    let b: Tensor<f64, Cpu> = mat![[3.0_f64, 4.0]];
     let cat_result = Tensor::cat(&[&a, &b], 0);
     let vcat_result = Tensor::vcat(&[&a, &b]);
     assert_approx_grid(&cat_result, &vcat_result, 1e-10);

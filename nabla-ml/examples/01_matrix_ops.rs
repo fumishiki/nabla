@@ -8,7 +8,7 @@ fn main() {
     let tol = 1e-10;
     let a = mat![f64: 2.0, 1.0; 5.0, 3.0];
     let b = mat![f64: 1.0, 0.0; 0.0, 1.0];
-    let eye = Tensor::<f64>::identity(2);
+    let eye = Tensor::<f64, Cpu>::identity(2);
 
     let c = math!(a * b);
     println!(
