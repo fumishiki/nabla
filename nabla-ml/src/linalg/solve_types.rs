@@ -5,11 +5,13 @@ use nabla_core::tensor::Tensor;
 
 use super::chol::{Lblt, Ldlt, Llt};
 use super::eigen::SelfAdjointEigen;
+#[allow(unused_imports)]
+use super::impl_factorization_methods;
 use super::lu::{FullPivLu, PartialPivLu};
 use super::qr::{ColPivQr, Qr};
 use super::solve_ext::LinalgExt;
 use super::svd::Svd;
-use super::{Side, from_f64_buf, impl_factorization_methods, require_square, to_f64_buf};
+use super::{Side, from_f64_buf, require_square, to_f64_buf};
 
 impl_factorization_methods!(general PartialPivLu);
 impl_factorization_methods!(symmetric Llt);

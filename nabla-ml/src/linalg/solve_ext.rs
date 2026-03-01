@@ -10,10 +10,9 @@ use super::qr::{ColPivQr, Qr};
 use super::solve_types::Symmetric;
 use super::structured;
 use super::svd::Svd;
-use super::{
-    Side, bwd_sub, check_shape, from_f64_buf, fwd_sub, impl_solve_in_place,
-    impl_triangular_solve_ip, require_square, to_f64_buf,
-};
+use super::{Side, bwd_sub, check_shape, from_f64_buf, fwd_sub, require_square, to_f64_buf};
+#[allow(unused_imports)]
+use super::{impl_solve_in_place, impl_triangular_solve_ip};
 
 pub trait LinalgExt {
     /// LU decomposition with partial pivoting.
