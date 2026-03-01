@@ -42,7 +42,11 @@ pub fn rotary_embedding<T: scalar::Scalar>(
     let half = head_dim / 2;
     tensor::Tensor::from_fn(seq_len, head_dim, |s, i| {
         let pos = (s + seq_offset) as f64;
-        let (left, right) = if i < half { (i, i + half) } else { (i - half, i) };
+        let (left, right) = if i < half {
+            (i, i + half)
+        } else {
+            (i - half, i)
+        };
         let freq = 1.0 / theta.powf(2.0 * (left as f64) / head_dim as f64);
         let cos_val = T::from_f64((pos * freq).cos());
         let sin_val = T::from_f64((pos * freq).sin());
@@ -98,11 +102,7 @@ pub fn backslash(
 ) -> nabla_core::error::Result<tensor::Tensor<f64, nabla_core::backend::Cpu>> {
     use crate::linalg::LinalgExt as _;
     let (m, n) = a.shape();
-    if m == n {
-        a.solve(b)
-    } else {
-        a.lstsq(b)
-    }
+    if m == n { a.solve(b) } else { a.lstsq(b) }
 }
 
 /// Enumeration of supported activation functions.
@@ -146,7 +146,9 @@ macro_rules! activation_ctors {
 impl<T: Scalar, B: Backend> Activation<T, B> {
     /// Return the activation function kind.
     #[must_use]
-    pub fn kind(&self) -> ActivationKind { self.kind }
+    pub fn kind(&self) -> ActivationKind {
+        self.kind
+    }
 
     activation_ctors!(
         relu => ActivationKind::Relu, gelu => ActivationKind::Gelu,
@@ -179,7 +181,6 @@ impl<T: Scalar, B: Backend> Module<T, B> for Activation<T, B> {
 
     impl_module_params!();
 }
-
 
 /// Dropout regularization layer with inverted scaling.
 pub struct DropoutLayer<T: Scalar, B: Backend> {
@@ -228,7 +229,6 @@ impl<T: Scalar, B: Backend> Module<T, B> for DropoutLayer<T, B> {
 
     impl_module_params!();
 }
-
 
 /// Embedding lookup table module.
 pub struct EmbeddingLayer<T: Scalar, B: Backend> {
@@ -286,7 +286,6 @@ impl<T: Scalar, B: Backend> Module<T, B> for EmbeddingLayer<T, B> {
 
     impl_module_params!(weight);
 }
-
 
 /// Layer normalization module with learnable affine parameters.
 pub struct LayerNormModule<T: Scalar, B: Backend> {

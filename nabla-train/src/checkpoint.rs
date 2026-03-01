@@ -3,13 +3,13 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use nabla_core::backend::Backend;
-use nabla_core::scalar::Scalar;
-use nabla_ml::module::{Module, StateError, load_tensors, save_tensors};
 use crate::optim::{
     GradScaler, GradScalerState, OptimState, ScheduleState, parse_schedule_state, schedule_pairs,
 };
 use crate::trainer::TrainState;
+use nabla_core::backend::Backend;
+use nabla_core::scalar::Scalar;
+use nabla_ml::module::{Module, StateError, load_tensors, save_tensors};
 
 #[derive(Debug)]
 pub enum CheckpointError {
@@ -20,11 +20,15 @@ pub enum CheckpointError {
 }
 
 impl From<io::Error> for CheckpointError {
-    fn from(e: io::Error) -> Self { Self::Io(e) }
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
 }
 
 impl From<StateError> for CheckpointError {
-    fn from(e: StateError) -> Self { Self::State(e) }
+    fn from(e: StateError) -> Self {
+        Self::State(e)
+    }
 }
 
 const META_FILE: &str = "meta.txt";
@@ -85,7 +89,9 @@ where
 
     let optim_path = dir.join(OPTIM_FILE);
     let optim_tensors = load_tensors::<T, B>(&optim_path)?;
-    optimizer.load_state_tensors(&optim_tensors).map_err(CheckpointError::Optim)?;
+    optimizer
+        .load_state_tensors(&optim_tensors)
+        .map_err(CheckpointError::Optim)?;
 
     let meta_path = dir.join(META_FILE);
     let (scaler_state, train_state, schedule_state) = read_meta(&meta_path, optimizer)?;
@@ -157,8 +163,12 @@ where
     f.read_to_string(&mut buf)?;
     let mut map = HashMap::<String, String>::new();
     for line in buf.lines() {
-        if line.trim().is_empty() { continue; }
-        let (k, v) = line.split_once('=').ok_or_else(|| CheckpointError::Parse(line.to_owned()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (k, v) = line
+            .split_once('=')
+            .ok_or_else(|| CheckpointError::Parse(line.to_owned()))?;
         map.insert(k.to_owned(), v.to_owned());
     }
 
@@ -166,7 +176,9 @@ where
     let step = parse_usize(&map, "step")?;
     let grad_accum = parse_usize(&map, "grad_accum")?;
 
-    optim.load_meta_pairs(&map).map_err(CheckpointError::Optim)?;
+    optim
+        .load_meta_pairs(&map)
+        .map_err(CheckpointError::Optim)?;
 
     let scaler_enabled = parse_usize(&map, "scaler.enabled").unwrap_or(0) == 1;
     let scaler = if scaler_enabled {
@@ -184,21 +196,34 @@ where
     let rng_state = parse_usize(&map, "rng.state").ok().map(|v| v as u64);
     let schedule = parse_schedule_state(&map).map_err(CheckpointError::Optim)?;
 
-    Ok((scaler, TrainState { epoch, step, grad_accum, rng_state }, schedule))
+    Ok((
+        scaler,
+        TrainState {
+            epoch,
+            step,
+            grad_accum,
+            rng_state,
+        },
+        schedule,
+    ))
 }
 
 fn parse_f64(map: &HashMap<String, String>, key: &str) -> Result<f64, CheckpointError> {
     let v = parse_str(map, key)?;
-    v.parse::<f64>().map_err(|_| CheckpointError::Parse(format!("bad {key}: {v}")))
+    v.parse::<f64>()
+        .map_err(|_| CheckpointError::Parse(format!("bad {key}: {v}")))
 }
 
 fn parse_usize(map: &HashMap<String, String>, key: &str) -> Result<usize, CheckpointError> {
     let v = parse_str(map, key)?;
-    v.parse::<usize>().map_err(|_| CheckpointError::Parse(format!("bad {key}: {v}")))
+    v.parse::<usize>()
+        .map_err(|_| CheckpointError::Parse(format!("bad {key}: {v}")))
 }
 
 fn parse_str<'a>(map: &'a HashMap<String, String>, key: &str) -> Result<&'a str, CheckpointError> {
-    map.get(key).map(String::as_str).ok_or_else(|| CheckpointError::Parse(format!("missing {key}")))
+    map.get(key)
+        .map(String::as_str)
+        .ok_or_else(|| CheckpointError::Parse(format!("missing {key}")))
 }
 
 pub fn checkpoint_dir(base: &Path, name: &str) -> PathBuf {

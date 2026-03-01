@@ -1,4 +1,3 @@
-
 /// Tensor constructors and iterators.
 pub mod constructors;
 /// Convolution operations.
@@ -376,7 +375,6 @@ pub(super) fn two<T: Scalar>() -> T {
     T::one() + T::one()
 }
 
-
 fn display_indices(len: usize) -> Vec<Option<usize>> {
     if len > 6 {
         let mut v: Vec<Option<usize>> = (0..3).map(Some).collect();
@@ -471,7 +469,6 @@ impl<T: Scalar + fmt::Debug, B: Backend> fmt::Debug for Tensor<T, B> {
     }
 }
 
-
 /// Read-only matrix interface for shape and element access.
 pub trait MatrixLike<T: Scalar> {
     /// Number of rows.
@@ -494,7 +491,6 @@ pub trait MatrixLike<T: Scalar> {
     }
 }
 
-
 impl<T: Scalar, B: Backend, Axes> MatrixLike<T> for Tensor<T, B, Axes> {
     #[inline]
     fn nrows(&self) -> usize {
@@ -516,7 +512,6 @@ impl<T: Scalar, B: Backend, Axes> MatrixLike<T> for Tensor<T, B, Axes> {
         self.get(row, col)
     }
 }
-
 
 impl<T: Scalar, const R: usize, const C: usize> MatrixLike<T> for StaticMatrix<T, R, C> {
     #[inline]

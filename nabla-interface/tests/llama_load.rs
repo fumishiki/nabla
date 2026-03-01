@@ -10,8 +10,8 @@ fn load_gguf_and_tokenize() {
     let _backend = LlamaBackend::init();
 
     // This test requires a GGUF file at the test path
-    let gguf_path = std::env::var("NABLA_TEST_GGUF")
-        .unwrap_or_else(|_| "test-model.gguf".to_string());
+    let gguf_path =
+        std::env::var("NABLA_TEST_GGUF").unwrap_or_else(|_| "test-model.gguf".to_string());
 
     if !std::path::Path::new(&gguf_path).exists() {
         eprintln!("Skipping: GGUF file not found at {gguf_path}");

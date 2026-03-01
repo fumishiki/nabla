@@ -87,9 +87,7 @@ pub fn save_tensors<T: Scalar, B: Backend>(
 }
 
 /// Deserialize named tensors from a binary nabla file.
-pub fn load_tensors<T: Scalar, B: Backend>(
-    path: &Path,
-) -> io::Result<Vec<(String, Tensor<T, B>)>> {
+pub fn load_tensors<T: Scalar, B: Backend>(path: &Path) -> io::Result<Vec<(String, Tensor<T, B>)>> {
     let mut file = File::open(path)?;
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic)?;
@@ -105,8 +103,8 @@ pub fn load_tensors<T: Scalar, B: Backend>(
         let name_len = read_u32(&mut file)? as usize;
         let mut name_buf = vec![0u8; name_len];
         file.read_exact(&mut name_buf)?;
-        let name =
-            String::from_utf8(name_buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let name = String::from_utf8(name_buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let nrows = read_u32(&mut file)? as usize;
         let ncols = read_u32(&mut file)? as usize;
         let total = nrows * ncols;
@@ -198,7 +196,11 @@ pub trait Module<T: Scalar, B: Backend> {
     /// Recommended training forward pass (alias for [`Module::forward_var_tracked`]).
     ///
     /// Tracks autograd and exposes parameter Variables for optimizer updates.
-    fn train_forward(&self, x: &Variable<T, B>, tape: &Rc<Tape<T, B>>) -> Result<ForwardResult<T, B>> {
+    fn train_forward(
+        &self,
+        x: &Variable<T, B>,
+        tape: &Rc<Tape<T, B>>,
+    ) -> Result<ForwardResult<T, B>> {
         self.forward_var_tracked(x, tape)
     }
 
@@ -275,7 +277,10 @@ pub trait Module<T: Scalar, B: Backend> {
     ///
     /// Returns an error if a parameter name in the dictionary does not match
     /// any known parameter, or if shapes are incompatible.
-    fn load_state_dict(&mut self, dict: &[(&str, &Tensor<T, B>)]) -> std::result::Result<(), StateError> {
+    fn load_state_dict(
+        &mut self,
+        dict: &[(&str, &Tensor<T, B>)],
+    ) -> std::result::Result<(), StateError> {
         let mut params = self.named_parameters_mut();
         for (name, src) in dict {
             let dst = params
@@ -310,7 +315,6 @@ pub trait Module<T: Scalar, B: Backend> {
         }
     }
 }
-
 
 /// Fully connected linear layer `y = x @ W^T + b`.
 pub struct Linear<T: Scalar, B: Backend = DefaultBackend> {
@@ -355,7 +359,6 @@ impl_layer! {
     }
 }
 
-
 /// Sequential container that chains modules in order.
 pub struct Sequential<T: Scalar, B: Backend> {
     layers: Vec<Box<dyn Module<T, B>>>,
@@ -365,7 +368,9 @@ pub struct Sequential<T: Scalar, B: Backend> {
 }
 
 impl<T: Scalar, B: Backend> Default for Sequential<T, B> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Scalar, B: Backend> Sequential<T, B> {

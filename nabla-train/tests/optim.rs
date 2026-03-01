@@ -1,6 +1,6 @@
-use nabla_train::prelude::*;
-use nabla_train::optim::{GroupOptimizer, ParamGroupConfig, ParamMatch, ParamSelector};
 use nabla_train::ml as nabla;
+use nabla_train::optim::{GroupOptimizer, ParamGroupConfig, ParamMatch, ParamSelector};
+use nabla_train::prelude::*;
 
 struct GroupModule {
     weight: Tensor<f64>,
@@ -23,7 +23,9 @@ impl Module<f64, DefaultBackend> for GroupModule {
         x.clone()
     }
 
-    fn set_training(&mut self, training: bool) { self.training = training; }
+    fn set_training(&mut self, training: bool) {
+        self.training = training;
+    }
 
     fn parameters(&self) -> Vec<&Tensor<f64, DefaultBackend>> {
         vec![&self.weight, &self.bias]
@@ -80,7 +82,10 @@ fn adamw_step_updates_param() {
 
 #[test]
 fn linear_schedule_reaches_zero() {
-    let sched = LrSchedule::Linear { warmup_steps: 0, total_steps: 10 };
+    let sched = LrSchedule::Linear {
+        warmup_steps: 0,
+        total_steps: 10,
+    };
     let lr0 = lr_at_step(&sched, 1.0, 0);
     let lr_end = lr_at_step(&sched, 1.0, 10);
     assert!((lr0 - 1.0).abs() < 1e-10);
@@ -89,7 +94,10 @@ fn linear_schedule_reaches_zero() {
 
 #[test]
 fn step_schedule_decays() {
-    let sched = LrSchedule::Step { step_size: 2, gamma: 0.1 };
+    let sched = LrSchedule::Step {
+        step_size: 2,
+        gamma: 0.1,
+    };
     let lr0 = lr_at_step(&sched, 1.0, 0);
     let lr2 = lr_at_step(&sched, 1.0, 2);
     let lr4 = lr_at_step(&sched, 1.0, 4);
@@ -100,7 +108,11 @@ fn step_schedule_decays() {
 
 #[test]
 fn onecycle_reaches_max() {
-    let sched = LrSchedule::OneCycle { max_lr: 1.0, total_steps: 10, pct_start: 0.5 };
+    let sched = LrSchedule::OneCycle {
+        max_lr: 1.0,
+        total_steps: 10,
+        pct_start: 0.5,
+    };
     let lr_up = lr_at_step(&sched, 0.1, 3);
     assert!(lr_up > 0.1);
 }
@@ -135,13 +147,7 @@ fn group_optimizer_weight_decay_exclusion() {
         0.0,
         0.0,
     );
-    let decay_group = ParamGroupConfig::sgd(
-        "decay",
-        ParamSelector::All,
-        1.0,
-        0.0,
-        0.1,
-    );
+    let decay_group = ParamGroupConfig::sgd("decay", ParamSelector::All, 1.0, 0.0, 0.1);
     let mut opt = match GroupOptimizer::from_module(&module, &[bias_group], Some(decay_group)) {
         Ok(v) => v,
         Err(e) => panic!("group optimizer build failed: {e}"),

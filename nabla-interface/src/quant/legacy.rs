@@ -1,7 +1,7 @@
 //! Legacy quantization: `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`.
 
-use half::f16;
 use crate::{Error, Result};
+use half::f16;
 
 const QK: usize = 32;
 const BQ4_0: usize = 18; // f16 delta + 16 nibble bytes
@@ -13,7 +13,9 @@ const BQ8_1: usize = 36; // f16 delta + f16 sum + 32 i8
 
 fn check_len(name: &str, len: usize, divisor: usize) -> Result<()> {
     if !len.is_multiple_of(divisor) {
-        return Err(Error::Quant(format!("{name}: len {len} not divisible by {divisor}")));
+        return Err(Error::Quant(format!(
+            "{name}: len {len} not divisible by {divisor}"
+        )));
     }
     Ok(())
 }
@@ -127,7 +129,9 @@ pub fn quantize_q5_0(data: &[f32]) -> Result<Vec<u8>> {
         for (j, &v) in blk.iter().enumerate() {
             let q = ((v * id + 16.5).clamp(0.0, 31.0) as u8) & 0x1F;
             qs[j / 2] |= (q & 0x0F) << (4 * (j & 1));
-            if q & 0x10 != 0 { qh[j / 8] |= 1 << (j & 7); }
+            if q & 0x10 != 0 {
+                qh[j / 8] |= 1 << (j & 7);
+            }
         }
         out.extend_from_slice(&qh);
         out.extend_from_slice(&qs);
@@ -179,7 +183,9 @@ pub fn quantize_q5_1(data: &[f32]) -> Result<Vec<u8>> {
         for (j, &v) in blk.iter().enumerate() {
             let q = (((v - vmin) * id + 0.5).clamp(0.0, 31.0) as u8) & 0x1F;
             qs[j / 2] |= (q & 0x0F) << (4 * (j & 1));
-            if q & 0x10 != 0 { qh[j / 8] |= 1 << (j & 7); }
+            if q & 0x10 != 0 {
+                qh[j / 8] |= 1 << (j & 7);
+            }
         }
         out.extend_from_slice(&qh);
         out.extend_from_slice(&qs);

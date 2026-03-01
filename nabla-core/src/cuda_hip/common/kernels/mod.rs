@@ -1,4 +1,3 @@
-
 #![allow(dead_code)]
 
 pub(crate) const BLOCK_SIZE: u32 = 256;

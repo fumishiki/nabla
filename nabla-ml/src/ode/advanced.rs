@@ -1,22 +1,21 @@
-
 use nabla_core::backend::Cpu;
 use nabla_core::error::{Error, Result};
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 
 use super::{
-    alloc_trajectory, apply_saveat, diff_inf_norm, inf_norm_vec, validate, DaeConfig, IntoOdeRhs,
-    OdeSolution, PararealConfig, StormerVerletConfig, SymplecticSolution,
+    DaeConfig, IntoOdeRhs, OdeSolution, PararealConfig, StormerVerletConfig, SymplecticSolution,
+    alloc_trajectory, apply_saveat, diff_inf_norm, inf_norm_vec, validate,
 };
 
 fn wrap_rhs_parareal<T, R, F>(f: F) -> impl Fn(f64, f64, &Tensor<T, Cpu>) -> Result<Tensor<T, Cpu>>
 where
-    T: Scalar, R: IntoOdeRhs<T, Cpu>,
+    T: Scalar,
+    R: IntoOdeRhs<T, Cpu>,
     F: Fn(f64, f64, &Tensor<T, Cpu>) -> R,
 {
     move |t0, t1, y| f(t0, t1, y).into_rhs()
 }
-
 
 /// Semi-explicit DAE solver using implicit Euler with Newton iteration.
 pub fn dae_solve<F, G>(
@@ -97,7 +96,6 @@ where
     Ok(apply_saveat(sol, &cfg.saveat))
 }
 
-
 /// Stormer-Verlet symplectic integrator for Hamiltonian systems.
 pub fn stormer_verlet<V>(
     grad_v: V,
@@ -153,7 +151,6 @@ where
         p_states: ps,
     })
 }
-
 
 /// Parareal parallel-in-time solver for scalar ODEs.
 pub fn parareal_solve<G, F>(
@@ -240,7 +237,6 @@ fn validate_parareal(t0: f64, t1: f64, config: &PararealConfig) -> Result<()> {
     ensure_positive("max_iter", config.max_iter)?;
     Ok(())
 }
-
 
 /// Parareal parallel-in-time solver for tensor-valued ODEs.
 pub fn parareal_solve_tensor<T, RG, RF, G, F>(

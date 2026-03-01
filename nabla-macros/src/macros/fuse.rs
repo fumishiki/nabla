@@ -49,7 +49,10 @@ fn parse_input_idents(input: ParseStream<'_>, err_msg: &'static str) -> Result<V
 }
 
 fn storage_ptrs(tensors: &[Ident]) -> Vec<TokenStream2> {
-    tensors.iter().map(|t| quote! { #t.__storage_ptr() }).collect()
+    tensors
+        .iter()
+        .map(|t| quote! { #t.__storage_ptr() })
+        .collect()
 }
 
 fn emit_shape_checks(tensors: &[Ident], msg: &str) -> Vec<TokenStream2> {
@@ -62,7 +65,6 @@ fn emit_shape_checks(tensors: &[Ident], msg: &str) -> Vec<TokenStream2> {
         .map(|t| quote! { assert_eq!(#first.shape(), #t.shape(), #msg); })
         .collect()
 }
-
 
 struct MapReduceInfo {
     pointwise_expr: Expr,
@@ -162,7 +164,6 @@ fn emit_map_reduce_fuse(mr: MapReduceInfo) -> Result<TokenStream2> {
     }})
 }
 
-
 const GEMM_ACTIVATIONS: &[&str] = &[
     "sigmoid", "relu", "tanh", "gelu", "exp", "ln", "sqrt", "abs", "neg", "recip",
 ];
@@ -214,7 +215,6 @@ fn emit_gemm_activation(lhs: Expr, rhs: Expr, act: Ident) -> TokenStream2 {
     }
 }
 
-
 pub(crate) struct FuseInput {
     pub(crate) body: Expr,
     pub(crate) tensors: Vec<Ident>,
@@ -242,7 +242,6 @@ impl Parse for FuseInput {
         Ok(FuseInput { body, tensors })
     }
 }
-
 
 pub(crate) fn fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
     let FuseInput { body, tensors } = syn::parse2(input)?;
@@ -301,8 +300,10 @@ pub(crate) fn fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
         }}
     } else {
         // Fallback: tensor-level chained ops
-        eprintln!("warning: fuse! expression is not element-wise fusible — falling back to tensor-level ops. \
-                   Only +, -, *, /, exp, ln, log1p, sin, cos, tanh, sqrt, abs, recip, erf, ceil, floor, round, neg, powf are fusible.");
+        eprintln!(
+            "warning: fuse! expression is not element-wise fusible — falling back to tensor-level ops. \
+                   Only +, -, *, /, exp, ln, log1p, sin, cos, tanh, sqrt, abs, recip, erf, ceil, floor, round, neg, powf are fusible."
+        );
         let lifted = lift_expr(&body, &tensor_names);
         quote! { #lifted }
     };
@@ -312,7 +313,6 @@ pub(crate) fn fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
         #fused_body
     }})
 }
-
 
 pub(crate) struct MegaFuseInput {
     pub(crate) bodies: Vec<Expr>,
@@ -392,7 +392,6 @@ impl Parse for MegaFuseInput {
     }
 }
 
-
 pub(crate) fn mega_fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
     let MegaFuseInput {
         bodies,
@@ -435,7 +434,8 @@ pub(crate) fn mega_fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
         combined_hash.push(';');
         gpu_exprs.push(gpu_str);
 
-        let scalar_body = scalar_expr_mega(&simplified, &op_tensor_names, prev_scalar_body.as_ref())?;
+        let scalar_body =
+            scalar_expr_mega(&simplified, &op_tensor_names, prev_scalar_body.as_ref())?;
 
         cpu_closures.push(quote! {
             Box::new(|__fuse_r: usize, __fuse_c: usize| {
@@ -452,7 +452,13 @@ pub(crate) fn mega_fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
     let gpu_expr_lits: Vec<TokenStream2> = gpu_exprs.iter().map(|e| quote! { #e }).collect();
     let uses_prev_lits: Vec<TokenStream2> = uses_prev
         .iter()
-        .map(|&b| if b { quote! { true } } else { quote! { false } })
+        .map(|&b| {
+            if b {
+                quote! { true }
+            } else {
+                quote! { false }
+            }
+        })
         .collect();
     let op_ptrs: Vec<Vec<TokenStream2>> = op_inputs.iter().map(|v| storage_ptrs(v)).collect();
     let op_ptr_lists: Vec<TokenStream2> = op_ptrs

@@ -5,10 +5,10 @@
     clippy::many_single_char_names
 )]
 
-mod expr;
 mod alg;
+mod expr;
 
-pub use expr::{Expr, ExprKind, var};
 pub use alg::{
     diff, diff_simplify, eval, eval_tensor, gradient, hessian, jacobian, simplify, substitute,
 };
+pub use expr::{Expr, ExprKind, var};

@@ -1,8 +1,7 @@
-
 #[macro_use]
 mod core;
-mod factor_lu_qr;
 mod factor_chol_svd;
+mod factor_lu_qr;
 mod solve_ext;
 mod solve_types;
 
@@ -18,10 +17,10 @@ pub use solve_ext::LinalgExt;
 pub use crate::module::backslash;
 pub use solve_types::{Diagonal, Symmetric, TriKind, Triangular};
 
-pub use factor_lu_qr::lu;
-pub use factor_lu_qr::qr;
 pub use factor_chol_svd::chol;
 pub use factor_chol_svd::svd;
+pub use factor_lu_qr::lu;
+pub use factor_lu_qr::qr;
 
 pub use {
     chol::{Lblt, Ldlt, Llt},

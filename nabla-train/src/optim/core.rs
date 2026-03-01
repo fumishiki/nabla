@@ -15,11 +15,7 @@ pub trait Optimizer<T: Scalar, B: Backend> {
         self.step(&mut param_refs, &grad_refs);
     }
 
-    fn step_with_vars<M: Module<T, B>>(
-        &mut self,
-        module: &mut M,
-        param_vars: &[Variable<T, B>],
-    ) {
+    fn step_with_vars<M: Module<T, B>>(&mut self, module: &mut M, param_vars: &[Variable<T, B>]) {
         let params = module.parameters_mut();
         assert_eq!(
             params.len(),
@@ -31,9 +27,11 @@ pub trait Optimizer<T: Scalar, B: Backend> {
         let grads: Vec<Tensor<T, B>> = param_vars
             .iter()
             .enumerate()
-            .map(|(i, v)| v.grad().unwrap_or_else(|_| panic!(
+            .map(|(i, v)| {
+                v.grad().unwrap_or_else(|_| panic!(
                 "nabla-train: step_with_vars: param_vars[{i}] has no gradient (call backward first)"
-            )))
+            ))
+            })
             .collect();
         let grad_refs: Vec<&Tensor<T, B>> = grads.iter().collect();
         let mut param_refs: Vec<&mut Tensor<T, B>> = params;
@@ -102,10 +100,24 @@ fn cosine_decay(high: f64, low: f64, progress: f64) -> f64 {
 
 #[derive(Clone)]
 pub enum LrSchedule {
-    Cosine { warmup_steps: usize, total_steps: usize, min_lr: f64 },
-    Linear { warmup_steps: usize, total_steps: usize },
-    OneCycle { max_lr: f64, total_steps: usize, pct_start: f64 },
-    Step { step_size: usize, gamma: f64 },
+    Cosine {
+        warmup_steps: usize,
+        total_steps: usize,
+        min_lr: f64,
+    },
+    Linear {
+        warmup_steps: usize,
+        total_steps: usize,
+    },
+    OneCycle {
+        max_lr: f64,
+        total_steps: usize,
+        pct_start: f64,
+    },
+    Step {
+        step_size: usize,
+        gamma: f64,
+    },
 }
 
 #[derive(Clone)]
@@ -117,7 +129,11 @@ pub struct ScheduleState {
 #[must_use]
 pub fn lr_at_step(schedule: &LrSchedule, base_lr: f64, step: usize) -> f64 {
     match schedule {
-        LrSchedule::Cosine { warmup_steps, total_steps, min_lr } => {
+        LrSchedule::Cosine {
+            warmup_steps,
+            total_steps,
+            min_lr,
+        } => {
             if step < *warmup_steps {
                 warmup_lr(base_lr, step, *warmup_steps)
             } else {
@@ -125,7 +141,10 @@ pub fn lr_at_step(schedule: &LrSchedule, base_lr: f64, step: usize) -> f64 {
                 cosine_decay(base_lr, *min_lr, progress)
             }
         }
-        LrSchedule::Linear { warmup_steps, total_steps } => {
+        LrSchedule::Linear {
+            warmup_steps,
+            total_steps,
+        } => {
             if step < *warmup_steps {
                 warmup_lr(base_lr, step, *warmup_steps)
             } else {
@@ -133,7 +152,11 @@ pub fn lr_at_step(schedule: &LrSchedule, base_lr: f64, step: usize) -> f64 {
                 base_lr * (1.0 - progress).max(0.0)
             }
         }
-        LrSchedule::OneCycle { max_lr, total_steps, pct_start } => {
+        LrSchedule::OneCycle {
+            max_lr,
+            total_steps,
+            pct_start,
+        } => {
             let up_steps = (*total_steps as f64 * pct_start) as usize;
             if step < up_steps {
                 ramp(base_lr, *max_lr, step, up_steps)
@@ -155,18 +178,29 @@ pub fn schedule_pairs(state: &ScheduleState) -> Vec<(String, String)> {
     out.push(("schedule.enabled".to_owned(), "1".to_owned()));
     out.push(("schedule.base_lr".to_owned(), state.base_lr.to_string()));
     match &state.schedule {
-        LrSchedule::Cosine { warmup_steps, total_steps, min_lr } => {
+        LrSchedule::Cosine {
+            warmup_steps,
+            total_steps,
+            min_lr,
+        } => {
             out.push(("schedule.kind".to_owned(), "cosine".to_owned()));
             out.push(("schedule.warmup_steps".to_owned(), warmup_steps.to_string()));
             out.push(("schedule.total_steps".to_owned(), total_steps.to_string()));
             out.push(("schedule.min_lr".to_owned(), min_lr.to_string()));
         }
-        LrSchedule::Linear { warmup_steps, total_steps } => {
+        LrSchedule::Linear {
+            warmup_steps,
+            total_steps,
+        } => {
             out.push(("schedule.kind".to_owned(), "linear".to_owned()));
             out.push(("schedule.warmup_steps".to_owned(), warmup_steps.to_string()));
             out.push(("schedule.total_steps".to_owned(), total_steps.to_string()));
         }
-        LrSchedule::OneCycle { max_lr, total_steps, pct_start } => {
+        LrSchedule::OneCycle {
+            max_lr,
+            total_steps,
+            pct_start,
+        } => {
             out.push(("schedule.kind".to_owned(), "onecycle".to_owned()));
             out.push(("schedule.max_lr".to_owned(), max_lr.to_string()));
             out.push(("schedule.total_steps".to_owned(), total_steps.to_string()));
@@ -181,8 +215,13 @@ pub fn schedule_pairs(state: &ScheduleState) -> Vec<(String, String)> {
     out
 }
 
-pub fn parse_schedule_state(map: &HashMap<String, String>) -> Result<Option<ScheduleState>, String> {
-    let enabled = map.get("schedule.enabled").map(String::as_str).unwrap_or("0");
+pub fn parse_schedule_state(
+    map: &HashMap<String, String>,
+) -> Result<Option<ScheduleState>, String> {
+    let enabled = map
+        .get("schedule.enabled")
+        .map(String::as_str)
+        .unwrap_or("0");
     if enabled != "1" {
         return Ok(None);
     }
@@ -228,7 +267,10 @@ pub fn optim_meta_pairs(meta: &OptimMeta) -> Vec<(String, String)> {
         ("optim.beta1".to_owned(), meta.beta1.to_string()),
         ("optim.beta2".to_owned(), meta.beta2.to_string()),
         ("optim.eps".to_owned(), meta.eps.to_string()),
-        ("optim.weight_decay".to_owned(), meta.weight_decay.to_string()),
+        (
+            "optim.weight_decay".to_owned(),
+            meta.weight_decay.to_string(),
+        ),
         ("optim.momentum".to_owned(), meta.momentum.to_string()),
         ("optim.step_count".to_owned(), meta.step_count.to_string()),
     ]
@@ -346,7 +388,9 @@ impl GradScaler {
     }
 
     #[must_use]
-    pub fn scale_factor(&self) -> f64 { self.scale }
+    pub fn scale_factor(&self) -> f64 {
+        self.scale
+    }
 
     #[must_use]
     pub fn state(&self) -> GradScalerState {

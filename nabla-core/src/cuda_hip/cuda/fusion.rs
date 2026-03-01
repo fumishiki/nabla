@@ -1,7 +1,7 @@
 use std::ffi::{CString, c_void};
 
-use cudarc::driver::sys::CUdeviceptr;
 use cudarc::driver::result;
+use cudarc::driver::sys::CUdeviceptr;
 use cudarc::nvrtc;
 
 use crate::gpu_common::{self, grid_1d, type_suffix};

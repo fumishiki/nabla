@@ -30,16 +30,16 @@ pub(crate) fn fuse_kernel_source(
         src.push_str("    if (i + 3 < n) {\n");
         for j in 0..n_inputs {
             if use_ldg {
-            let _ = write!(
-                src,
-                "        float4 v{j} = __ldg(reinterpret_cast<const float4*>(in{j}) + i4);\n"
-            );
-        } else {
-            let _ = write!(
-                src,
-                "        float4 v{j} = reinterpret_cast<const float4*>(in{j})[i4];\n"
-            );
-        }
+                let _ = write!(
+                    src,
+                    "        float4 v{j} = __ldg(reinterpret_cast<const float4*>(in{j}) + i4);\n"
+                );
+            } else {
+                let _ = write!(
+                    src,
+                    "        float4 v{j} = reinterpret_cast<const float4*>(in{j})[i4];\n"
+                );
+            }
         }
         src.push_str("        float4 r;\n");
         for comp in &["x", "y", "z", "w"] {

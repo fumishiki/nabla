@@ -6,7 +6,6 @@
 use proc_macro2::Ident;
 use syn::{Expr, ExprBinary, ExprMethodCall, ExprPath, ExprUnary};
 
-
 const ELEMENTWISE_UNARY: &[&str] = &[
     "exp", "ln", "log1p", "sin", "cos", "tanh", "sqrt", "abs", "recip", "erf", "ceil", "floor",
     "round", "neg",
@@ -42,7 +41,6 @@ fn expr_any(expr: &Expr, pred: &mut impl FnMut(&Expr) -> bool) -> bool {
         _ => false,
     }
 }
-
 
 pub(crate) fn is_elementwise_fusible(expr: &Expr) -> bool {
     match expr {
@@ -100,7 +98,6 @@ pub(crate) fn contains_tensor(expr: &Expr, tensor_names: &[String]) -> bool {
     expr_any(expr, &mut pred)
 }
 
-
 fn collect_idents(
     expr: &Expr,
     out: &mut Vec<Ident>,
@@ -154,7 +151,6 @@ pub(crate) fn collect_all_path_idents(expr: &Expr, out: &mut Vec<Ident>) {
     collect_idents(expr, out, &mut accept, false);
 }
 
-
 pub(crate) fn scalar_method_name(method: &str) -> Option<&'static str> {
     match method {
         "exp" => Some("math_exp"),
@@ -175,9 +171,12 @@ pub(crate) fn scalar_method_name(method: &str) -> Option<&'static str> {
     }
 }
 
-
 pub(crate) fn expr_references_prev(expr: &Expr) -> bool {
-    let mut pred = |e: &Expr| single_ident(e).map(|ident| ident == "prev").unwrap_or(false);
+    let mut pred = |e: &Expr| {
+        single_ident(e)
+            .map(|ident| ident == "prev")
+            .unwrap_or(false)
+    };
     expr_any(expr, &mut pred)
 }
 

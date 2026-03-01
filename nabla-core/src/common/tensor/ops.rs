@@ -1,4 +1,3 @@
-
 use core::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, RangeBounds, Sub, SubAssign};
 
 use crate::backend::Backend;
@@ -485,7 +484,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-
 impl<T: Scalar, B: Backend> Add for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
@@ -602,7 +600,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn axpy_inplace(&mut self, alpha: T, x: &Self) {
         let (m, n) = self.shape();
         let (p, q) = x.shape();
-        assert!(m == p && n == q, "nabla: axpy_inplace ({m}x{n}) vs ({p}x{q}) -- shapes must match");
+        assert!(
+            m == p && n == q,
+            "nabla: axpy_inplace ({m}x{n}) vs ({p}x{q}) -- shapes must match"
+        );
         B::axpy_inplace(&mut self.storage, alpha, &x.storage);
     }
 }
@@ -657,7 +658,6 @@ impl<T: Scalar, B: Backend> Div<T> for Tensor<T, B> {
         &self / rhs
     }
 }
-
 
 impl<T: Scalar, B: Backend> Add for Tensor<T, B> {
     type Output = Self;
@@ -722,7 +722,6 @@ impl<T: Scalar, B: Backend> Neg for Tensor<T, B> {
     }
 }
 
-
 impl<T: Scalar, B: Backend> Mul for Tensor<T, B> {
     type Output = Self;
 
@@ -749,7 +748,6 @@ impl<T: Scalar, B: Backend> Mul<Tensor<T, B>> for &Tensor<T, B> {
         self * &rhs
     }
 }
-
 
 macro_rules! impl_scalar_lhs_ops {
     ($($t:ty),*) => { $(

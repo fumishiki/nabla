@@ -1,17 +1,13 @@
-
 use nabla_core::backend::Cpu;
 use nabla_core::error::{Error, Result};
 use nabla_core::tensor::Tensor;
 
-use super::{buf_get, from_f64_buf, require_square, to_f64_buf};
 use super::lu::PartialPivLu;
-use super::svd::Svd;
 use super::matrix_fn::{schur, schur_hessenberg};
+use super::svd::Svd;
+use super::{buf_get, from_f64_buf, require_square, to_f64_buf};
 
-
-pub fn hessenberg(
-    a: &Tensor<f64, Cpu>,
-) -> Result<(Tensor<f64, Cpu>, Tensor<f64, Cpu>)> {
+pub fn hessenberg(a: &Tensor<f64, Cpu>) -> Result<(Tensor<f64, Cpu>, Tensor<f64, Cpu>)> {
     let n = a.nrows();
     require_square(a.shape(), "hessenberg")?;
 
@@ -33,10 +29,7 @@ pub fn hessenberg(
     Ok((from_f64_buf(q_buf, n, n), from_f64_buf(h_buf, n, n)))
 }
 
-
-pub fn polar(
-    a: &Tensor<f64, Cpu>,
-) -> Result<(Tensor<f64, Cpu>, Tensor<f64, Cpu>)> {
+pub fn polar(a: &Tensor<f64, Cpu>) -> Result<(Tensor<f64, Cpu>, Tensor<f64, Cpu>)> {
     let (m, n) = a.shape();
     require_square(a.shape(), "polar")?;
 
@@ -58,7 +51,6 @@ pub fn polar(
     Ok((u_polar, h))
 }
 
-
 #[must_use]
 pub fn toeplitz(col: &[f64], row: &[f64]) -> Tensor<f64, Cpu> {
     let m = col.len();
@@ -66,15 +58,8 @@ pub fn toeplitz(col: &[f64], row: &[f64]) -> Tensor<f64, Cpu> {
     if m == 0 || n == 0 {
         return Tensor::<f64, Cpu>::zeros(m, n);
     }
-    Tensor::from_fn(m, n, |i, j| {
-        if i >= j {
-            col[i - j]
-        } else {
-            row[j - i]
-        }
-    })
+    Tensor::from_fn(m, n, |i, j| if i >= j { col[i - j] } else { row[j - i] })
 }
-
 
 #[must_use]
 pub fn circulant(c: &[f64]) -> Tensor<f64, Cpu> {
@@ -87,7 +72,6 @@ pub fn circulant(c: &[f64]) -> Tensor<f64, Cpu> {
         c[idx]
     })
 }
-
 
 #[must_use]
 pub fn vandermonde(nodes: &[f64]) -> Tensor<f64, Cpu> {
@@ -108,7 +92,6 @@ pub fn vandermonde_rect(nodes: &[f64], ncols: usize) -> Result<Tensor<f64, Cpu>>
     }
     Ok(Tensor::from_fn(m, ncols, |i, j| nodes[i].powi(j as i32)))
 }
-
 
 pub fn balance(a: &Tensor<f64, Cpu>) -> Result<(Tensor<f64, Cpu>, Vec<f64>)> {
     let n = a.nrows();
@@ -180,7 +163,6 @@ pub fn balance(a: &Tensor<f64, Cpu>) -> Result<(Tensor<f64, Cpu>, Vec<f64>)> {
     Ok((from_f64_buf(buf, n, n), scale))
 }
 
-
 pub fn frechet_deriv<F>(
     f: F,
     a: &Tensor<f64, Cpu>,
@@ -220,7 +202,6 @@ where
     // Extract upper-right n × n block.
     Ok(Tensor::from_fn(n, n, |i, j| fb.get(i, j + n)))
 }
-
 
 pub fn continuous_riccati(
     a: &Tensor<f64, Cpu>,

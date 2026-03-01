@@ -1,12 +1,11 @@
-
 use nabla_core::backend::Cpu;
 use nabla_core::error::{Error, Result};
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 
 use super::{
-    alloc_trajectory, apply_saveat, diff_inf_norm, phi1, sc, validate, wrap_rhs, Bdf1Config,
-    Bdf2Config, IfEulerScalarConfig, IntoOdeRhs, MetdConfig, OdeSolution,
+    Bdf1Config, Bdf2Config, IfEulerScalarConfig, IntoOdeRhs, MetdConfig, OdeSolution,
+    alloc_trajectory, apply_saveat, diff_inf_norm, phi1, sc, validate, wrap_rhs,
 };
 
 #[inline]
@@ -75,7 +74,6 @@ fn require_col_vec<T: Scalar>(name: &str, y: &Tensor<T, Cpu>, n: usize) -> Resul
     Ok(())
 }
 
-
 /// Matrix integrating-factor Euler method for stiff linear systems.
 pub fn if_euler<R: IntoOdeRhs<f64, Cpu>, F>(
     a: &Tensor<f64, Cpu>,
@@ -136,7 +134,6 @@ where
     Ok(OdeSolution { times, states })
 }
 
-
 /// BDF-1 (Backward Euler) implicit method with fixed-point iteration.
 pub fn bdf1<T: Scalar, R: IntoOdeRhs<T, Cpu>, F>(
     f: F,
@@ -181,7 +178,6 @@ where
     let sol = OdeSolution { times, states };
     Ok(apply_saveat(sol, &config.saveat))
 }
-
 
 fn phi1_matrix(z: &Tensor<f64, Cpu>, order: usize) -> Tensor<f64, Cpu> {
     let n = z.nrows();
@@ -247,7 +243,6 @@ where
     Ok(apply_saveat(sol, &cfg.saveat))
 }
 
-
 /// Scalar integrating-factor Euler method for stiff ODEs with scalar stiffness.
 pub fn if_euler_scalar<T, R: IntoOdeRhs<T, Cpu>, F>(
     nonlinear: F,
@@ -292,7 +287,6 @@ where
     let sol = OdeSolution { times, states };
     Ok(apply_saveat(sol, &config.saveat))
 }
-
 
 /// BDF-2 (second-order BDF) implicit method with BDF-1 bootstrap.
 pub fn bdf2<T: Scalar, R: IntoOdeRhs<T, Cpu>, F>(

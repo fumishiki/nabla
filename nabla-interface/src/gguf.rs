@@ -2,8 +2,8 @@
 
 use std::io::Write;
 
-use crate::quant::GgufQuantType;
 use crate::Result;
+use crate::quant::GgufQuantType;
 
 const GGUF_MAGIC: u32 = 0x4655_4747; // "GGUF" LE
 const GGUF_VERSION: u32 = 3;
@@ -65,12 +65,19 @@ impl<W: Write> GgufWriter<W> {
     /// Create an empty GGUF writer.
     #[must_use]
     pub fn new() -> Self {
-        Self { metadata: Vec::new(), tensors: Vec::new(), _phantom: std::marker::PhantomData }
+        Self {
+            metadata: Vec::new(),
+            tensors: Vec::new(),
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// Add a metadata key-value pair.
     pub fn add_metadata(&mut self, key: &str, value: MetadataValue) {
-        self.metadata.push(MetadataEntry { key: key.to_string(), value });
+        self.metadata.push(MetadataEntry {
+            key: key.to_string(),
+            value,
+        });
     }
 
     /// Add a tensor with its raw data.
@@ -151,7 +158,9 @@ impl<W: Write> GgufWriter<W> {
 }
 
 impl<W: Write> Default for GgufWriter<W> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn write_gguf_string(w: &mut impl Write, s: &str) -> Result<()> {
@@ -212,10 +221,13 @@ fn metadata_type_tag(v: &MetadataValue) -> u32 {
     }
 }
 
-fn gguf_string_size(s: &str) -> usize { 8 + s.len() }
+fn gguf_string_size(s: &str) -> usize {
+    8 + s.len()
+}
 
 fn metadata_value_size(v: &MetadataValue) -> usize {
-    4 + match v { // 4 bytes for type tag
+    4 + match v {
+        // 4 bytes for type tag
         MetadataValue::String(s) => gguf_string_size(s),
         MetadataValue::U32(_) | MetadataValue::F32(_) => 4,
         MetadataValue::U64(_) => 8,

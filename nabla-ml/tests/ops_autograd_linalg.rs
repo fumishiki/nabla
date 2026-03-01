@@ -30,7 +30,6 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
     }
 }
 
-
 #[nabla_grad]
 #[allow(dead_code)]
 fn sigmoid(x: f64) -> f64 {
@@ -51,12 +50,13 @@ fn autograd_simple_backward() {
     assert!((grad.get(1, 1) - 8.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn autograd_chain_rule() {
     use nabla::autograd::Tape;
     let tape = Tape::<f64, Cpu>::new();
-    let x = tape.variable(Tensor::from_fn(1, 1, |_, _| 1.0_f64)).expect("variable");
+    let x = tape
+        .variable(Tensor::from_fn(1, 1, |_, _| 1.0_f64))
+        .expect("variable");
     let x2 = x.emul(&x);
     let y = x2.sin();
     y.backward().expect("backward failed");
@@ -65,13 +65,16 @@ fn autograd_chain_rule() {
     assert!((grad.get(0, 0) - expected).abs() < 1e-10);
 }
 
-
 #[test]
 fn autograd_matmul_backward() {
     use nabla::autograd::Tape;
     let tape = Tape::<f64, Cpu>::new();
-    let a = tape.variable(mat![[1.0_f64, 2.0], [3.0, 4.0]]).expect("variable");
-    let b = tape.variable(mat![[5.0_f64, 6.0], [7.0, 8.0]]).expect("variable");
+    let a = tape
+        .variable(mat![[1.0_f64, 2.0], [3.0, 4.0]])
+        .expect("variable");
+    let b = tape
+        .variable(mat![[5.0_f64, 6.0], [7.0, 8.0]])
+        .expect("variable");
     let c = &a * &b;
     c.backward().expect("backward failed");
     let grad_a = a.grad().expect("grad_a failed");
@@ -86,7 +89,6 @@ fn autograd_matmul_backward() {
     assert!((grad_b.get(1, 1) - 6.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn dual_exp_ln() {
     // f(x) = exp(ln(x)) = x, f'(x) = 1
@@ -98,7 +100,6 @@ fn dual_exp_ln() {
     assert!((y.deriv - 1.0).abs() < 1e-12);
 }
 
-
 #[test]
 fn grad_quadratic() {
     // f(x) = sum(x^2), df/dx = 2x; at x=[[3.0]] => grad = [[6.0]]
@@ -107,7 +108,6 @@ fn grad_quadratic() {
         grad(|xv: &Variable<f64, Cpu>| xv.emul(xv).sum_all_var(), &x).expect("grad returned None");
     assert!((g[(0, 0)] - 6.0).abs() < 1e-10);
 }
-
 
 #[test]
 fn gradient_prep_reuse() {
@@ -120,7 +120,6 @@ fn gradient_prep_reuse() {
     assert!((g1[(0, 0)] - 4.0).abs() < 1e-10);
     assert!((g2[(0, 0)] - 10.0).abs() < 1e-10);
 }
-
 
 #[test]
 fn nabla_grad_sigmoid() {
@@ -143,7 +142,6 @@ fn poly(x: f64) -> f64 {
     x * x + 2.0 * x
 }
 
-
 #[test]
 fn nabla_grad_chain() {
     let (val, grad) = poly_grad(3.0);
@@ -154,7 +152,6 @@ fn nabla_grad_chain() {
 }
 
 // wgpu register-tile software MMA shader generation
-
 
 #[test]
 fn gradient_prep_x_squared() {
@@ -167,7 +164,6 @@ fn gradient_prep_x_squared() {
     assert!(approx_eq(g.get(0, 1), 6.0));
 }
 
-
 #[test]
 fn grad_single_use() {
     let x: Tensor<f64> = mat![[3.0_f64, 4.0]];
@@ -176,8 +172,6 @@ fn grad_single_use() {
     assert!(approx_eq(g.get(0, 0), 6.0));
     assert!(approx_eq(g.get(0, 1), 8.0));
 }
-
-
 
 #[test]
 fn symmetric_eigen() {
@@ -188,7 +182,6 @@ fn symmetric_eigen() {
     assert!(evals[0] > 0.0);
     assert!(evals[1] > 0.0);
 }
-
 
 #[test]
 fn expm_diagonal() {
@@ -213,7 +206,6 @@ fn expm_diagonal() {
     assert!(e[(1, 0)].abs() < 1e-6);
 }
 
-
 #[test]
 fn static_matrix_matmul_shape() {
     let a: StaticMatrix<f64, 2, 3> = StaticMatrix::from_fn(|r, c| (r * 3 + c) as f64);
@@ -223,7 +215,6 @@ fn static_matrix_matmul_shape() {
     assert!((c[(0, 0)] - 10.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn static_matrix_add_and_neg() {
     let a: StaticMatrix<f64, 2, 2> = StaticMatrix::from_fn(|r, c| (r + c) as f64);
@@ -232,7 +223,6 @@ fn static_matrix_add_and_neg() {
     let neg = -&a;
     assert!((neg[(0, 1)] - (-1.0)).abs() < 1e-10);
 }
-
 
 #[test]
 fn static_matrix_typed_matmul() {
@@ -245,7 +235,6 @@ fn static_matrix_typed_matmul() {
     assert!((c.get(0, 0) - 28.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn static_matrix_typed_transpose() {
     let a = StaticMatrix::<f64, 3, 4>::from_fn(|r, c| (r * 4 + c) as f64);
@@ -253,7 +242,6 @@ fn static_matrix_typed_transpose() {
     assert_eq!(at.shape(), (4, 3));
     assert!((at.get(2, 1) - a.get(1, 2)).abs() < 1e-10);
 }
-
 
 #[test]
 fn static_matrix_sub_ref() {
@@ -267,7 +255,6 @@ fn static_matrix_sub_ref() {
         }
     }
 }
-
 
 #[test]
 fn solve_lstsq_overdetermined_exact() {
@@ -286,7 +273,6 @@ fn solve_lstsq_overdetermined_exact() {
         x.get(1, 0)
     );
 }
-
 
 #[test]
 fn solve_lstsq_overdetermined_approximate() {
@@ -311,7 +297,6 @@ fn solve_lstsq_overdetermined_approximate() {
     );
 }
 
-
 #[test]
 fn svd_tall_3x2_reconstruction() {
     let a = mat![[3.0_f64, 2.0], [2.0, 3.0], [1.0, 1.0]];
@@ -330,7 +315,6 @@ fn svd_tall_3x2_reconstruction() {
     assert!(err < 1e-12, "reconstruction error: {err}");
 }
 
-
 #[test]
 fn svd_rank_deficient() {
     // Rank-1 matrix: outer product
@@ -341,7 +325,6 @@ fn svd_rank_deficient() {
     assert!(s[0] > 1e-10, "s[0] should be nonzero: {}", s[0]);
     assert!(s[1] < 1e-10, "s[1] should be ~0: {}", s[1]);
 }
-
 
 #[test]
 fn svd_singular_values_descending() {
@@ -357,7 +340,6 @@ fn svd_singular_values_descending() {
         assert!(w[0] >= w[1], "not descending: {} < {}", w[0], w[1]);
     }
 }
-
 
 #[test]
 fn svd_reconstruct_rank_1_reduces_error() {
@@ -377,7 +359,6 @@ fn svd_reconstruct_rank_1_reduces_error() {
     assert!(e2 < e1, "rank2 error ({e2}) should be < rank1 error ({e1})");
 }
 
-
 #[test]
 fn norm_3_4_5_triangle() {
     let a: Tensor<f64> = mat![[3.0_f64, 4.0]];
@@ -389,7 +370,6 @@ fn norm_3_4_5_triangle() {
     );
 }
 
-
 #[test]
 fn norm_matrix_frobenius() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
@@ -397,7 +377,6 @@ fn norm_matrix_frobenius() {
     let expected = 30.0_f64.sqrt();
     assert!((a.norm() - expected).abs() < 1e-10, "norm={}", a.norm());
 }
-
 
 #[test]
 fn static_matrix_outer_product() {
@@ -414,7 +393,6 @@ fn static_matrix_outer_product() {
     assert!(approx_eq(m.get(2, 1), 15.0));
 }
 
-
 #[test]
 fn static_matrix_data_access() {
     let m: StaticMatrix<f64, 2, 2> = StaticMatrix::from_fn(|r, c| (r * 2 + c + 1) as f64);
@@ -425,7 +403,6 @@ fn static_matrix_data_access() {
     assert!(approx_eq(d[1][1], 4.0));
 }
 
-
 #[test]
 fn linear_layout_identity() {
     let id = LinearLayout16::identity();
@@ -433,7 +410,6 @@ fn linear_layout_identity() {
         assert_eq!(id.apply(v), v, "identity failed for v={v}");
     }
 }
-
 
 #[test]
 fn linear_layout_swizzle_no_conflict() {
@@ -450,7 +426,6 @@ fn linear_layout_swizzle_no_conflict() {
         assert_eq!(banks.len(), 16, "bank conflict in row {row}");
     }
 }
-
 
 #[test]
 fn linear_layout_compose() {
@@ -472,48 +447,46 @@ fn linear_layout_compose() {
     }
 }
 
+#[test]
+fn h_alias_matches_adjoint() {
+    let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+    let h = a.h();
+    let adj = a.adjoint();
+    assert_approx_grid(&h, &adj, 1e-12);
 
-    #[test]
-    fn h_alias_matches_adjoint() {
-        let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
-        let h = a.h();
-        let adj = a.adjoint();
-        assert_approx_grid(&h, &adj, 1e-12);
-
-        let s = StaticMatrix::<f64, 2, 3>::from_fn(|r, c| (r * 3 + c + 1) as f64);
-        let sh = s.h();
-        let sadj = s.adjoint();
-        let (rows, cols) = sh.shape();
-        assert_eq!((rows, cols), sadj.shape());
-        for r in 0..rows {
-            for c in 0..cols {
-                assert!(approx_eq(sh.get(r, c), sadj.get(r, c)));
-            }
+    let s = StaticMatrix::<f64, 2, 3>::from_fn(|r, c| (r * 3 + c + 1) as f64);
+    let sh = s.h();
+    let sadj = s.adjoint();
+    let (rows, cols) = sh.shape();
+    assert_eq!((rows, cols), sadj.shape());
+    for r in 0..rows {
+        for c in 0..cols {
+            assert!(approx_eq(sh.get(r, c), sadj.get(r, c)));
         }
     }
+}
 
+#[test]
+fn linalg_short_aliases() -> Result<()> {
+    let a: Tensor<f64> = mat![[4.0, 1.0], [1.0, 3.0]];
+    let b: Tensor<f64> = mat![[1.0], [2.0]];
 
-    #[test]
-    fn linalg_short_aliases() -> Result<()> {
-        let a: Tensor<f64> = mat![[4.0, 1.0], [1.0, 3.0]];
-        let b: Tensor<f64> = mat![[1.0], [2.0]];
+    let _ = a.lu()?;
+    let _ = a.chol()?;
+    let _ = a.ldl()?;
 
-        let _ = a.lu()?;
-        let _ = a.chol()?;
-        let _ = a.ldl()?;
+    let x_short = a.lstsq(&b)?;
+    let x_long = a.solve_lstsq(&b)?;
+    assert_approx_grid(&x_short, &x_long, 1e-10);
 
-        let x_short = a.lstsq(&b)?;
-        let x_long = a.solve_lstsq(&b)?;
-        assert_approx_grid(&x_short, &x_long, 1e-10);
-
-        let sv_short = a.svdvals()?;
-        let sv_long = a.singular_values()?;
-        assert_eq!(sv_short.len(), sv_long.len());
-        for i in 0..sv_short.len() {
-            assert!(approx_eq(sv_short[i], sv_long[i]));
-        }
-
-        let eig = a.sym(Side::Lower)?.eigh()?;
-        assert_eq!(eig.values().len(), 2);
-        Ok(())
+    let sv_short = a.svdvals()?;
+    let sv_long = a.singular_values()?;
+    assert_eq!(sv_short.len(), sv_long.len());
+    for i in 0..sv_short.len() {
+        assert!(approx_eq(sv_short[i], sv_long[i]));
     }
+
+    let eig = a.sym(Side::Lower)?.eigh()?;
+    assert_eq!(eig.values().len(), 2);
+    Ok(())
+}

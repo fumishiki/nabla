@@ -51,28 +51,28 @@
 )]
 
 #[allow(missing_docs)]
+pub mod benchmark;
+#[allow(missing_docs)]
 pub mod checkpoint;
 #[allow(missing_docs)]
 pub mod dataloader;
 #[allow(missing_docs)]
 pub mod dist;
 #[allow(missing_docs)]
+#[cfg(feature = "cpu")]
+pub mod gguf;
+#[allow(missing_docs)]
 pub mod metrics;
 #[allow(missing_docs)]
-pub mod optim;
+pub mod onnx;
 #[allow(missing_docs)]
-pub mod trainer;
+pub mod optim;
 #[allow(missing_docs)]
 pub mod profiler;
 #[allow(missing_docs)]
 pub mod quantize;
 #[allow(missing_docs)]
-pub mod onnx;
-#[allow(missing_docs)]
-#[cfg(feature = "cpu")]
-pub mod gguf;
-#[allow(missing_docs)]
-pub mod benchmark;
+pub mod trainer;
 
 pub use nabla_ml as ml;
 
@@ -94,7 +94,9 @@ macro_rules! train_step {
         let $out = &__result.output;
         let __loss = $loss_expr;
         __loss.backward()?;
-        let __grads: ::std::vec::Vec<_> = __result.param_vars.iter()
+        let __grads: ::std::vec::Vec<_> = __result
+            .param_vars
+            .iter()
             .map(|v| v.grad())
             .collect::<::std::result::Result<_, _>>()?;
         let __grad_refs: ::std::vec::Vec<_> = __grads.iter().collect();
@@ -105,39 +107,44 @@ macro_rules! train_step {
 
 #[allow(missing_docs)]
 pub mod prelude {
-    pub use nabla_ml::prelude::*;
-    pub use crate::checkpoint::{checkpoint_dir, load_checkpoint, save_checkpoint, CheckpointError};
-    pub use crate::dataloader::{Batcher, DataLoader, Dataset, Sampler, Subset, VecBatcher, split_dataset};
+    pub use crate::benchmark::{
+        AccuracyResult, BenchBatcher, BenchmarkDataset, BenchmarkReport, PerplexityResult,
+        compute_accuracy, compute_perplexity, run_benchmark,
+    };
+    pub use crate::checkpoint::{
+        CheckpointError, checkpoint_dir, load_checkpoint, save_checkpoint,
+    };
+    pub use crate::dataloader::{
+        Batcher, DataLoader, Dataset, Sampler, Subset, VecBatcher, split_dataset,
+    };
     pub use crate::dist::CpuAllReduce;
-    pub use crate::metrics::{JsonLogger, MovingAverage, StdoutLogger};
-    pub use crate::optim::{
-        Adam, AdamW, GradScaler, GradScalerState, GroupOptimizer, LrSchedule, OptimKind, OptimMeta,
-        OptimState, Optimizer, ParamExclusionPreset, ParamGroupConfig, ParamMatch, ParamSelector,
-        ScheduleState, Sgd, adamw_step, lr_at_step,
-    };
-    pub use crate::trainer::{
-        clip_grad_norm, EarlyStop, GradNanPolicy, HookAction, MetricStats, MetricsScope,
-        TrainEvent, TrainHook, TrainState, Trainer, TrainStepOut,
-    };
-    pub use crate::profiler::{
-        BottleneckKind, GpuTimer, HardwareSpec, KernelRecord, LayerStats, Profiler,
-        RooflineResult, ThroughputStats, VramStats, matmul_flops, matmul_tflops, roofline,
-    };
-    pub use crate::quantize::{
-        CalibrationStats, QuantizedWeight, dequant_matmul, dequantize,
-        pack_int4, quantize_awq, quantize_awq_default, unpack_int4,
-    };
-    pub use crate::onnx::{
-        DimSpec, OnnxAttr, OnnxExporter, OnnxGraph, OnnxInitializer, OnnxModel, OnnxNode, OnnxOp,
-        TensorSpec, batched_input, export_sequential, export_sequential_flat, image_input, nlp_input,
-    };
     #[cfg(feature = "cpu")]
     pub use crate::gguf::{
         GgufExportConfig, GgufQuantType, GgufTensor, GgufValue, ImportanceMatrix, MixingPreset,
         export_gguf, mixing_quant_type, quantize as gguf_quantize, write_gguf,
     };
-    pub use crate::benchmark::{
-        AccuracyResult, BenchBatcher, BenchmarkDataset, BenchmarkReport, PerplexityResult,
-        compute_accuracy, compute_perplexity, run_benchmark,
+    pub use crate::metrics::{JsonLogger, MovingAverage, StdoutLogger};
+    pub use crate::onnx::{
+        DimSpec, OnnxAttr, OnnxExporter, OnnxGraph, OnnxInitializer, OnnxModel, OnnxNode, OnnxOp,
+        TensorSpec, batched_input, export_sequential, export_sequential_flat, image_input,
+        nlp_input,
     };
+    pub use crate::optim::{
+        Adam, AdamW, GradScaler, GradScalerState, GroupOptimizer, LrSchedule, OptimKind, OptimMeta,
+        OptimState, Optimizer, ParamExclusionPreset, ParamGroupConfig, ParamMatch, ParamSelector,
+        ScheduleState, Sgd, adamw_step, lr_at_step,
+    };
+    pub use crate::profiler::{
+        BottleneckKind, GpuTimer, HardwareSpec, KernelRecord, LayerStats, Profiler, RooflineResult,
+        ThroughputStats, VramStats, matmul_flops, matmul_tflops, roofline,
+    };
+    pub use crate::quantize::{
+        CalibrationStats, QuantizedWeight, dequant_matmul, dequantize, pack_int4, quantize_awq,
+        quantize_awq_default, unpack_int4,
+    };
+    pub use crate::trainer::{
+        EarlyStop, GradNanPolicy, HookAction, MetricStats, MetricsScope, TrainEvent, TrainHook,
+        TrainState, TrainStepOut, Trainer, clip_grad_norm,
+    };
+    pub use nabla_ml::prelude::*;
 }

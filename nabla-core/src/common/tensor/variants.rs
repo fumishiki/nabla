@@ -1,4 +1,3 @@
-
 use core::fmt;
 use core::ops::{Add, Index, IndexMut, Mul, Neg, Sub};
 
@@ -9,7 +8,6 @@ use crate::scalar::Scalar;
 
 #[cfg(feature = "cpu")]
 use crate::backend::Cpu;
-
 
 #[derive(Clone)]
 /// N-dimensional tensor backed by a flat `Vec<T>`.
@@ -324,7 +322,6 @@ impl<T: Scalar> Index<&[usize]> for NdTensor<T> {
     }
 }
 
-
 #[derive(Clone, Copy)]
 /// Stack-allocated `R x C` matrix with const-generic dimensions.
 pub struct StaticMatrix<T: Scalar, const R: usize, const C: usize> {
@@ -508,7 +505,6 @@ impl<T: Scalar, const R: usize, const K: usize, const N: usize> Mul<StaticMatrix
     }
 }
 
-
 impl<T: Scalar, const R: usize, const C: usize> Add<&StaticMatrix<T, R, C>>
     for &StaticMatrix<T, R, C>
 {
@@ -585,7 +581,6 @@ impl<T: Scalar + fmt::Debug, const R: usize, const C: usize> fmt::Debug for Stat
         )
     }
 }
-
 
 /// Dynamic dispatch trait for 2-D array read access.
 pub trait Array<T: Scalar> {
@@ -674,7 +669,6 @@ impl<T: Scalar, const R: usize, const C: usize> Matrix<T> for StaticMatrix<T, R,
         dyn_matmul(self, rhs)
     }
 }
-
 
 #[cfg(feature = "cpu")]
 /// Dynamically-typed tensor for runtime backend dispatch.

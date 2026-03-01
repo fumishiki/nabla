@@ -17,11 +17,17 @@ pub struct VecBatcher;
 
 impl<I> Batcher<I> for VecBatcher {
     type Output = Vec<I>;
-    fn batch(&self, items: Vec<I>) -> Vec<I> { items }
+    fn batch(&self, items: Vec<I>) -> Vec<I> {
+        items
+    }
 }
 
 fn shuffle_indices(mut idx: Vec<usize>, seed: u64) -> Vec<usize> {
-    let mut s = if seed == 0 { 0xA5A5_F00D_CAFE_BEEFu64 } else { seed };
+    let mut s = if seed == 0 {
+        0xA5A5_F00D_CAFE_BEEFu64
+    } else {
+        seed
+    };
     for i in (1..idx.len()).rev() {
         s ^= s << 13;
         s ^= s >> 7;
@@ -205,9 +211,11 @@ where
             if self.repeat {
                 self.epoch += 1;
                 self.indices = match self.sampler {
-                    Sampler::ShuffleEpoch { seed, .. } => {
-                        Sampler::ShuffleEpoch { seed, epoch: self.epoch }.indices(self.dataset.len())
+                    Sampler::ShuffleEpoch { seed, .. } => Sampler::ShuffleEpoch {
+                        seed,
+                        epoch: self.epoch,
                     }
+                    .indices(self.dataset.len()),
                     _ => self.sampler.indices(self.dataset.len()),
                 };
                 self.pos = 0;
@@ -261,18 +269,26 @@ pub struct Subset<D> {
 
 impl<D> Subset<D> {
     #[must_use]
-    pub fn new(dataset: Arc<D>, indices: Vec<usize>) -> Self { Self { dataset, indices } }
+    pub fn new(dataset: Arc<D>, indices: Vec<usize>) -> Self {
+        Self { dataset, indices }
+    }
 
     #[must_use]
-    pub fn indices(&self) -> &[usize] { &self.indices }
+    pub fn indices(&self) -> &[usize] {
+        &self.indices
+    }
 }
 
 impl<D: Dataset> Dataset for Subset<D> {
     type Item = D::Item;
 
-    fn len(&self) -> usize { self.indices.len() }
+    fn len(&self) -> usize {
+        self.indices.len()
+    }
 
-    fn get(&self, idx: usize) -> Self::Item { self.dataset.get(self.indices[idx]) }
+    fn get(&self, idx: usize) -> Self::Item {
+        self.dataset.get(self.indices[idx])
+    }
 }
 
 pub fn split_dataset<D: Dataset>(
@@ -296,7 +312,11 @@ pub fn split_dataset<D: Dataset>(
     let test_len = total - train_len - val_len;
 
     let mut indices: Vec<usize> = (0..total).collect();
-    let mut s = if seed == 0 { 0xA5A5_F00D_CAFE_BEEFu64 } else { seed };
+    let mut s = if seed == 0 {
+        0xA5A5_F00D_CAFE_BEEFu64
+    } else {
+        seed
+    };
     for i in (1..indices.len()).rev() {
         s ^= s << 13;
         s ^= s >> 7;

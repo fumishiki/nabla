@@ -171,7 +171,11 @@ pub mod lu {
                     }
                 }
             }
-            let perm_sign = if (n - n_cycles).is_multiple_of(2) { 1.0 } else { -1.0 };
+            let perm_sign = if (n - n_cycles).is_multiple_of(2) {
+                1.0
+            } else {
+                -1.0
+            };
             perm_sign * u_prod
         }
 
@@ -183,9 +187,7 @@ pub mod lu {
         pub fn logdet(&self) -> f64 {
             let n = self.n;
             let lu_buf = to_f64_buf(&self.lu);
-            (0..n)
-                .map(|i| buf_get(&lu_buf, n, i, i).abs().ln())
-                .sum()
+            (0..n).map(|i| buf_get(&lu_buf, n, i, i).abs().ln()).sum()
         }
     }
 
@@ -271,7 +273,9 @@ pub mod qr {
     use nabla_core::tensor::Tensor;
     use rayon::prelude::*;
 
-    use super::super::{buf_get, buf_set, from_f64_buf, householder_apply_left, householder_vec, to_f64_buf};
+    use super::super::{
+        buf_get, buf_set, from_f64_buf, householder_apply_left, householder_vec, to_f64_buf,
+    };
 
     #[allow(clippy::many_single_char_names, clippy::needless_range_loop)]
     fn apply_qt_in_place(

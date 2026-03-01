@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use proc_macro2::TokenStream;
-use syn::{Expr, ExprPath};
 use quote::quote;
+use syn::{Expr, ExprPath};
 
 fn transform(expr: Expr, exclude: &HashSet<String>) -> Expr {
     match expr {
@@ -62,7 +62,9 @@ fn ident_name(p: &ExprPath) -> String {
 
 fn collect_pat_idents(pat: &syn::Pat, set: &mut HashSet<String>) {
     match pat {
-        syn::Pat::Ident(pi) => { set.insert(pi.ident.to_string()); }
+        syn::Pat::Ident(pi) => {
+            set.insert(pi.ident.to_string());
+        }
         syn::Pat::Type(pt) => collect_pat_idents(&pt.pat, set),
         syn::Pat::Reference(pr) => collect_pat_idents(&pr.pat, set),
         _ => {}

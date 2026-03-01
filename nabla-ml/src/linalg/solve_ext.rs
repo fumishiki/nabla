@@ -2,18 +2,18 @@ use nabla_core::backend::Cpu;
 use nabla_core::error::{Error, Result};
 use nabla_core::tensor::Tensor;
 
-use super::{
-    Side, bwd_sub, check_shape, from_f64_buf, fwd_sub, require_square, to_f64_buf,
-    impl_solve_in_place, impl_triangular_solve_ip,
-};
 use super::chol::{Lblt, Ldlt, Llt};
 use super::eigen::SelfAdjointEigen;
 use super::lu::{FullPivLu, PartialPivLu};
 use super::matrix_fn;
 use super::qr::{ColPivQr, Qr};
+use super::solve_types::Symmetric;
 use super::structured;
 use super::svd::Svd;
-use super::solve_types::Symmetric;
+use super::{
+    Side, bwd_sub, check_shape, from_f64_buf, fwd_sub, impl_solve_in_place,
+    impl_triangular_solve_ip, require_square, to_f64_buf,
+};
 
 pub trait LinalgExt {
     /// LU decomposition with partial pivoting.
@@ -204,7 +204,9 @@ impl LinalgExt for Tensor<f64, Cpu> {
     }
 
     fn self_adjoint_eigenvalues(&self, side: Side) -> Result<Vec<f64>> {
-        Ok(SelfAdjointEigen::factorize(self, side)?.eigenvalues().to_vec())
+        Ok(SelfAdjointEigen::factorize(self, side)?
+            .eigenvalues()
+            .to_vec())
     }
 
     fn sym(&self, side: Side) -> Result<Symmetric<f64>> {
@@ -591,7 +593,11 @@ impl LinalgExt for Tensor<f64, Cpu> {
                 }
             }
         }
-        let perm_sign: f64 = if (n - n_cycles).is_multiple_of(2) { 1.0 } else { -1.0 };
+        let perm_sign: f64 = if (n - n_cycles).is_multiple_of(2) {
+            1.0
+        } else {
+            -1.0
+        };
         let mut sign = perm_sign;
         let mut log_abs_det = 0.0f64;
         for i in 0..n {

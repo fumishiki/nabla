@@ -18,8 +18,14 @@ pub struct AdamW<T: Scalar, B: Backend> {
 impl<T: Scalar, B: Backend> AdamW<T, B> {
     #[must_use]
     pub fn new(lr: f64, param_shapes: &[(usize, usize)]) -> Self {
-        let m = param_shapes.iter().map(|&(r, c)| Tensor::zeros(r, c)).collect();
-        let v = param_shapes.iter().map(|&(r, c)| Tensor::zeros(r, c)).collect();
+        let m = param_shapes
+            .iter()
+            .map(|&(r, c)| Tensor::zeros(r, c))
+            .collect();
+        let v = param_shapes
+            .iter()
+            .map(|&(r, c)| Tensor::zeros(r, c))
+            .collect();
         Self {
             lr,
             beta1: 0.9,
@@ -63,13 +69,19 @@ impl<T: Scalar, B: Backend> AdamW<T, B> {
     }
 
     #[must_use]
-    pub fn lr(&self) -> f64 { self.lr }
+    pub fn lr(&self) -> f64 {
+        self.lr
+    }
 
     #[must_use]
-    pub fn step_count(&self) -> usize { self.step_count }
+    pub fn step_count(&self) -> usize {
+        self.step_count
+    }
 
     #[must_use]
-    pub fn moments(&self) -> (&[Tensor<T, B>], &[Tensor<T, B>]) { (&self.m, &self.v) }
+    pub fn moments(&self) -> (&[Tensor<T, B>], &[Tensor<T, B>]) {
+        (&self.m, &self.v)
+    }
 
     pub fn moments_mut(&mut self) -> (&mut [Tensor<T, B>], &mut [Tensor<T, B>]) {
         (&mut self.m, &mut self.v)
@@ -95,8 +107,16 @@ impl<T: Scalar, B: Backend> AdamW<T, B> {
 
 impl<T: Scalar, B: Backend> Optimizer<T, B> for AdamW<T, B> {
     fn step(&mut self, params: &mut [&mut Tensor<T, B>], grads: &[&Tensor<T, B>]) {
-        assert_eq!(params.len(), grads.len(), "nabla-train: AdamW params/grads length mismatch");
-        assert_eq!(params.len(), self.m.len(), "nabla-train: AdamW params count mismatch");
+        assert_eq!(
+            params.len(),
+            grads.len(),
+            "nabla-train: AdamW params/grads length mismatch"
+        );
+        assert_eq!(
+            params.len(),
+            self.m.len(),
+            "nabla-train: AdamW params count mismatch"
+        );
         self.step_count += 1;
         let step = self.step_count;
         let bias_corr1 = 1.0 - self.beta1.powi(step as i32);
@@ -141,7 +161,9 @@ impl<T: Scalar, B: Backend> Optimizer<T, B> for AdamW<T, B> {
         }
     }
 
-    fn set_lr(&mut self, lr: f64) { self.lr = lr; }
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
 }
 
 pub struct Adam<T: Scalar, B: Backend> {
@@ -157,8 +179,14 @@ pub struct Adam<T: Scalar, B: Backend> {
 impl<T: Scalar, B: Backend> Adam<T, B> {
     #[must_use]
     pub fn new(lr: f64, param_shapes: &[(usize, usize)]) -> Self {
-        let m = param_shapes.iter().map(|&(r, c)| Tensor::zeros(r, c)).collect();
-        let v = param_shapes.iter().map(|&(r, c)| Tensor::zeros(r, c)).collect();
+        let m = param_shapes
+            .iter()
+            .map(|&(r, c)| Tensor::zeros(r, c))
+            .collect();
+        let v = param_shapes
+            .iter()
+            .map(|&(r, c)| Tensor::zeros(r, c))
+            .collect();
         Self {
             lr,
             beta1: 0.9,
@@ -195,26 +223,25 @@ impl<T: Scalar, B: Backend> Adam<T, B> {
     }
 
     #[must_use]
-    pub fn lr(&self) -> f64 { self.lr }
+    pub fn lr(&self) -> f64 {
+        self.lr
+    }
 
     #[must_use]
-    pub fn step_count(&self) -> usize { self.step_count }
+    pub fn step_count(&self) -> usize {
+        self.step_count
+    }
 
     #[must_use]
-    pub fn moments(&self) -> (&[Tensor<T, B>], &[Tensor<T, B>]) { (&self.m, &self.v) }
+    pub fn moments(&self) -> (&[Tensor<T, B>], &[Tensor<T, B>]) {
+        (&self.m, &self.v)
+    }
 
     pub fn moments_mut(&mut self) -> (&mut [Tensor<T, B>], &mut [Tensor<T, B>]) {
         (&mut self.m, &mut self.v)
     }
 
-    pub fn set_state(
-        &mut self,
-        step_count: usize,
-        beta1: f64,
-        beta2: f64,
-        eps: f64,
-        lr: f64,
-    ) {
+    pub fn set_state(&mut self, step_count: usize, beta1: f64, beta2: f64, eps: f64, lr: f64) {
         self.step_count = step_count;
         self.beta1 = beta1;
         self.beta2 = beta2;
@@ -225,8 +252,16 @@ impl<T: Scalar, B: Backend> Adam<T, B> {
 
 impl<T: Scalar, B: Backend> Optimizer<T, B> for Adam<T, B> {
     fn step(&mut self, params: &mut [&mut Tensor<T, B>], grads: &[&Tensor<T, B>]) {
-        assert_eq!(params.len(), grads.len(), "nabla-train: Adam params/grads length mismatch");
-        assert_eq!(params.len(), self.m.len(), "nabla-train: Adam params count mismatch");
+        assert_eq!(
+            params.len(),
+            grads.len(),
+            "nabla-train: Adam params/grads length mismatch"
+        );
+        assert_eq!(
+            params.len(),
+            self.m.len(),
+            "nabla-train: Adam params count mismatch"
+        );
         self.step_count += 1;
         let step = self.step_count;
         let bias_corr1 = 1.0 - self.beta1.powi(step as i32);
@@ -267,7 +302,9 @@ impl<T: Scalar, B: Backend> Optimizer<T, B> for Adam<T, B> {
         }
     }
 
-    fn set_lr(&mut self, lr: f64) { self.lr = lr; }
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
 }
 
 pub struct Sgd<T: Scalar, B: Backend> {
@@ -280,7 +317,10 @@ pub struct Sgd<T: Scalar, B: Backend> {
 impl<T: Scalar, B: Backend> Sgd<T, B> {
     #[must_use]
     pub fn new(lr: f64, param_shapes: &[(usize, usize)]) -> Self {
-        let velocity = param_shapes.iter().map(|&(r, c)| Tensor::zeros(r, c)).collect();
+        let velocity = param_shapes
+            .iter()
+            .map(|&(r, c)| Tensor::zeros(r, c))
+            .collect();
         Self {
             lr,
             momentum: 0.0,
@@ -308,18 +348,28 @@ impl<T: Scalar, B: Backend> Sgd<T, B> {
     }
 
     #[must_use]
-    pub fn lr(&self) -> f64 { self.lr }
+    pub fn lr(&self) -> f64 {
+        self.lr
+    }
 
     #[must_use]
-    pub fn momentum_value(&self) -> f64 { self.momentum }
+    pub fn momentum_value(&self) -> f64 {
+        self.momentum
+    }
 
     #[must_use]
-    pub fn weight_decay_value(&self) -> f64 { self.weight_decay }
+    pub fn weight_decay_value(&self) -> f64 {
+        self.weight_decay
+    }
 
     #[must_use]
-    pub fn velocity(&self) -> &[Tensor<T, B>] { &self.velocity }
+    pub fn velocity(&self) -> &[Tensor<T, B>] {
+        &self.velocity
+    }
 
-    pub fn velocity_mut(&mut self) -> &mut [Tensor<T, B>] { &mut self.velocity }
+    pub fn velocity_mut(&mut self) -> &mut [Tensor<T, B>] {
+        &mut self.velocity
+    }
 
     pub fn set_state(&mut self, lr: f64, momentum: f64, weight_decay: f64) {
         self.lr = lr;
@@ -330,8 +380,16 @@ impl<T: Scalar, B: Backend> Sgd<T, B> {
 
 impl<T: Scalar, B: Backend> Optimizer<T, B> for Sgd<T, B> {
     fn step(&mut self, params: &mut [&mut Tensor<T, B>], grads: &[&Tensor<T, B>]) {
-        assert_eq!(params.len(), grads.len(), "nabla-train: SGD params/grads length mismatch");
-        assert_eq!(params.len(), self.velocity.len(), "nabla-train: SGD params count mismatch");
+        assert_eq!(
+            params.len(),
+            grads.len(),
+            "nabla-train: SGD params/grads length mismatch"
+        );
+        assert_eq!(
+            params.len(),
+            self.velocity.len(),
+            "nabla-train: SGD params count mismatch"
+        );
         let lr_t = T::from_f64(self.lr);
         let momentum_t = T::from_f64(self.momentum);
         let wd_t = T::from_f64(self.weight_decay);
@@ -343,7 +401,11 @@ impl<T: Scalar, B: Backend> Optimizer<T, B> for Sgd<T, B> {
                 // Fast path: zero alloc, single kernel.
                 param.axpy_inplace(-lr_t, grad);
             } else {
-                let mut grad_eff = if use_wd { &(**grad) + &(&**param * wd_t) } else { (**grad).clone() };
+                let mut grad_eff = if use_wd {
+                    &(**grad) + &(&**param * wd_t)
+                } else {
+                    (**grad).clone()
+                };
                 if use_momentum {
                     self.velocity[i] = &(&self.velocity[i] * momentum_t) + &grad_eff;
                     grad_eff = self.velocity[i].clone();
@@ -360,7 +422,9 @@ impl<T: Scalar, B: Backend> Optimizer<T, B> for Sgd<T, B> {
         }
     }
 
-    fn set_lr(&mut self, lr: f64) { self.lr = lr; }
+    fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -405,7 +469,9 @@ pub fn adamw_step<T: Scalar, B: Backend>(
 }
 
 impl<T: Scalar, B: Backend> OptimState<T, B> for AdamW<T, B> {
-    fn kind(&self) -> OptimKind { OptimKind::AdamW }
+    fn kind(&self) -> OptimKind {
+        OptimKind::AdamW
+    }
 
     fn state_tensors(&self) -> Vec<(String, Tensor<T, B>)> {
         let mut out = Vec::with_capacity(self.m.len() * 2);
@@ -423,12 +489,20 @@ impl<T: Scalar, B: Backend> OptimState<T, B> for AdamW<T, B> {
         let mut v = vec![None; self.v.len()];
         for (name, t) in tensors {
             if let Some(idx) = name.strip_prefix('m') {
-                let i = idx.parse::<usize>().map_err(|_| format!("bad tensor key: {name}"))?;
-                if i >= m.len() { return Err(format!("m index out of range: {i}")); }
+                let i = idx
+                    .parse::<usize>()
+                    .map_err(|_| format!("bad tensor key: {name}"))?;
+                if i >= m.len() {
+                    return Err(format!("m index out of range: {i}"));
+                }
                 m[i] = Some(t.clone());
             } else if let Some(idx) = name.strip_prefix('v') {
-                let i = idx.parse::<usize>().map_err(|_| format!("bad tensor key: {name}"))?;
-                if i >= v.len() { return Err(format!("v index out of range: {i}")); }
+                let i = idx
+                    .parse::<usize>()
+                    .map_err(|_| format!("bad tensor key: {name}"))?;
+                if i >= v.len() {
+                    return Err(format!("v index out of range: {i}"));
+                }
                 v[i] = Some(t.clone());
             }
         }
@@ -472,7 +546,9 @@ impl<T: Scalar, B: Backend> OptimState<T, B> for AdamW<T, B> {
 }
 
 impl<T: Scalar, B: Backend> OptimState<T, B> for Adam<T, B> {
-    fn kind(&self) -> OptimKind { OptimKind::Adam }
+    fn kind(&self) -> OptimKind {
+        OptimKind::Adam
+    }
 
     fn state_tensors(&self) -> Vec<(String, Tensor<T, B>)> {
         let mut out = Vec::with_capacity(self.m.len() * 2);
@@ -490,12 +566,20 @@ impl<T: Scalar, B: Backend> OptimState<T, B> for Adam<T, B> {
         let mut v = vec![None; self.v.len()];
         for (name, t) in tensors {
             if let Some(idx) = name.strip_prefix('m') {
-                let i = idx.parse::<usize>().map_err(|_| format!("bad tensor key: {name}"))?;
-                if i >= m.len() { return Err(format!("m index out of range: {i}")); }
+                let i = idx
+                    .parse::<usize>()
+                    .map_err(|_| format!("bad tensor key: {name}"))?;
+                if i >= m.len() {
+                    return Err(format!("m index out of range: {i}"));
+                }
                 m[i] = Some(t.clone());
             } else if let Some(idx) = name.strip_prefix('v') {
-                let i = idx.parse::<usize>().map_err(|_| format!("bad tensor key: {name}"))?;
-                if i >= v.len() { return Err(format!("v index out of range: {i}")); }
+                let i = idx
+                    .parse::<usize>()
+                    .map_err(|_| format!("bad tensor key: {name}"))?;
+                if i >= v.len() {
+                    return Err(format!("v index out of range: {i}"));
+                }
                 v[i] = Some(t.clone());
             }
         }
@@ -523,13 +607,7 @@ impl<T: Scalar, B: Backend> OptimState<T, B> for Adam<T, B> {
 
     fn load_meta(&mut self, meta: &OptimMeta) -> Result<(), String> {
         if let OptimKind::Adam = meta.kind {
-            self.set_state(
-                meta.step_count,
-                meta.beta1,
-                meta.beta2,
-                meta.eps,
-                meta.lr,
-            );
+            self.set_state(meta.step_count, meta.beta1, meta.beta2, meta.eps, meta.lr);
             Ok(())
         } else {
             Err("optim kind mismatch".to_owned())
@@ -538,7 +616,9 @@ impl<T: Scalar, B: Backend> OptimState<T, B> for Adam<T, B> {
 }
 
 impl<T: Scalar, B: Backend> OptimState<T, B> for Sgd<T, B> {
-    fn kind(&self) -> OptimKind { OptimKind::Sgd }
+    fn kind(&self) -> OptimKind {
+        OptimKind::Sgd
+    }
 
     fn state_tensors(&self) -> Vec<(String, Tensor<T, B>)> {
         let mut out = Vec::with_capacity(self.velocity.len());
@@ -552,8 +632,12 @@ impl<T: Scalar, B: Backend> OptimState<T, B> for Sgd<T, B> {
         let mut v = vec![None; self.velocity.len()];
         for (name, t) in tensors {
             if let Some(idx) = name.strip_prefix('v') {
-                let i = idx.parse::<usize>().map_err(|_| format!("bad tensor key: {name}"))?;
-                if i >= v.len() { return Err(format!("v index out of range: {i}")); }
+                let i = idx
+                    .parse::<usize>()
+                    .map_err(|_| format!("bad tensor key: {name}"))?;
+                if i >= v.len() {
+                    return Err(format!("v index out of range: {i}"));
+                }
                 v[i] = Some(t.clone());
             }
         }

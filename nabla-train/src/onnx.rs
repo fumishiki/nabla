@@ -23,7 +23,10 @@ fn encode_varint(buf: &mut Vec<u8>, mut val: u64) {
     loop {
         let byte = (val & 0x7F) as u8;
         val >>= 7;
-        if val == 0 { buf.push(byte); return; }
+        if val == 0 {
+            buf.push(byte);
+            return;
+        }
         buf.push(byte | 0x80);
     }
 }
@@ -33,7 +36,9 @@ fn encode_tag(buf: &mut Vec<u8>, field: u32, wire: u8) {
 }
 
 fn encode_varint_field(buf: &mut Vec<u8>, field: u32, val: u64) {
-    if val == 0 { return; }
+    if val == 0 {
+        return;
+    }
     encode_tag(buf, field, WIRE_VARINT);
     encode_varint(buf, val);
 }
@@ -45,7 +50,9 @@ fn encode_bytes_field(buf: &mut Vec<u8>, field: u32, data: &[u8]) {
 }
 
 fn encode_string_field(buf: &mut Vec<u8>, field: u32, s: &str) {
-    if s.is_empty() { return; }
+    if s.is_empty() {
+        return;
+    }
     encode_bytes_field(buf, field, s.as_bytes());
 }
 
@@ -59,22 +66,32 @@ fn encode_float_field(buf: &mut Vec<u8>, field: u32, val: f32) {
 }
 
 fn encode_int64_field(buf: &mut Vec<u8>, field: u32, val: i64) {
-    if val == 0 { return; }
+    if val == 0 {
+        return;
+    }
     encode_tag(buf, field, WIRE_VARINT);
     encode_varint(buf, val as u64);
 }
 
 fn encode_packed_i64(buf: &mut Vec<u8>, field: u32, vals: &[i64]) {
-    if vals.is_empty() { return; }
+    if vals.is_empty() {
+        return;
+    }
     let mut inner = Vec::new();
-    for &v in vals { encode_varint(&mut inner, v as u64); }
+    for &v in vals {
+        encode_varint(&mut inner, v as u64);
+    }
     encode_bytes_field(buf, field, &inner);
 }
 
 fn encode_packed_f32(buf: &mut Vec<u8>, field: u32, vals: &[f32]) {
-    if vals.is_empty() { return; }
+    if vals.is_empty() {
+        return;
+    }
     let mut inner = Vec::with_capacity(vals.len() * 4);
-    for &v in vals { inner.extend_from_slice(&v.to_le_bytes()); }
+    for &v in vals {
+        inner.extend_from_slice(&v.to_le_bytes());
+    }
     encode_bytes_field(buf, field, &inner);
 }
 
@@ -103,7 +120,11 @@ pub enum OnnxOp {
     /// Matrix multiply: C = A @ B
     MatMul,
     /// Gemm: Y = alpha*A@B + beta*C (for linear layers with bias)
-    Gemm { alpha: f32, beta: f32, trans_b: bool },
+    Gemm {
+        alpha: f32,
+        beta: f32,
+        trans_b: bool,
+    },
     /// Element-wise add
     Add,
     /// Relu activation
@@ -125,11 +146,19 @@ pub enum OnnxOp {
     /// Transpose with perm
     Transpose { perm: Vec<i64> },
     /// Conv (1d/2d/3d)
-    Conv { kernel_shape: Vec<i64>, strides: Vec<i64>, pads: Vec<i64>, group: i64 },
+    Conv {
+        kernel_shape: Vec<i64>,
+        strides: Vec<i64>,
+        pads: Vec<i64>,
+        group: i64,
+    },
     /// Gather (embedding lookup)
     Gather { axis: i64 },
     /// Custom op for extensibility
-    Custom { op_type: String, attributes: Vec<OnnxAttr> },
+    Custom {
+        op_type: String,
+        attributes: Vec<OnnxAttr>,
+    },
 }
 
 /// ONNX attribute value.
@@ -182,7 +211,11 @@ impl TensorSpec {
     /// Create a spec with f32 element type.
     #[must_use]
     pub fn float(name: impl Into<String>, dims: Vec<DimSpec>) -> Self {
-        Self { name: name.into(), dims, elem_type: ONNX_FLOAT }
+        Self {
+            name: name.into(),
+            dims,
+            elem_type: ONNX_FLOAT,
+        }
     }
 }
 
@@ -233,8 +266,10 @@ impl Default for OnnxModel {
             producer: "nabla".to_owned(),
             graph: OnnxGraph {
                 name: "nabla_model".to_owned(),
-                nodes: Vec::new(), inputs: Vec::new(),
-                outputs: Vec::new(), initializers: Vec::new(),
+                nodes: Vec::new(),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                initializers: Vec::new(),
             },
         }
     }
@@ -271,7 +306,11 @@ fn encode_onnx_attr(attr: &OnnxAttr) -> Vec<u8> {
 
 fn encode_op_attributes(op: &OnnxOp) -> Vec<Vec<u8>> {
     match op {
-        OnnxOp::Gemm { alpha, beta, trans_b } => {
+        OnnxOp::Gemm {
+            alpha,
+            beta,
+            trans_b,
+        } => {
             let mut attrs = vec![
                 encode_onnx_attr(&OnnxAttr::Float("alpha".to_owned(), *alpha)),
                 encode_onnx_attr(&OnnxAttr::Float("beta".to_owned(), *beta)),
@@ -291,11 +330,22 @@ fn encode_op_attributes(op: &OnnxOp) -> Vec<Vec<u8>> {
             ]
         }
         OnnxOp::Transpose { perm } => {
-            vec![encode_onnx_attr(&OnnxAttr::Ints("perm".to_owned(), perm.clone()))]
+            vec![encode_onnx_attr(&OnnxAttr::Ints(
+                "perm".to_owned(),
+                perm.clone(),
+            ))]
         }
-        OnnxOp::Conv { kernel_shape, strides, pads, group } => {
+        OnnxOp::Conv {
+            kernel_shape,
+            strides,
+            pads,
+            group,
+        } => {
             let mut attrs = vec![
-                encode_onnx_attr(&OnnxAttr::Ints("kernel_shape".to_owned(), kernel_shape.clone())),
+                encode_onnx_attr(&OnnxAttr::Ints(
+                    "kernel_shape".to_owned(),
+                    kernel_shape.clone(),
+                )),
                 encode_onnx_attr(&OnnxAttr::Ints("strides".to_owned(), strides.clone())),
                 encode_onnx_attr(&OnnxAttr::Ints("pads".to_owned(), pads.clone())),
             ];
@@ -307,23 +357,31 @@ fn encode_op_attributes(op: &OnnxOp) -> Vec<Vec<u8>> {
         OnnxOp::Gather { axis } => {
             vec![encode_onnx_attr(&OnnxAttr::Int("axis".to_owned(), *axis))]
         }
-        OnnxOp::Custom { attributes, .. } => {
-            attributes.iter().map(encode_onnx_attr).collect()
-        }
-        OnnxOp::MatMul | OnnxOp::Add | OnnxOp::Relu | OnnxOp::Gelu
-        | OnnxOp::Sigmoid | OnnxOp::Tanh | OnnxOp::Dropout
+        OnnxOp::Custom { attributes, .. } => attributes.iter().map(encode_onnx_attr).collect(),
+        OnnxOp::MatMul
+        | OnnxOp::Add
+        | OnnxOp::Relu
+        | OnnxOp::Gelu
+        | OnnxOp::Sigmoid
+        | OnnxOp::Tanh
+        | OnnxOp::Dropout
         | OnnxOp::Reshape => Vec::new(),
     }
 }
 
 fn op_type_str(op: &OnnxOp) -> &str {
     match op {
-        OnnxOp::MatMul => "MatMul", OnnxOp::Gemm { .. } => "Gemm",
-        OnnxOp::Add => "Add", OnnxOp::Relu => "Relu",
-        OnnxOp::Gelu => "Gelu", OnnxOp::Sigmoid => "Sigmoid",
-        OnnxOp::Tanh => "Tanh", OnnxOp::Softmax { .. } => "Softmax",
+        OnnxOp::MatMul => "MatMul",
+        OnnxOp::Gemm { .. } => "Gemm",
+        OnnxOp::Add => "Add",
+        OnnxOp::Relu => "Relu",
+        OnnxOp::Gelu => "Gelu",
+        OnnxOp::Sigmoid => "Sigmoid",
+        OnnxOp::Tanh => "Tanh",
+        OnnxOp::Softmax { .. } => "Softmax",
         OnnxOp::LayerNormalization { .. } => "LayerNormalization",
-        OnnxOp::Dropout => "Dropout", OnnxOp::Reshape => "Reshape",
+        OnnxOp::Dropout => "Dropout",
+        OnnxOp::Reshape => "Reshape",
         OnnxOp::Transpose { .. } => "Transpose",
         OnnxOp::Conv { .. } => "Conv",
         OnnxOp::Gather { .. } => "Gather",
@@ -333,8 +391,12 @@ fn op_type_str(op: &OnnxOp) -> &str {
 
 fn encode_node(node: &OnnxNode) -> Vec<u8> {
     let mut buf = Vec::new();
-    for inp in &node.inputs { encode_string_field(&mut buf, 1, inp); }
-    for out in &node.outputs { encode_string_field(&mut buf, 2, out); }
+    for inp in &node.inputs {
+        encode_string_field(&mut buf, 1, inp);
+    }
+    for out in &node.outputs {
+        encode_string_field(&mut buf, 2, out);
+    }
     encode_string_field(&mut buf, 3, &node.name);
     encode_string_field(&mut buf, 4, op_type_str(&node.op));
     for attr_bytes in encode_op_attributes(&node.op) {
@@ -392,7 +454,9 @@ fn encode_tensor_proto(init: &OnnxInitializer) -> Vec<u8> {
     encode_varint_field(&mut buf, 2, ONNX_FLOAT as u64);
     // raw_data (field 13) — more compact than float_data
     let mut raw = Vec::with_capacity(init.data.len() * 4);
-    for &v in &init.data { raw.extend_from_slice(&v.to_le_bytes()); }
+    for &v in &init.data {
+        raw.extend_from_slice(&v.to_le_bytes());
+    }
     encode_bytes_field(&mut buf, 13, &raw);
     // name (field 8)
     encode_string_field(&mut buf, 8, &init.name);
@@ -420,7 +484,11 @@ fn encode_graph(graph: &OnnxGraph) -> Vec<u8> {
     }
     for init in &graph.initializers {
         let dims: Vec<DimSpec> = init.dims.iter().map(|&d| DimSpec::Fixed(d)).collect();
-        let spec = TensorSpec { name: init.name.clone(), dims, elem_type: ONNX_FLOAT };
+        let spec = TensorSpec {
+            name: init.name.clone(),
+            dims,
+            elem_type: ONNX_FLOAT,
+        };
         let vi = encode_value_info(&spec);
         encode_submessage_field(&mut buf, 11, &vi);
     }
@@ -466,7 +534,10 @@ impl OnnxExporter {
     /// Create a new exporter with default opset 21.
     #[must_use]
     pub fn new() -> Self {
-        Self { model: OnnxModel::default(), node_counter: 0 }
+        Self {
+            model: OnnxModel::default(),
+            node_counter: 0,
+        }
     }
 
     /// Set the model name.
@@ -554,7 +625,9 @@ impl OnnxExporter {
         let (rows, cols) = module.weight.shape();
         let mut w_data = Vec::with_capacity(rows * cols);
         for r in 0..rows {
-            for c in 0..cols { w_data.push(module.weight.get(r, c).to_f64() as f32); }
+            for c in 0..cols {
+                w_data.push(module.weight.get(r, c).to_f64() as f32);
+            }
         }
         self.model.graph.initializers.push(OnnxInitializer {
             name: weight_name.clone(),
@@ -568,7 +641,9 @@ impl OnnxExporter {
             let total = br * bc;
             let mut b_data = Vec::with_capacity(total);
             for r in 0..br {
-                for c in 0..bc { b_data.push(bias.get(r, c).to_f64() as f32); }
+                for c in 0..bc {
+                    b_data.push(bias.get(r, c).to_f64() as f32);
+                }
             }
             self.model.graph.initializers.push(OnnxInitializer {
                 name: bias_name.clone(),
@@ -576,17 +651,27 @@ impl OnnxExporter {
                 data: b_data,
             });
             self.add_named_node(
-                &format!("{prefix}_gemm"), OnnxOp::Gemm { alpha: 1.0, beta: 1.0, trans_b: true },
-                &[input, &weight_name, &bias_name], &[output],
+                &format!("{prefix}_gemm"),
+                OnnxOp::Gemm {
+                    alpha: 1.0,
+                    beta: 1.0,
+                    trans_b: true,
+                },
+                &[input, &weight_name, &bias_name],
+                &[output],
             );
         } else {
             self.add_named_node(
-                &format!("{prefix}_transpose"), OnnxOp::Transpose { perm: vec![1, 0] },
-                &[&weight_name], &[&format!("{prefix}.weight_t")],
+                &format!("{prefix}_transpose"),
+                OnnxOp::Transpose { perm: vec![1, 0] },
+                &[&weight_name],
+                &[&format!("{prefix}.weight_t")],
             );
             self.add_named_node(
-                &format!("{prefix}_matmul"), OnnxOp::MatMul,
-                &[input, &format!("{prefix}.weight_t")], &[output],
+                &format!("{prefix}_matmul"),
+                OnnxOp::MatMul,
+                &[input, &format!("{prefix}.weight_t")],
+                &[output],
             );
         }
     }
@@ -620,29 +705,40 @@ impl OnnxModel {
 /// Create a standard NLP input spec with dynamic batch and sequence dims.
 #[must_use]
 pub fn nlp_input(name: &str, hidden: i64) -> TensorSpec {
-    TensorSpec::float(name, vec![
-        DimSpec::Dynamic("batch_size".to_owned()),
-        DimSpec::Dynamic("seq_len".to_owned()),
-        DimSpec::Fixed(hidden),
-    ])
+    TensorSpec::float(
+        name,
+        vec![
+            DimSpec::Dynamic("batch_size".to_owned()),
+            DimSpec::Dynamic("seq_len".to_owned()),
+            DimSpec::Fixed(hidden),
+        ],
+    )
 }
 
 /// Create a standard 2D input spec with dynamic batch dim.
 #[must_use]
 pub fn batched_input(name: &str, features: i64) -> TensorSpec {
-    TensorSpec::float(name, vec![
-        DimSpec::Dynamic("batch_size".to_owned()),
-        DimSpec::Fixed(features),
-    ])
+    TensorSpec::float(
+        name,
+        vec![
+            DimSpec::Dynamic("batch_size".to_owned()),
+            DimSpec::Fixed(features),
+        ],
+    )
 }
 
 /// Create a standard image input spec with dynamic batch dim.
 #[must_use]
 pub fn image_input(name: &str, channels: i64, height: i64, width: i64) -> TensorSpec {
-    TensorSpec::float(name, vec![
-        DimSpec::Dynamic("batch_size".to_owned()),
-        DimSpec::Fixed(channels), DimSpec::Fixed(height), DimSpec::Fixed(width),
-    ])
+    TensorSpec::float(
+        name,
+        vec![
+            DimSpec::Dynamic("batch_size".to_owned()),
+            DimSpec::Fixed(channels),
+            DimSpec::Fixed(height),
+            DimSpec::Fixed(width),
+        ],
+    )
 }
 
 // --- P6-ONNX-05: Verification documentation ---
@@ -680,15 +776,21 @@ pub fn export_sequential<T: Scalar, B: Backend>(
     for (i, (_name, child)) in children.iter().enumerate() {
         let params = child.named_parameters();
         let is_last = i == children.len() - 1;
-        let out_name = if is_last { "output".to_owned() } else { format!("hidden_{i}") };
+        let out_name = if is_last {
+            "output".to_owned()
+        } else {
+            format!("hidden_{i}")
+        };
 
         if params.is_empty() {
             // Parameterless layer — try to infer activation type
             // For now, emit Relu as default (most common); users can build custom graphs
             // for non-standard architectures via OnnxExporter directly
             ex.add_named_node(
-                &format!("activation_{i}"), OnnxOp::Relu,
-                &[&current_tensor], &[&out_name],
+                &format!("activation_{i}"),
+                OnnxOp::Relu,
+                &[&current_tensor],
+                &[&out_name],
             );
         } else {
             // Parameterized layer — emit as Gemm (weight + optional bias)
@@ -697,18 +799,28 @@ pub fn export_sequential<T: Scalar, B: Backend>(
             if has_bias {
                 let bias_key = format!("{i}.bias");
                 ex.add_named_node(
-                    &format!("linear_{i}"), OnnxOp::Gemm { alpha: 1.0, beta: 1.0, trans_b: true },
-                    &[&current_tensor, &weight_key, &bias_key], &[&out_name],
+                    &format!("linear_{i}"),
+                    OnnxOp::Gemm {
+                        alpha: 1.0,
+                        beta: 1.0,
+                        trans_b: true,
+                    },
+                    &[&current_tensor, &weight_key, &bias_key],
+                    &[&out_name],
                 );
             } else {
                 let wt_name = format!("{i}.weight_t");
                 ex.add_named_node(
-                    &format!("transpose_{i}"), OnnxOp::Transpose { perm: vec![1, 0] },
-                    &[&weight_key], &[&wt_name],
+                    &format!("transpose_{i}"),
+                    OnnxOp::Transpose { perm: vec![1, 0] },
+                    &[&weight_key],
+                    &[&wt_name],
                 );
                 ex.add_named_node(
-                    &format!("matmul_{i}"), OnnxOp::MatMul,
-                    &[&current_tensor, &wt_name], &[&out_name],
+                    &format!("matmul_{i}"),
+                    OnnxOp::MatMul,
+                    &[&current_tensor, &wt_name],
+                    &[&out_name],
                 );
             }
         }
@@ -732,7 +844,9 @@ impl OnnxExporter {
             let (rows, cols) = tensor.shape();
             let mut data = Vec::with_capacity(rows * cols);
             for r in 0..rows {
-                for c in 0..cols { data.push(tensor.get(r, c).to_f64() as f32); }
+                for c in 0..cols {
+                    data.push(tensor.get(r, c).to_f64() as f32);
+                }
             }
             let dims = if (rows == 1 || cols == 1) && name.contains("bias") {
                 vec![(rows * cols) as i64]
@@ -740,7 +854,9 @@ impl OnnxExporter {
                 vec![rows as i64, cols as i64]
             };
             self.model.graph.initializers.push(OnnxInitializer {
-                name: name.to_owned(), dims, data,
+                name: name.to_owned(),
+                dims,
+                data,
             });
         }
     }
@@ -763,12 +879,18 @@ pub fn export_sequential_flat<T: Scalar, B: Backend>(
     for (i, (_name, child)) in children.iter().enumerate() {
         let params = child.named_parameters();
         let is_last = i == children.len() - 1;
-        let out_name = if is_last { "output".to_owned() } else { format!("hidden_{i}") };
+        let out_name = if is_last {
+            "output".to_owned()
+        } else {
+            format!("hidden_{i}")
+        };
 
         if params.is_empty() {
             ex.add_named_node(
-                &format!("activation_{i}"), OnnxOp::Relu,
-                &[&current_tensor], &[&out_name],
+                &format!("activation_{i}"),
+                OnnxOp::Relu,
+                &[&current_tensor],
+                &[&out_name],
             );
         } else {
             let weight_key = format!("{i}.weight");
@@ -776,18 +898,28 @@ pub fn export_sequential_flat<T: Scalar, B: Backend>(
             if has_bias {
                 let bias_key = format!("{i}.bias");
                 ex.add_named_node(
-                    &format!("linear_{i}"), OnnxOp::Gemm { alpha: 1.0, beta: 1.0, trans_b: true },
-                    &[&current_tensor, &weight_key, &bias_key], &[&out_name],
+                    &format!("linear_{i}"),
+                    OnnxOp::Gemm {
+                        alpha: 1.0,
+                        beta: 1.0,
+                        trans_b: true,
+                    },
+                    &[&current_tensor, &weight_key, &bias_key],
+                    &[&out_name],
                 );
             } else {
                 let wt_name = format!("{i}.weight_t");
                 ex.add_named_node(
-                    &format!("transpose_{i}"), OnnxOp::Transpose { perm: vec![1, 0] },
-                    &[&weight_key], &[&wt_name],
+                    &format!("transpose_{i}"),
+                    OnnxOp::Transpose { perm: vec![1, 0] },
+                    &[&weight_key],
+                    &[&wt_name],
                 );
                 ex.add_named_node(
-                    &format!("matmul_{i}"), OnnxOp::MatMul,
-                    &[&current_tensor, &wt_name], &[&out_name],
+                    &format!("matmul_{i}"),
+                    OnnxOp::MatMul,
+                    &[&current_tensor, &wt_name],
+                    &[&out_name],
                 );
             }
         }

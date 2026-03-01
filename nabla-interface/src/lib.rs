@@ -1,19 +1,23 @@
 #![deny(clippy::unwrap_used)]
 #![warn(clippy::pedantic, missing_docs)]
 #![allow(clippy::module_name_repetitions, clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss, clippy::cast_precision_loss, clippy::cast_possible_wrap)]
+#![allow(
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap
+)]
 
 //! GGUF export + llama.cpp FFI bridge for nabla.
 
-pub mod gguf;
-pub mod quant;
 pub mod convert;
+pub mod gguf;
 #[cfg(feature = "llama")]
 pub mod llama;
+pub mod quant;
 #[cfg(feature = "llama")]
 pub mod serve;
 
-pub use convert::{export_gguf, GgufArchConfig, QuantOverride};
+pub use convert::{GgufArchConfig, QuantOverride, export_gguf};
 pub use gguf::GgufWriter;
 pub use quant::GgufQuantType;
 

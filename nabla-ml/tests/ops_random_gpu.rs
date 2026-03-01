@@ -1,37 +1,37 @@
 #[cfg(feature = "cpu")]
 mod cpu {
     #![allow(unused_imports)]
-use nabla::cas::{Expr, diff, eval, eval_tensor, simplify};
-use nabla::ode::{AdaptiveConfig, dormand_prince, rk4};
-use nabla::prelude::*;
-use nabla::{between, frange};
-use std::collections::HashMap;
+    use nabla::cas::{Expr, diff, eval, eval_tensor, simplify};
+    use nabla::ode::{AdaptiveConfig, dormand_prince, rk4};
+    use nabla::prelude::*;
+    use nabla::{between, frange};
+    use std::collections::HashMap;
 
-#[allow(dead_code)]
-fn approx_eq(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1e-10
-}
+    #[allow(dead_code)]
+    fn approx_eq(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-10
+    }
 
-#[allow(dead_code)]
-fn linear_f64(rows: usize, cols: usize) -> Tensor<f64> {
-    Tensor::from_fn(rows, cols, |i, j| (i * cols + j + 1) as f64)
-}
+    #[allow(dead_code)]
+    fn linear_f64(rows: usize, cols: usize) -> Tensor<f64> {
+        Tensor::from_fn(rows, cols, |i, j| (i * cols + j + 1) as f64)
+    }
 
-#[allow(dead_code)]
-fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
-    assert_eq!(got.shape(), expected.shape(), "shape mismatch");
-    let (r, c) = got.shape();
-    for i in 0..r {
-        for j in 0..c {
-            assert!(
-                (got.get(i, j) - expected.get(i, j)).abs() < tol,
-                "mismatch at ({i},{j}): got {}, expected {}",
-                got.get(i, j),
-                expected.get(i, j)
-            );
+    #[allow(dead_code)]
+    fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
+        assert_eq!(got.shape(), expected.shape(), "shape mismatch");
+        let (r, c) = got.shape();
+        for i in 0..r {
+            for j in 0..c {
+                assert!(
+                    (got.get(i, j) - expected.get(i, j)).abs() < tol,
+                    "mismatch at ({i},{j}): got {}, expected {}",
+                    got.get(i, j),
+                    expected.get(i, j)
+                );
+            }
         }
     }
-}
 
     #[test]
     fn empty_same_as_zeros() {
@@ -39,7 +39,6 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
         assert_eq!(x.shape(), (3, 4));
         assert!((x.get(0, 0) - 0.0).abs() < 1e-10);
     }
-
 
     #[test]
     fn rand_shape_and_range() {
@@ -53,7 +52,6 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
         }
     }
 
-
     #[test]
     fn rand_deterministic() {
         let a: Tensor<f64> = Tensor::rand(2, 3, 123);
@@ -65,14 +63,12 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
         }
     }
 
-
     #[test]
     fn randn_shape_and_stats() {
         let t: Tensor<f64> = Tensor::randn(1, 10000, 42);
         let mean = t.sum_all() / 10000.0;
         assert!(mean.abs() < 0.1, "randn mean {mean} too far from 0");
     }
-
 
     #[test]
     fn dropout_training_off() {
@@ -84,7 +80,6 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
             }
         }
     }
-
 
     #[test]
     fn dropout_training_on() {
@@ -106,7 +101,6 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
         }
     }
 
-
     #[test]
     fn dropout_p_zero() {
         let x: Tensor<f64> = Tensor::fill(2, 3, 1.0);
@@ -114,14 +108,12 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
         assert!((out.sum_all() - 6.0).abs() < 1e-12);
     }
 
-
     #[test]
     fn dropout_p_one() {
         let x: Tensor<f64> = Tensor::fill(2, 3, 1.0);
         let out = x.dropout(1.0, true, 42);
         assert!(out.sum_all().abs() < 1e-12);
     }
-
 
     #[test]
     fn contiguous_identity() {
@@ -132,7 +124,6 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
         assert_eq!(b.get(1, 0), 3.0);
     }
 
-
     #[test]
     fn detach_is_independent_copy() {
         let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
@@ -141,7 +132,6 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
         assert_eq!(b.get(0, 0), a.get(0, 0));
         assert_eq!(b.get(1, 1), a.get(1, 1));
     }
-
 
     #[test]
     fn free_construction_aliases() {
@@ -181,7 +171,6 @@ fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
         assert!(approx_eq(r.get(0, 2), 0.5));
         assert!(approx_eq(r.get(0, 3), 0.75));
     }
-
 }
 
 #[cfg(feature = "gpu")]

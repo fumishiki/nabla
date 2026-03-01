@@ -3,13 +3,13 @@ use nabla_core::error::{Error, Result};
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 
-use super::{Side, from_f64_buf, require_square, to_f64_buf, impl_factorization_methods};
 use super::chol::{Lblt, Ldlt, Llt};
 use super::eigen::SelfAdjointEigen;
 use super::lu::{FullPivLu, PartialPivLu};
 use super::qr::{ColPivQr, Qr};
-use super::svd::Svd;
 use super::solve_ext::LinalgExt;
+use super::svd::Svd;
+use super::{Side, from_f64_buf, impl_factorization_methods, require_square, to_f64_buf};
 
 impl_factorization_methods!(general PartialPivLu);
 impl_factorization_methods!(symmetric Llt);
@@ -129,7 +129,11 @@ impl<T: Scalar> Diagonal<T> {
     #[must_use]
     pub fn to_tensor(&self) -> Tensor<T> {
         let n = self.size();
-        Tensor::from_fn(n, n, |r, c| if r == c { self.diag[r] } else { T::zero_impl() })
+        Tensor::from_fn(
+            n,
+            n,
+            |r, c| if r == c { self.diag[r] } else { T::zero_impl() },
+        )
     }
 
     /// Diagonal-times-dense multiplication.

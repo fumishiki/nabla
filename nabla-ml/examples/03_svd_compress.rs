@@ -18,5 +18,8 @@ fn main() {
 
     let approx = svd.reconstruct_rank(2);
     let approx_err = diff_norm(&approx);
-    println!("Rank-2 approx error: {approx_err:.4} (dropped singular value: {:.4})", s[2]);
+    println!(
+        "Rank-2 approx error: {approx_err:.4} (dropped singular value: {:.4})",
+        s[2]
+    );
 }

@@ -6,7 +6,9 @@ use nabla_interface::quant::{
 };
 
 fn make_test_data(n: usize) -> Vec<f32> {
-    (0..n).map(|i| ((i as f32 / n as f32) * 2.0 - 1.0) * 10.0).collect()
+    (0..n)
+        .map(|i| ((i as f32 / n as f32) * 2.0 - 1.0) * 10.0)
+        .collect()
 }
 
 #[test]
@@ -19,7 +21,10 @@ fn q4_0_roundtrip() {
     let max_err = 2.0 * amax / 15.0;
     for (i, (&orig, &rec)) in data.iter().zip(recovered.iter()).enumerate() {
         let err = (orig - rec).abs();
-        assert!(err <= max_err + 0.1, "Q4_0 error too large at {i}: orig={orig}, rec={rec}, err={err}, bound={max_err}");
+        assert!(
+            err <= max_err + 0.1,
+            "Q4_0 error too large at {i}: orig={orig}, rec={rec}, err={err}, bound={max_err}"
+        );
     }
 }
 
@@ -33,7 +38,10 @@ fn q8_0_roundtrip() {
     let max_err = 2.0 * amax / 127.0;
     for (i, (&orig, &rec)) in data.iter().zip(recovered.iter()).enumerate() {
         let err = (orig - rec).abs();
-        assert!(err <= max_err + 0.01, "Q8_0 error too large at {i}: orig={orig}, rec={rec}, err={err}, bound={max_err}");
+        assert!(
+            err <= max_err + 0.01,
+            "Q8_0 error too large at {i}: orig={orig}, rec={rec}, err={err}, bound={max_err}"
+        );
     }
 }
 
@@ -44,13 +52,19 @@ fn q4_k_m_roundtrip() {
     let recovered = dequantize_q4_k_m(&quantized).expect("dequantize failed");
     assert_eq!(data.len(), recovered.len());
     // Q4_K_M has more complex error bounds; just verify reasonable reconstruction
-    let mse: f64 = data.iter().zip(recovered.iter())
+    let mse: f64 = data
+        .iter()
+        .zip(recovered.iter())
         .map(|(&a, &b)| ((a - b) as f64).powi(2))
-        .sum::<f64>() / data.len() as f64;
+        .sum::<f64>()
+        / data.len() as f64;
     let rmse = mse.sqrt();
     let amax = data.iter().fold(0.0f32, |m, &v| m.max(v.abs())) as f64;
     // RMSE should be within 20% of absmax for 4-bit quantization
-    assert!(rmse < amax * 0.25, "Q4_K_M RMSE too large: {rmse:.4}, amax={amax:.4}");
+    assert!(
+        rmse < amax * 0.25,
+        "Q4_K_M RMSE too large: {rmse:.4}, amax={amax:.4}"
+    );
 }
 
 #[test]

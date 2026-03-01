@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use crate::optim::{GradScaler, LrSchedule, Optimizer, ScheduleState, lr_at_step};
 use nabla_core::backend::Backend;
 use nabla_core::backend::error::Error as TrainError;
 use nabla_core::error::Result;
@@ -7,7 +8,6 @@ use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 use nabla_ml::autograd::{Tape, Variable};
 use nabla_ml::module::Module;
-use crate::optim::{GradScaler, LrSchedule, Optimizer, ScheduleState, lr_at_step};
 
 pub struct TrainState {
     pub epoch: usize,
@@ -27,10 +27,25 @@ pub enum HookAction {
 }
 
 pub enum TrainEvent {
-    Step { epoch: usize, step: usize, loss: f64 },
-    EpochEnd { epoch: usize, steps: usize },
-    EvalStep { epoch: usize, step: usize, loss: f64 },
-    EvalEnd { epoch: usize, steps: usize, avg_loss: f64 },
+    Step {
+        epoch: usize,
+        step: usize,
+        loss: f64,
+    },
+    EpochEnd {
+        epoch: usize,
+        steps: usize,
+    },
+    EvalStep {
+        epoch: usize,
+        step: usize,
+        loss: f64,
+    },
+    EvalEnd {
+        epoch: usize,
+        steps: usize,
+        avg_loss: f64,
+    },
 }
 
 pub trait TrainHook {
@@ -64,7 +79,12 @@ impl<T: Scalar, B: Backend, M: Module<T, B>, O: Optimizer<T, B>> Trainer<T, B, M
             metrics: None,
             metrics_scope: MetricsScope::Train,
             early_stop: None,
-            state: TrainState { epoch: 0, step: 0, grad_accum: 1, rng_state: None },
+            state: TrainState {
+                epoch: 0,
+                step: 0,
+                grad_accum: 1,
+                rng_state: None,
+            },
             hooks: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
@@ -123,27 +143,45 @@ impl<T: Scalar, B: Backend, M: Module<T, B>, O: Optimizer<T, B>> Trainer<T, B, M
         self.hooks.push(hook);
     }
 
-    pub fn model(&self) -> &M { &self.model }
+    pub fn model(&self) -> &M {
+        &self.model
+    }
 
-    pub fn model_mut(&mut self) -> &mut M { &mut self.model }
+    pub fn model_mut(&mut self) -> &mut M {
+        &mut self.model
+    }
 
-    pub fn optimizer(&self) -> &O { &self.optimizer }
+    pub fn optimizer(&self) -> &O {
+        &self.optimizer
+    }
 
-    pub fn optimizer_mut(&mut self) -> &mut O { &mut self.optimizer }
+    pub fn optimizer_mut(&mut self) -> &mut O {
+        &mut self.optimizer
+    }
 
-    pub fn scaler_mut(&mut self) -> Option<&mut GradScaler> { self.scaler.as_mut() }
+    pub fn scaler_mut(&mut self) -> Option<&mut GradScaler> {
+        self.scaler.as_mut()
+    }
 
-    pub fn metrics(&self) -> Option<&MetricStats> { self.metrics.as_ref() }
+    pub fn metrics(&self) -> Option<&MetricStats> {
+        self.metrics.as_ref()
+    }
 
     pub fn early_stop_triggered(&self) -> bool {
         self.early_stop.as_ref().map_or(false, |s| s.triggered)
     }
 
-    pub fn state(&self) -> &TrainState { &self.state }
+    pub fn state(&self) -> &TrainState {
+        &self.state
+    }
 
-    pub fn set_state(&mut self, state: TrainState) { self.state = state; }
+    pub fn set_state(&mut self, state: TrainState) {
+        self.state = state;
+    }
 
-    pub fn set_rng_state(&mut self, rng_state: Option<u64>) { self.state.rng_state = rng_state; }
+    pub fn set_rng_state(&mut self, rng_state: Option<u64>) {
+        self.state.rng_state = rng_state;
+    }
 
     pub fn schedule_state(&self) -> Option<ScheduleState> {
         self.schedule.as_ref().map(|(s, base_lr)| ScheduleState {
@@ -160,6 +198,7 @@ impl<T: Scalar, B: Backend, M: Module<T, B>, O: Optimizer<T, B>> Trainer<T, B, M
         self.train_epoch_with_max_steps(loader, step_fn, None)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn train_epoch_with_max_steps<D, F, Batch>(
         &mut self,
         mut loader: D,
@@ -258,16 +297,25 @@ impl<T: Scalar, B: Backend, M: Module<T, B>, O: Optimizer<T, B>> Trainer<T, B, M
                         stats.update(loss_val);
                     }
                 }
-                if self.fire_hooks(TrainEvent::Step { epoch: self.state.epoch, step: self.state.step, loss: loss_val }) {
+                if self.fire_hooks(TrainEvent::Step {
+                    epoch: self.state.epoch,
+                    step: self.state.step,
+                    loss: loss_val,
+                }) {
                     break;
                 }
                 if let Some(max) = max_steps {
-                    if steps_done >= max { break; }
+                    if steps_done >= max {
+                        break;
+                    }
                 }
             }
         }
 
-        self.fire_hooks(TrainEvent::EpochEnd { epoch: self.state.epoch, steps: steps_done });
+        self.fire_hooks(TrainEvent::EpochEnd {
+            epoch: self.state.epoch,
+            steps: steps_done,
+        });
         if self.metrics_scope.track_train() {
             if let Some(stats) = &self.metrics {
                 if let Some(early) = &mut self.early_stop {
@@ -427,7 +475,10 @@ impl EarlyStopState {
     fn should_stop(&mut self, loss: f64) -> bool {
         match self.cfg {
             EarlyStop::LossBelow(threshold) => loss < threshold,
-            EarlyStop::NoImprove { patience, min_delta } => {
+            EarlyStop::NoImprove {
+                patience,
+                min_delta,
+            } => {
                 if loss < self.best - min_delta {
                     self.best = loss;
                     self.bad_epochs = 0;
@@ -442,7 +493,9 @@ impl EarlyStopState {
 }
 
 pub fn clip_grad_norm<T: Scalar, B: Backend>(grads: &mut [Tensor<T, B>], max_norm: f64) -> f64 {
-    if max_norm <= 0.0 { return 0.0; }
+    if max_norm <= 0.0 {
+        return 0.0;
+    }
     let mut sum = 0.0f64;
     for g in grads.iter() {
         let (m, n) = g.shape();

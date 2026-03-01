@@ -1,11 +1,11 @@
-
 use nabla_core::backend::Backend;
 use nabla_core::error::Result;
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 
-use super::{alloc_trajectory, apply_saveat, sc, time_direction, validate, wrap_rhs, IntoOdeRhs, OdeSolution};
-
+use super::{
+    IntoOdeRhs, OdeSolution, alloc_trajectory, apply_saveat, sc, time_direction, validate, wrap_rhs,
+};
 
 struct Xorshift64(u64);
 
@@ -38,11 +38,7 @@ impl Xorshift64 {
         // SAFETY: bit pattern is a valid f64 in [1.0, 2.0).
         let v = f64::from_bits(u) - 1.0;
         // Clamp away from exact 0.0 for Box-Muller log safety.
-        if v < f64::EPSILON {
-            f64::EPSILON
-        } else {
-            v
-        }
+        if v < f64::EPSILON { f64::EPSILON } else { v }
     }
 
     /// Generate a pair of N(0, 1) samples via Box-Muller transform.
@@ -70,7 +66,6 @@ fn fill_normal(rng: &mut Xorshift64, buf: &mut [f64]) {
         buf[i] = a;
     }
 }
-
 
 /// Configuration for stochastic differential equation solvers.
 pub struct SdeConfig {
@@ -125,7 +120,6 @@ impl SdeConfig {
         self
     }
 }
-
 
 /// Euler-Maruyama method for stochastic differential equations.
 pub fn euler_maruyama<T, B, RF, RG, F, G>(
@@ -197,7 +191,6 @@ where
     Ok(apply_saveat(sol, &config.saveat))
 }
 
-
 /// Parallel ensemble of Euler-Maruyama trajectories with independent seeds.
 pub fn ensemble_euler_maruyama<T, B, RF, RG, F, G>(
     drift: &F,
@@ -247,7 +240,6 @@ where
         Ok(results)
     })
 }
-
 
 /// Milstein method for SDEs with strong order 1.0 convergence.
 pub fn milstein<T, B, RF, RG, RDG, F, G, DG>(

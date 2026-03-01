@@ -4,17 +4,25 @@
 #[cfg(feature = "cuda")]
 use nabla::prelude::*;
 #[cfg(feature = "cuda")]
-use nabla_bench::{rand_tensor, kaiming, must};
+use nabla_bench::{kaiming, must, rand_tensor};
 
 #[cfg(feature = "cuda")]
-fn gpu_sync() { nabla::cuda_synchronize(); }
+fn gpu_sync() {
+    nabla::cuda_synchronize();
+}
 
 #[cfg(feature = "cuda")]
 macro_rules! test_capture {
     ($name:expr, $body:expr) => {
-        match nabla::cuda_graph_capture(|| { $body }) {
-            Ok(g) => { eprintln!("PASS: {}", $name); Some(g) }
-            Err(e) => { eprintln!("FAIL: {} - {e}", $name); None }
+        match nabla::cuda_graph_capture(|| $body) {
+            Ok(g) => {
+                eprintln!("PASS: {}", $name);
+                Some(g)
+            }
+            Err(e) => {
+                eprintln!("FAIL: {} - {e}", $name);
+                None
+            }
         }
     };
 }
@@ -49,49 +57,75 @@ fn main() {
     eprintln!("warmup done");
 
     // Individual op tests
-    test_capture!("matmul", { let _ = &x * &w1; });
+    test_capture!("matmul", {
+        let _ = &x * &w1;
+    });
     gpu_sync();
-    test_capture!("clone", { let _ = x.clone(); });
+    test_capture!("clone", {
+        let _ = x.clone();
+    });
     gpu_sync();
-    test_capture!("zeros", { let _: Tensor<f32> = Tensor::zeros(batch, 256); });
+    test_capture!("zeros", {
+        let _: Tensor<f32> = Tensor::zeros(batch, 256);
+    });
     gpu_sync();
-    test_capture!("fill", { let _: Tensor<f32> = Tensor::fill(batch, 256, 1.0f32); });
+    test_capture!("fill", {
+        let _: Tensor<f32> = Tensor::fill(batch, 256, 1.0f32);
+    });
     gpu_sync();
 
     let h = &x * &w1;
-    test_capture!("leaky_relu fwd", { let _ = h.leaky_relu(0.01); });
+    test_capture!("leaky_relu fwd", {
+        let _ = h.leaky_relu(0.01);
+    });
     gpu_sync();
-    test_capture!("neg", { let _ = -&x; });
+    test_capture!("neg", {
+        let _ = -&x;
+    });
     gpu_sync();
 
     let a = rand_tensor(batch, 10);
     let b = rand_tensor(batch, 10);
-    test_capture!("emul", { let _ = a.emul(&b); });
+    test_capture!("emul", {
+        let _ = a.emul(&b);
+    });
     gpu_sync();
-    test_capture!("sum_axis", { let _ = a.sum_axis(1); });
+    test_capture!("sum_axis", {
+        let _ = a.sum_axis(1);
+    });
     gpu_sync();
 
     let small = Tensor::<f32>::fill(1, 10, 1.0);
-    test_capture!("expand", { let _ = small.expand(batch, 10); });
+    test_capture!("expand", {
+        let _ = small.expand(batch, 10);
+    });
     gpu_sync();
 
     let grad = rand_tensor(batch, 256);
     let input = rand_tensor(batch, 256);
-    test_capture!("leaky_relu_bwd", { let _ = grad.leaky_relu_backward(&input, 0.01f32); });
+    test_capture!("leaky_relu_bwd", {
+        let _ = grad.leaky_relu_backward(&input, 0.01f32);
+    });
     gpu_sync();
 
     let g11 = rand_tensor(784, 10);
-    test_capture!("matmul_tn", { let _ = w1.matmul_tn(&g11); });
+    test_capture!("matmul_tn", {
+        let _ = w1.matmul_tn(&g11);
+    });
     gpu_sync();
 
     let g12 = rand_tensor(batch, 10);
     let w_nt = rand_tensor(256, 10);
-    test_capture!("matmul_nt", { let _ = g12.matmul_nt(&w_nt); });
+    test_capture!("matmul_nt", {
+        let _ = g12.matmul_nt(&w_nt);
+    });
     gpu_sync();
 
     let mut param = w1.clone();
     let grad_w = rand_tensor(784, 256);
-    test_capture!("axpy_inplace", { param.axpy_inplace(-0.001f32, &grad_w); });
+    test_capture!("axpy_inplace", {
+        param.axpy_inplace(-0.001f32, &grad_w);
+    });
     gpu_sync();
 
     // Composite tests
@@ -134,11 +168,16 @@ fn main() {
     gpu_sync();
 
     // Replay tests
-    match cuda_graph_capture(|| { let _ = &x * &w1; }) {
+    match cuda_graph_capture(|| {
+        let _ = &x * &w1;
+    }) {
         Ok(g) => {
             eprintln!("PASS: capture matmul");
             match g.launch() {
-                Ok(_) => { gpu_sync(); eprintln!("PASS: replay matmul"); }
+                Ok(_) => {
+                    gpu_sync();
+                    eprintln!("PASS: replay matmul");
+                }
                 Err(e) => eprintln!("FAIL: replay matmul - {e}"),
             }
         }
@@ -164,8 +203,14 @@ fn main() {
             eprintln!("PASS: capture fwd+bwd");
             for i in 0..5 {
                 match g.launch() {
-                    Ok(_) => { gpu_sync(); eprintln!("PASS: replay fwd+bwd #{i}"); }
-                    Err(e) => { eprintln!("FAIL: replay fwd+bwd #{i} - {e}"); break; }
+                    Ok(_) => {
+                        gpu_sync();
+                        eprintln!("PASS: replay fwd+bwd #{i}");
+                    }
+                    Err(e) => {
+                        eprintln!("FAIL: replay fwd+bwd #{i} - {e}");
+                        break;
+                    }
                 }
             }
         }
@@ -175,4 +220,6 @@ fn main() {
 }
 
 #[cfg(not(feature = "cuda"))]
-fn main() { eprintln!("Requires --features cuda"); }
+fn main() {
+    eprintln!("Requires --features cuda");
+}

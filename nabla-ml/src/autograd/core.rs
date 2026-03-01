@@ -1,4 +1,3 @@
-
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::marker::PhantomData;
@@ -8,7 +7,6 @@ use nabla_core::backend::Backend;
 use nabla_core::error::Result;
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
-
 
 type GradSlot<T, B> = Rc<RefCell<Option<Tensor<T, B>>>>;
 
@@ -35,7 +33,6 @@ fn accum_weak_slot<T: Scalar, B: Backend>(
         accum_cell(&slot, delta);
     }
 }
-
 
 pub(crate) struct TapeEntry<T: Scalar, B: Backend> {
     /// Gradient accumulated for this node's output tensor.
@@ -68,7 +65,6 @@ impl<T: Scalar, B: Backend> TapeEntry<T, B> {
     }
 }
 
-
 /// Reverse-mode automatic differentiation tape.
 pub struct Tape<T: Scalar, B: Backend> {
     pub(super) entries: RefCell<Vec<Rc<TapeEntry<T, B>>>>,
@@ -99,7 +95,9 @@ impl<T: Scalar, B: Backend> Tape<T, B> {
     /// Returns `Err` if called inside a [`Tape::no_grad`] scope.
     pub fn variable(self: &Rc<Self>, data: Tensor<T, B>) -> Result<Variable<T, B>> {
         if self.no_grad_active.get() {
-            return Err(nabla_core::error::Error::invalid("variable() called inside no_grad scope"));
+            return Err(nabla_core::error::Error::invalid(
+                "variable() called inside no_grad scope",
+            ));
         }
         let grad_slot: GradSlot<T, B> = Rc::new(RefCell::new(None));
         Ok(Variable {
@@ -140,14 +138,15 @@ impl<T: Scalar, B: Backend> Tape<T, B> {
     {
         struct Guard<'a>(&'a std::cell::Cell<bool>);
         impl Drop for Guard<'_> {
-            fn drop(&mut self) { self.0.set(false); }
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
         }
         self.no_grad_active.set(true);
         let _guard = Guard(&self.no_grad_active);
         f()
     }
 }
-
 
 /// A tensor tracked on an autodiff tape.
 pub struct Variable<T: Scalar, B: Backend> {
@@ -317,10 +316,14 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let out = &*self.data + &*rhs.data;
         let deps = Self::deps_of(&[self.entry_idx, rhs.entry_idx]);
         let (lr, rr) = (self.input_refs(), rhs.input_refs());
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, g);
-            Self::prop(&rr, g);
-        }, deps, "add");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, g);
+                Self::prop(&rr, g);
+            },
+            deps,
+            "add",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -330,10 +333,14 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let out = &*self.data - &*rhs.data;
         let deps = Self::deps_of(&[self.entry_idx, rhs.entry_idx]);
         let (lr, rr) = (self.input_refs(), rhs.input_refs());
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, g);
-            Self::prop(&rr, &(-g));
-        }, deps, "sub");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, g);
+                Self::prop(&rr, &(-g));
+            },
+            deps,
+            "sub",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -343,9 +350,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let out = -&*self.data;
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &(-g));
-        }, deps, "neg");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &(-g));
+            },
+            deps,
+            "neg",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -356,10 +367,14 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx, rhs.entry_idx]);
         let (lr, rr) = (self.input_refs(), rhs.input_refs());
         let (a_data, b_data) = (Rc::clone(&self.data), Rc::clone(&rhs.data));
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.emul(&*b_data));
-            Self::prop(&rr, &g.emul(&*a_data));
-        }, deps, "emul");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.emul(&*b_data));
+                Self::prop(&rr, &g.emul(&*a_data));
+            },
+            deps,
+            "emul",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -370,11 +385,15 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx, rhs.entry_idx]);
         let (lr, rr) = (self.input_refs(), rhs.input_refs());
         let (a_data, b_data) = (Rc::clone(&self.data), Rc::clone(&rhs.data));
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.ediv(&*b_data));
-            let b_sq = (*b_data).emul(&*b_data);
-            Self::prop(&rr, &g.emul(&(-&*a_data).ediv(&b_sq)));
-        }, deps, "ediv");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.ediv(&*b_data));
+                let b_sq = (*b_data).emul(&*b_data);
+                Self::prop(&rr, &g.emul(&(-&*a_data).ediv(&b_sq)));
+            },
+            deps,
+            "ediv",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -386,15 +405,19 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let (lr, rr) = (self.input_refs(), rhs.input_refs());
         let (a_data, b_data) = (Rc::clone(&self.data), Rc::clone(&rhs.data));
         let result = out.clone();
-        let entry = TapeEntry::new(move |g| {
-            let one = T::one_impl();
-            let (m, n) = a_data.shape();
-            let a_pow_bm1 = Tensor::from_fn(m, n, |r, c| {
-                a_data.get(r, c).math_powf(b_data.get(r, c) - one)
-            });
-            Self::prop(&lr, &g.emul(&b_data.emul(&a_pow_bm1)));
-            Self::prop(&rr, &g.emul(&result.emul(&a_data.ln())));
-        }, deps, "epow");
+        let entry = TapeEntry::new(
+            move |g| {
+                let one = T::one_impl();
+                let (m, n) = a_data.shape();
+                let a_pow_bm1 = Tensor::from_fn(m, n, |r, c| {
+                    a_data.get(r, c).math_powf(b_data.get(r, c) - one)
+                });
+                Self::prop(&lr, &g.emul(&b_data.emul(&a_pow_bm1)));
+                Self::prop(&rr, &g.emul(&result.emul(&a_data.ln())));
+            },
+            deps,
+            "epow",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -405,10 +428,14 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx, rhs.entry_idx]);
         let (lr, rr) = (self.input_refs(), rhs.input_refs());
         let (a_data, b_data) = (Rc::clone(&self.data), Rc::clone(&rhs.data));
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.matmul_nt(&*b_data));
-            Self::prop(&rr, &(*a_data).matmul_tn(g));
-        }, deps, "matmul");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.matmul_nt(&*b_data));
+                Self::prop(&rr, &(*a_data).matmul_tn(g));
+            },
+            deps,
+            "matmul",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -418,9 +445,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let out = &*self.data * s;
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &(g * s));
-        }, deps, "scale");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &(g * s));
+            },
+            deps,
+            "scale",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -431,9 +462,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let exp_a = out.clone();
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.emul(&exp_a));
-        }, deps, "exp");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.emul(&exp_a));
+            },
+            deps,
+            "exp",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -444,9 +479,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let a_data = Rc::clone(&self.data);
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.ediv(&*a_data));
-        }, deps, "ln");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.ediv(&*a_data));
+            },
+            deps,
+            "ln",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -457,9 +496,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let cos_a = self.data.cos();
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.emul(&cos_a));
-        }, deps, "sin");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.emul(&cos_a));
+            },
+            deps,
+            "sin",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -470,9 +513,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let neg_sin_a = -&(*self.data).sin();
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.emul(&neg_sin_a));
-        }, deps, "cos");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.emul(&neg_sin_a));
+            },
+            deps,
+            "cos",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -485,9 +532,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let (nrows, ncols) = out.shape();
         let ones = Tensor::fill(nrows, ncols, T::one_impl());
         let sech2 = &ones - &out.emul(&out);
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.emul(&sech2));
-        }, deps, "tanh");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.emul(&sech2));
+            },
+            deps,
+            "tanh",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -499,9 +550,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let lr = self.input_refs();
         let two = T::one_impl() + T::one_impl();
         let two_sqrt_a = &out * two;
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.ediv(&two_sqrt_a));
-        }, deps, "sqrt");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.ediv(&two_sqrt_a));
+            },
+            deps,
+            "sqrt",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -513,9 +568,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let lr = self.input_refs();
         let one = T::one_impl();
         let coeff = &(*self.data).powf(p - one) * p;
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.emul(&coeff));
-        }, deps, "powf");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.emul(&coeff));
+            },
+            deps,
+            "powf",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -526,9 +585,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let input = Rc::clone(&self.data);
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.relu_backward(&*input));
-        }, deps, "relu");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.relu_backward(&*input));
+            },
+            deps,
+            "relu",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -539,12 +602,16 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let sig_out = out.clone();
-        let entry = TapeEntry::new(move |g| {
-            let (m, n) = sig_out.shape();
-            let ones = Tensor::fill(m, n, T::one_impl());
-            let dsig = sig_out.emul(&(&ones - &sig_out));
-            Self::prop(&lr, &g.emul(&dsig));
-        }, deps, "sigmoid");
+        let entry = TapeEntry::new(
+            move |g| {
+                let (m, n) = sig_out.shape();
+                let ones = Tensor::fill(m, n, T::one_impl());
+                let dsig = sig_out.emul(&(&ones - &sig_out));
+                Self::prop(&lr, &g.emul(&dsig));
+            },
+            deps,
+            "sigmoid",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -555,9 +622,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let input = Rc::clone(&self.data);
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.gelu_backward(&*input));
-        }, deps, "gelu");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.gelu_backward(&*input));
+            },
+            deps,
+            "gelu",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -568,9 +639,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let input = Rc::clone(&self.data);
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.abs_backward(&*input));
-        }, deps, "abs");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.abs_backward(&*input));
+            },
+            deps,
+            "abs",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -581,11 +656,15 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let input = Rc::clone(&self.data);
-        let entry = TapeEntry::new(move |g| {
-            let (m, n) = input.shape();
-            let ones = Tensor::fill(m, n, T::one_impl());
-            Self::prop(&lr, &g.ediv(&(&ones + &*input)));
-        }, deps, "log1p");
+        let entry = TapeEntry::new(
+            move |g| {
+                let (m, n) = input.shape();
+                let ones = Tensor::fill(m, n, T::one_impl());
+                Self::prop(&lr, &g.ediv(&(&ones + &*input)));
+            },
+            deps,
+            "log1p",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -596,13 +675,17 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let input = Rc::clone(&self.data);
-        let entry = TapeEntry::new(move |g| {
-            let sig = input.sigmoid();
-            let (m, n) = input.shape();
-            let ones = Tensor::fill(m, n, T::one_impl());
-            let dsilu = sig.emul(&(&ones + &input.emul(&(&ones - &sig))));
-            Self::prop(&lr, &g.emul(&dsilu));
-        }, deps, "silu");
+        let entry = TapeEntry::new(
+            move |g| {
+                let sig = input.sigmoid();
+                let (m, n) = input.shape();
+                let ones = Tensor::fill(m, n, T::one_impl());
+                let dsilu = sig.emul(&(&ones + &input.emul(&(&ones - &sig))));
+                Self::prop(&lr, &g.emul(&dsilu));
+            },
+            deps,
+            "silu",
+        );
         Self::derived(&self.tape, out, entry)
     }
 }

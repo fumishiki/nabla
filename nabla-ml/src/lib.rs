@@ -28,8 +28,8 @@
 )]
 
 pub use nabla_core::{
-    LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64, backend, error, layout,
-    scalar, tensor,
+    LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64, backend, error, layout, scalar,
+    tensor,
 };
 
 #[cfg(feature = "gpu")]
@@ -44,8 +44,8 @@ pub use nabla_core::{CudaError, CudaResult, cuda_synchronize};
 #[cfg(feature = "cuda")]
 pub use nabla_core::cuda_backend::{
     DoubleBuffer, Epilogue, KernelNodeState, NablaCudaGraph, PyGraph, TrainingGraph,
-    cuda_copy_from_host, cuda_graph_capture, cuda_graph_capture_cached,
-    cuda_matmul_epilogue, cuda_to_vec_async,
+    cuda_copy_from_host, cuda_graph_capture, cuda_graph_capture_cached, cuda_matmul_epilogue,
+    cuda_to_vec_async,
 };
 
 #[cfg(feature = "cuda")]
@@ -168,10 +168,9 @@ macro_rules! vec_unpack {
 /// Re-exports of neural network types and functions.
 pub mod nn {
     pub use crate::module::{
-        Activation, ActivationKind, DropoutLayer, EmbeddingLayer, ForwardResult,
-        LayerNormModule, Linear, Module, Sequential, StateError,
-        embedding, kaiming_normal, kv_cache_append, linear, load_tensors,
-        rotary_embedding, save_tensors, xavier_uniform,
+        Activation, ActivationKind, DropoutLayer, EmbeddingLayer, ForwardResult, LayerNormModule,
+        Linear, Module, Sequential, StateError, embedding, kaiming_normal, kv_cache_append, linear,
+        load_tensors, rotary_embedding, save_tensors, xavier_uniform,
     };
 }
 
@@ -211,57 +210,56 @@ pub mod util {
     }
 }
 
-
 /// Convenience re-exports for common types and traits.
 pub mod prelude {
     // Core types
     pub use nabla_core::backend::{Backend, DefaultBackend};
     pub use nabla_core::error::{Error, Result};
-    pub use nabla_core::scalar::Scalar;
     pub use nabla_core::layout::{LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64};
-    pub use nabla_core::tensor::{Array, MatrixLike, NdTensor, StaticMatrix, Tensor, TensorView};
+    pub use nabla_core::scalar::Scalar;
     #[cfg(feature = "cpu")]
     pub use nabla_core::tensor::Matrix;
+    pub use nabla_core::tensor::{Array, MatrixLike, NdTensor, StaticMatrix, Tensor, TensorView};
 
     // Macros (proc + decl)
-    pub use nabla_macros::{
-        Module, axis, block, einsum, fuse, generated, mat, math, mega_fuse, nabla_grad,
-        named, named_zeros, sym,
-    };
     pub use crate::{NablaResult, ad, cas_vars, sequential, vars, vec_unpack};
+    pub use nabla_macros::{
+        Module, axis, block, einsum, fuse, generated, mat, math, mega_fuse, nabla_grad, named,
+        named_zeros, sym,
+    };
 
     // Autograd
     pub use crate::autograd::{Tape, TensorLike, Variable, clip_grad_norm, scale_grad, zero_grad};
 
     // Module / NN
     pub use crate::nn::{
-        Activation, ActivationKind, DropoutLayer, EmbeddingLayer, ForwardResult,
-        LayerNormModule, Linear, Module, Sequential,
-        embedding, kaiming_normal, linear, save_tensors, load_tensors, xavier_uniform,
+        Activation, ActivationKind, DropoutLayer, EmbeddingLayer, ForwardResult, LayerNormModule,
+        Linear, Module, Sequential, embedding, kaiming_normal, linear, load_tensors, save_tensors,
+        xavier_uniform,
     };
 
     // Constructors
     pub use crate::constructors::{
-        arange, clear_seed, eye, fill, from_fn, linspace, nd_zeros, ones, rand, randn,
-        set_seed, zeros,
+        arange, clear_seed, eye, fill, from_fn, linspace, nd_zeros, ones, rand, randn, set_seed,
+        zeros,
     };
 
     // IO
-    pub use crate::nn::{StateError};
+    pub use crate::nn::StateError;
 
     // CAS (basic)
     pub use crate::cas::{diff, diff_simplify, eval, simplify};
 
     // ODE (basic)
-    pub use crate::ode::{euler, rk4, dormand_prince, OdeProblem, OdeSolution, AdaptiveConfig};
+    pub use crate::ode::{AdaptiveConfig, OdeProblem, OdeSolution, dormand_prince, euler, rk4};
 
     // --- cpu-gated ---
     #[cfg(feature = "cpu")]
     pub use crate::{
         autograd::{GradPrep, grad, gradient, gradient_prep},
         linalg::{
-            Diagonal, LinalgExt, Side, Symmetric, TriKind, Triangular,
-            discrete_lyapunov, discrete_sylvester, expm, logm, lyapunov, schur, sqrtm, sylvester,
+            Diagonal, LinalgExt, Side, Symmetric, TriKind, Triangular, discrete_lyapunov,
+            discrete_sylvester, expm, logm, lyapunov, schur, sqrtm, sylvester,
         },
         ode::{DaeConfig, IfEulerScalarConfig, dae_solve, if_euler_scalar},
         sparse::*,
@@ -281,10 +279,9 @@ pub mod prelude {
 
     // --- cuda-gated ---
     #[cfg(feature = "cuda")]
-    pub use nabla_core::{CudaError, CudaResult, cuda_synchronize};
-    #[cfg(feature = "cuda")]
     pub use nabla_core::cuda_backend::{
-        Epilogue, NablaCudaGraph, PyGraph, TrainingGraph,
-        cuda_graph_capture, cuda_matmul_epilogue,
+        Epilogue, NablaCudaGraph, PyGraph, TrainingGraph, cuda_graph_capture, cuda_matmul_epilogue,
     };
+    #[cfg(feature = "cuda")]
+    pub use nabla_core::{CudaError, CudaResult, cuda_synchronize};
 }

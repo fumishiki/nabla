@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use cudarc::driver::sys::CUdeviceptr;
 use cudarc::driver::result;
+use cudarc::driver::sys::CUdeviceptr;
+use std::collections::HashMap;
 
 use crate::scalar::Scalar;
 

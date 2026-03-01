@@ -6,18 +6,16 @@ use cudarc::cublas::{result as cublas_result, sys as cublas_sys};
 use cudarc::cublaslt::result::CublasError;
 pub(super) use cudarc::cublaslt::{result as cublaslt_result, sys as cublaslt_sys};
 use cudarc::driver::sys::{CUdeviceptr, CUfunction, CUmodule};
-use cudarc::driver::{
-    CudaContext as CudarcContext, CudaStream, result,
-};
+use cudarc::driver::{CudaContext as CudarcContext, CudaStream, result};
 use cudarc::nvrtc;
 
+use crate::cuda_backend::NablaCudaGraph;
 use crate::gpu_common::{
     EnsureCache, LARGE_ALLOC_SIZE, MemoryPool, RtcStorage, SMALL_ALLOC_SIZE, SMALL_LARGE_BOUNDARY,
     lock_or_recover, round_size,
 };
 use crate::kernels_cu::REDUCE_GRID_CAP;
 use crate::scalar::Scalar;
-use crate::cuda_backend::NablaCudaGraph;
 
 #[derive(Debug)]
 pub enum CudaError {
@@ -62,7 +60,12 @@ pub type CudaResult<T> = Result<T, CudaError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Epilogue {
-    None, Relu, Gelu, Bias, ReluBias, GeluBias,
+    None,
+    Relu,
+    Gelu,
+    Bias,
+    ReluBias,
+    GeluBias,
 }
 
 #[inline]
@@ -186,7 +189,12 @@ impl CuBuffer {
         let (dptr, alloc_size) = Self::alloc_from_pool(stream, size_bytes)?;
         // SAFETY: zeroing allocated device memory.
         unsafe { result::memset_d8_async(dptr, 0, alloc_size, stream.cu_stream())? };
-        Ok(Self { ptr: dptr, size: size_bytes, alloc_size, pooled })
+        Ok(Self {
+            ptr: dptr,
+            size: size_bytes,
+            alloc_size,
+            pooled,
+        })
     }
 
     pub(super) fn alloc_async(stream: &Arc<CudaStream>, size_bytes: usize) -> CudaResult<Self> {
@@ -195,7 +203,12 @@ impl CuBuffer {
         }
         let pooled = !super::cuda_graph_is_capturing();
         let (dptr, alloc_size) = Self::alloc_from_pool(stream, size_bytes)?;
-        Ok(Self { ptr: dptr, size: size_bytes, alloc_size, pooled })
+        Ok(Self {
+            ptr: dptr,
+            size: size_bytes,
+            alloc_size,
+            pooled,
+        })
     }
 
     pub(super) fn from_host<T: Scalar>(stream: &Arc<CudaStream>, data: &[T]) -> CudaResult<Self> {
@@ -212,7 +225,12 @@ impl CuBuffer {
         let (dptr, alloc_size) = Self::alloc_from_pool(stream, bytes)?;
         // SAFETY: T is POD (Scalar: Copy + Send + Sync); uploading raw bytes to GPU.
         unsafe { result::memcpy_htod_async(dptr, data, stream.cu_stream())? };
-        Ok(Self { ptr: dptr, size: bytes, alloc_size, pooled })
+        Ok(Self {
+            ptr: dptr,
+            size: bytes,
+            alloc_size,
+            pooled,
+        })
     }
 
     pub(super) fn copy_to_host<T: Scalar>(
@@ -459,7 +477,11 @@ pub(super) fn get_ctx() -> &'static CudaCtx {
             unsafe { cublaslt_result::create_handle() },
             "cublasLt init failed",
         );
-        let blas_lt_workspace_size = if major >= 9 { 32 * 1024 * 1024 } else { 4 * 1024 * 1024 };
+        let blas_lt_workspace_size = if major >= 9 {
+            32 * 1024 * 1024
+        } else {
+            4 * 1024 * 1024
+        };
         let blas_lt_workspace = unsafe {
             expect_ok(
                 result::malloc_async(stream.cu_stream(), blas_lt_workspace_size),

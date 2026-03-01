@@ -1,4 +1,3 @@
-
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 

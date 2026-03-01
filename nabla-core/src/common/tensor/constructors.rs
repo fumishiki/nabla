@@ -1,4 +1,3 @@
-
 #[cfg(feature = "cpu")]
 use rayon::prelude::*;
 
@@ -226,7 +225,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-
 /// Zero-copy read-only view into a sub-region of a [`Tensor`].
 pub struct TensorView<'a, T: Scalar, B: Backend> {
     source: &'a Tensor<T, B>,
@@ -304,7 +302,6 @@ impl<T: Scalar, B: Backend> MatrixLike<T> for TensorView<'_, T, B> {
     }
 }
 
-
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Create a zero-copy read-only view of a submatrix.
     ///
@@ -351,7 +348,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         }
     }
 }
-
 
 #[inline]
 fn next_index(idx: &mut usize, limit: usize) -> Option<usize> {

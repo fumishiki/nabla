@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::ffi::{CString, c_void};
 use std::sync::{Mutex, OnceLock};
@@ -12,7 +11,6 @@ use crate::gpu_common::{
 };
 use crate::kernels_cu::{self, BLOCK_SIZE};
 use crate::scalar::Scalar;
-
 
 #[derive(Debug)]
 pub(crate) enum HipError {
@@ -50,7 +48,6 @@ fn hip_or_panic<T>(result: HipResult<T>, context: &str) -> T {
         Err(error) => panic!("{context}: {error}"),
     }
 }
-
 
 type HipPool = MemoryPool<*mut c_void>;
 
@@ -265,7 +262,6 @@ impl Drop for HipBuffer {
     }
 }
 
-
 pub type HipStorage<T> = RtcStorage<HipBuffer, T>;
 
 // SAFETY: HipBuffer is Send+Sync (raw GPU pointer). Mutex<Option<Vec<T>>>
@@ -285,7 +281,6 @@ impl<T: Scalar> EnsureCache for HipStorage<T> {
     }
 }
 
-
 struct KernelEntry {
     func: hip::hipFunction_t,
     _module: hip::hipModule_t,
@@ -300,7 +295,6 @@ struct SyncFn(hip::hipFunction_t);
 // SAFETY: hipFunction_t is an opaque handle — thread-safe to store/use.
 unsafe impl Send for SyncFn {}
 unsafe impl Sync for SyncFn {}
-
 
 struct HipCtx {
     /// Pre-compiled kernel functions indexed by `KernelId`. Lock-free O(1) access.
@@ -372,7 +366,6 @@ pub(crate) fn hip_from_fn<T: Scalar>(
     let buf = hip_or_panic(HipBuffer::from_host(&data), "HIP upload");
     HipStorage::new_cached(nrows, ncols, buf, data)
 }
-
 
 pub(crate) fn hip_from_vec_async<T: Scalar>(
     nrows: usize,
@@ -519,7 +512,12 @@ pub(crate) fn hip_powf<T: Scalar>(a: &HipStorage<T>, p: T) -> HipStorage<T> {
     HipStorage::new(a.nrows, a.ncols, out_buf)
 }
 
-pub(crate) fn hip_expand<T: Scalar>(out: &mut HipStorage<T>, src: &HipStorage<T>, src_rows: usize, src_cols: usize) {
+pub(crate) fn hip_expand<T: Scalar>(
+    out: &mut HipStorage<T>,
+    src: &HipStorage<T>,
+    src_rows: usize,
+    src_cols: usize,
+) {
     let ctx = get_ctx();
     let dst_rows = out.nrows;
     let dst_cols = out.ncols;
@@ -594,7 +592,6 @@ pub(crate) fn hip_matmul<T: Scalar>(out: &mut HipStorage<T>, a: &HipStorage<T>, 
         ],
     );
 }
-
 
 pub(crate) fn hip_sum_all<T: Scalar>(a: &HipStorage<T>) -> T {
     gpu_common::rtc_sum_all(a)

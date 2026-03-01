@@ -2,8 +2,8 @@ use std::cell::Cell;
 use std::ffi::{CString, c_void};
 use std::sync::Arc;
 
-use cudarc::driver::{CudaGraph as CudarcCudaGraph, result};
 use cudarc::driver::sys::{CUdeviceptr, CUstreamCaptureMode};
+use cudarc::driver::{CudaGraph as CudarcCudaGraph, result};
 use cudarc::nvrtc;
 
 use crate::gpu_common::{lock_or_recover, type_suffix};
@@ -97,14 +97,20 @@ pub fn cuda_graph_capture<F: FnOnce()>(f: F) -> CudaResult<NablaCudaGraph> {
 pub fn cuda_graph_capture_cached<F: FnOnce()>(name: &str, f: F) -> CudaResult<Arc<NablaCudaGraph>> {
     let ctx = get_ctx();
     {
-        let cache: std::sync::MutexGuard<'_, std::collections::HashMap<String, Arc<NablaCudaGraph>>> = lock_or_recover(&ctx.graphs);
+        let cache: std::sync::MutexGuard<
+            '_,
+            std::collections::HashMap<String, Arc<NablaCudaGraph>>,
+        > = lock_or_recover(&ctx.graphs);
         if let Some(g) = cache.get(name) {
             return Ok(Arc::clone(g));
         }
     }
     let graph = cuda_graph_capture(f)?;
     let graph = Arc::new(graph);
-    let mut cache: std::sync::MutexGuard<'_, std::collections::HashMap<String, Arc<NablaCudaGraph>>> = lock_or_recover(&ctx.graphs);
+    let mut cache: std::sync::MutexGuard<
+        '_,
+        std::collections::HashMap<String, Arc<NablaCudaGraph>>,
+    > = lock_or_recover(&ctx.graphs);
     cache.insert(name.to_string(), Arc::clone(&graph));
     Ok(graph)
 }
@@ -501,8 +507,7 @@ impl ConditionalGraph {
             vec![std::ptr::null_mut(); size as usize];
 
         // SAFETY: CUgraphNodeParams_st is a C struct; zeroing padding/reserved
-        let mut node_params: cudarc::driver::sys::CUgraphNodeParams =
-            unsafe { std::mem::zeroed() };
+        let mut node_params: cudarc::driver::sys::CUgraphNodeParams = unsafe { std::mem::zeroed() };
         node_params.type_ = cudarc::driver::sys::CUgraphNodeType::CU_GRAPH_NODE_TYPE_CONDITIONAL;
         // SAFETY: type_ discriminant set above; writing the matching union arm
         unsafe {
@@ -721,13 +726,21 @@ impl PyGraphTrainingGraph {
     /// Create with default warmup (5 iterations).
     #[must_use]
     pub fn new() -> Self {
-        Self { graph: None, warmup_iters: 5, iter_count: 0 }
+        Self {
+            graph: None,
+            warmup_iters: 5,
+            iter_count: 0,
+        }
     }
 
     /// Create with custom warmup count.
     #[must_use]
     pub fn with_warmup(warmup_iters: usize) -> Self {
-        Self { graph: None, warmup_iters, iter_count: 0 }
+        Self {
+            graph: None,
+            warmup_iters,
+            iter_count: 0,
+        }
     }
 
     /// Mutable access to the captured PyGraph (None before capture completes).

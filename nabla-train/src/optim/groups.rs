@@ -52,7 +52,12 @@ pub struct ParamGroupConfig {
 
 impl ParamGroupConfig {
     #[must_use]
-    pub fn adamw(name: impl Into<String>, selector: ParamSelector, lr: f64, weight_decay: f64) -> Self {
+    pub fn adamw(
+        name: impl Into<String>,
+        selector: ParamSelector,
+        lr: f64,
+        weight_decay: f64,
+    ) -> Self {
         Self {
             name: name.into(),
             selector,
@@ -198,13 +203,16 @@ impl<T: Scalar, B: Backend> GroupOptimizer<T, B> {
 
         let mut group_entries = Vec::new();
         for (cfg, idxs) in buckets.into_iter() {
-            if idxs.is_empty() { continue; }
+            if idxs.is_empty() {
+                continue;
+            }
             let shapes: Vec<(usize, usize)> = idxs.iter().map(|&i| named[i].1.shape()).collect();
             group_entries.push(GroupEntry::new(cfg, idxs, &shapes));
         }
         if let Some((cfg, idxs)) = default_bucket {
             if !idxs.is_empty() {
-                let shapes: Vec<(usize, usize)> = idxs.iter().map(|&i| named[i].1.shape()).collect();
+                let shapes: Vec<(usize, usize)> =
+                    idxs.iter().map(|&i| named[i].1.shape()).collect();
                 group_entries.push(GroupEntry::new(cfg, idxs, &shapes));
             }
         }
@@ -228,12 +236,7 @@ impl<T: Scalar, B: Backend> GroupOptimizer<T, B> {
             matches.push(ParamMatch::Suffix((*s).to_owned()));
             matches.push(ParamMatch::Contains((*s).to_owned()));
         }
-        let no_decay = ParamGroupConfig::adamw(
-            "no_decay",
-            ParamSelector::Any(matches),
-            lr,
-            0.0,
-        );
+        let no_decay = ParamGroupConfig::adamw("no_decay", ParamSelector::Any(matches), lr, 0.0);
         let decay = ParamGroupConfig::adamw("decay", ParamSelector::All, lr, weight_decay);
         Self::from_module(module, &[no_decay], Some(decay))
     }
@@ -251,24 +254,29 @@ impl<T: Scalar, B: Backend> GroupOptimizer<T, B> {
                 matches.push(ParamMatch::Contains((*pat).to_owned()));
             }
         }
-        let no_decay = ParamGroupConfig::adamw(
-            "no_decay",
-            ParamSelector::Any(matches),
-            lr,
-            0.0,
-        );
+        let no_decay = ParamGroupConfig::adamw("no_decay", ParamSelector::Any(matches), lr, 0.0);
         let decay = ParamGroupConfig::adamw("decay", ParamSelector::All, lr, weight_decay);
         Self::from_module(module, &[no_decay], Some(decay))
     }
 
     #[must_use]
-    pub fn groups(&self) -> usize { self.groups.len() }
+    pub fn groups(&self) -> usize {
+        self.groups.len()
+    }
 }
 
 impl<T: Scalar, B: Backend> Optimizer<T, B> for GroupOptimizer<T, B> {
     fn step(&mut self, params: &mut [&mut Tensor<T, B>], grads: &[&Tensor<T, B>]) {
-        assert_eq!(params.len(), grads.len(), "nabla-train: GroupOptimizer params/grads length mismatch");
-        assert_eq!(params.len(), self.param_count, "nabla-train: GroupOptimizer param count mismatch");
+        assert_eq!(
+            params.len(),
+            grads.len(),
+            "nabla-train: GroupOptimizer params/grads length mismatch"
+        );
+        assert_eq!(
+            params.len(),
+            self.param_count,
+            "nabla-train: GroupOptimizer param count mismatch"
+        );
 
         for group in &mut self.groups {
             let mut local_params: Vec<Tensor<T, B>> = Vec::with_capacity(group.indices.len());
@@ -305,7 +313,9 @@ impl<T: Scalar, B: Backend> Optimizer<T, B> for GroupOptimizer<T, B> {
 }
 
 impl<T: Scalar, B: Backend> OptimState<T, B> for GroupOptimizer<T, B> {
-    fn kind(&self) -> OptimKind { OptimKind::AdamW }
+    fn kind(&self) -> OptimKind {
+        OptimKind::AdamW
+    }
 
     fn state_tensors(&self) -> Vec<(String, Tensor<T, B>)> {
         let mut out = Vec::new();
@@ -323,9 +333,15 @@ impl<T: Scalar, B: Backend> OptimState<T, B> for GroupOptimizer<T, B> {
             let (g, rest) = name
                 .split_once('.')
                 .ok_or_else(|| format!("bad group tensor key: {name}"))?;
-            let idx = g.strip_prefix('g').ok_or_else(|| format!("bad group tensor key: {name}"))?;
-            let gi = idx.parse::<usize>().map_err(|_| format!("bad group index: {idx}"))?;
-            if gi >= buckets.len() { return Err(format!("group index out of range: {gi}")); }
+            let idx = g
+                .strip_prefix('g')
+                .ok_or_else(|| format!("bad group tensor key: {name}"))?;
+            let gi = idx
+                .parse::<usize>()
+                .map_err(|_| format!("bad group index: {idx}"))?;
+            if gi >= buckets.len() {
+                return Err(format!("group index out of range: {gi}"));
+            }
             buckets[gi].push((rest.to_owned(), t.clone()));
         }
         for (gi, group) in self.groups.iter_mut().enumerate() {
@@ -347,11 +363,16 @@ impl<T: Scalar, B: Backend> OptimState<T, B> for GroupOptimizer<T, B> {
         }
     }
 
-    fn load_meta(&mut self, _meta: &OptimMeta) -> Result<(), String> { Ok(()) }
+    fn load_meta(&mut self, _meta: &OptimMeta) -> Result<(), String> {
+        Ok(())
+    }
 
     fn meta_pairs(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        out.push(("optim.group.count".to_owned(), self.groups.len().to_string()));
+        out.push((
+            "optim.group.count".to_owned(),
+            self.groups.len().to_string(),
+        ));
         for (gi, group) in self.groups.iter().enumerate() {
             out.push((format!("optim.group.{gi}.name"), group.name.clone()));
             let meta = group.optimizer.meta();
@@ -360,9 +381,18 @@ impl<T: Scalar, B: Backend> OptimState<T, B> for GroupOptimizer<T, B> {
             out.push((format!("optim.group.{gi}.beta1"), meta.beta1.to_string()));
             out.push((format!("optim.group.{gi}.beta2"), meta.beta2.to_string()));
             out.push((format!("optim.group.{gi}.eps"), meta.eps.to_string()));
-            out.push((format!("optim.group.{gi}.weight_decay"), meta.weight_decay.to_string()));
-            out.push((format!("optim.group.{gi}.momentum"), meta.momentum.to_string()));
-            out.push((format!("optim.group.{gi}.step_count"), meta.step_count.to_string()));
+            out.push((
+                format!("optim.group.{gi}.weight_decay"),
+                meta.weight_decay.to_string(),
+            ));
+            out.push((
+                format!("optim.group.{gi}.momentum"),
+                meta.momentum.to_string(),
+            ));
+            out.push((
+                format!("optim.group.{gi}.step_count"),
+                meta.step_count.to_string(),
+            ));
         }
         out
     }
@@ -514,22 +544,37 @@ fn optim_kind_str(kind: OptimKind) -> String {
 
 fn parse_group_kind(map: &HashMap<String, String>, idx: usize) -> Result<OptimKind, String> {
     let key = format!("optim.group.{idx}.kind");
-    let s = map.get(&key).map(String::as_str).ok_or_else(|| format!("missing {key}"))?;
+    let s = map
+        .get(&key)
+        .map(String::as_str)
+        .ok_or_else(|| format!("missing {key}"))?;
     parse_optim_kind(s)
 }
 
-fn parse_group_str(map: &HashMap<String, String>, idx: usize, field: &str) -> Result<String, String> {
+fn parse_group_str(
+    map: &HashMap<String, String>,
+    idx: usize,
+    field: &str,
+) -> Result<String, String> {
     let key = format!("optim.group.{idx}.{field}");
-    map.get(&key).cloned().ok_or_else(|| format!("missing {key}"))
+    map.get(&key)
+        .cloned()
+        .ok_or_else(|| format!("missing {key}"))
 }
 
 fn parse_group_f64(map: &HashMap<String, String>, idx: usize, field: &str) -> Result<f64, String> {
     let key = format!("optim.group.{idx}.{field}");
-    let s = map.get(&key).map(String::as_str).ok_or_else(|| format!("missing {key}"))?;
+    let s = map
+        .get(&key)
+        .map(String::as_str)
+        .ok_or_else(|| format!("missing {key}"))?;
     s.parse::<f64>().map_err(|_| format!("bad {key}: {s}"))
 }
 
 fn parse_group_usize(map: &HashMap<String, String>, key: &str) -> Result<usize, String> {
-    let s = map.get(key).map(String::as_str).ok_or_else(|| format!("missing {key}"))?;
+    let s = map
+        .get(key)
+        .map(String::as_str)
+        .ok_or_else(|| format!("missing {key}"))?;
     s.parse::<usize>().map_err(|_| format!("bad {key}: {s}"))
 }

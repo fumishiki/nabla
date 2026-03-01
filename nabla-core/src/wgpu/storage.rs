@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -29,7 +28,6 @@ pub(super) fn bytes_to_u32(bytes: &[u8]) -> Vec<u32> {
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
-
 
 pub(super) struct GpuContext {
     pub(super) device: wgpu::Device,
@@ -162,7 +160,6 @@ pub(super) fn with_pipeline<R>(
     f(pipeline)
 }
 
-
 pub(super) fn bind_group(
     ctx: &GpuContext,
     pipeline: &wgpu::ComputePipeline,
@@ -225,7 +222,6 @@ pub(super) fn readback(ctx: &GpuContext, buf: &wgpu::Buffer, size_bytes: u64) ->
     drop(staging);
     data
 }
-
 
 pub struct GpuStorage<T: Scalar> {
     pub(crate) nrows: usize,

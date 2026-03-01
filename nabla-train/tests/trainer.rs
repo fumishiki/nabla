@@ -43,9 +43,13 @@ impl Module<f64, DefaultBackend> for ToyModule {
         &self.weight + &self.bias
     }
 
-    fn set_training(&mut self, training: bool) { self.training = training; }
+    fn set_training(&mut self, training: bool) {
+        self.training = training;
+    }
 
-    fn training(&self) -> bool { self.training }
+    fn training(&self) -> bool {
+        self.training
+    }
 
     fn parameters(&self) -> Vec<&Tensor<f64, DefaultBackend>> {
         vec![&self.weight, &self.bias]
@@ -69,9 +73,13 @@ impl Module<f64, DefaultBackend> for SingleParamModule {
         self.weight.clone()
     }
 
-    fn set_training(&mut self, training: bool) { self.training = training; }
+    fn set_training(&mut self, training: bool) {
+        self.training = training;
+    }
 
-    fn training(&self) -> bool { self.training }
+    fn training(&self) -> bool {
+        self.training
+    }
 
     fn parameters(&self) -> Vec<&Tensor<f64, DefaultBackend>> {
         vec![&self.weight]
@@ -105,12 +113,16 @@ fn train_epoch_updates_weight() {
     let data = vec![0usize, 1usize];
     let loader = data.into_iter();
 
-    let step_fn = |module: &mut SingleParamModule, _batch: &usize, tape: &Rc<Tape<f64, DefaultBackend>>| {
-        let w = tape.variable(module.weight.clone())?;
-        let target = tape.variable(Tensor::zeros(1, 1))?;
-        let loss = w.mse_loss(&target);
-        Ok(TrainStepOut { loss, params: vec![w] })
-    };
+    let step_fn =
+        |module: &mut SingleParamModule, _batch: &usize, tape: &Rc<Tape<f64, DefaultBackend>>| {
+            let w = tape.variable(module.weight.clone())?;
+            let target = tape.variable(Tensor::zeros(1, 1))?;
+            let loss = w.mse_loss(&target);
+            Ok(TrainStepOut {
+                loss,
+                params: vec![w],
+            })
+        };
 
     let steps = trainer.train_epoch(loader, step_fn).unwrap_or(0);
     assert_eq!(steps, 2);
@@ -126,7 +138,9 @@ fn eval_epoch_runs_in_eval_mode() {
     let mut trainer = Trainer::new(model, opt);
     let data = vec![0usize, 1usize];
     let loader = data.into_iter();
-    let loss = trainer.eval_epoch(loader, |m, _| Ok(m.weight.get(0, 0))).unwrap_or(-1.0);
+    let loss = trainer
+        .eval_epoch(loader, |m, _| Ok(m.weight.get(0, 0)))
+        .unwrap_or(-1.0);
     assert!(loss > 0.0);
     assert!(trainer.model().training());
 }
@@ -139,12 +153,16 @@ fn nan_policy_skip_drops_step() {
     let data = vec![0usize];
     let loader = data.into_iter();
 
-    let step_fn = |_module: &mut SingleParamModule, _batch: &usize, tape: &Rc<Tape<f64, DefaultBackend>>| {
-        let w = tape.variable(Tensor::fill(1, 1, f64::NAN))?;
-        let target = tape.variable(Tensor::zeros(1, 1))?;
-        let loss = w.mse_loss(&target);
-        Ok(TrainStepOut { loss, params: vec![w] })
-    };
+    let step_fn =
+        |_module: &mut SingleParamModule, _batch: &usize, tape: &Rc<Tape<f64, DefaultBackend>>| {
+            let w = tape.variable(Tensor::fill(1, 1, f64::NAN))?;
+            let target = tape.variable(Tensor::zeros(1, 1))?;
+            let loss = w.mse_loss(&target);
+            Ok(TrainStepOut {
+                loss,
+                params: vec![w],
+            })
+        };
 
     let steps = trainer.train_epoch(loader, step_fn).unwrap_or(0);
     assert_eq!(steps, 0);
@@ -199,7 +217,11 @@ fn moving_average_window() {
 #[test]
 fn stdout_logger_updates_average() {
     let mut logger = StdoutLogger::new(1, 3);
-    let event = TrainEvent::Step { epoch: 0, step: 1, loss: 2.0 };
+    let event = TrainEvent::Step {
+        epoch: 0,
+        step: 1,
+        loss: 2.0,
+    };
     let action = logger.on_event(&event);
     assert!(matches!(action, HookAction::Continue));
     assert!(logger.moving_average().is_some());
@@ -213,7 +235,11 @@ fn json_logger_writes_lines() {
         Ok(v) => v,
         Err(_) => return,
     };
-    let event = TrainEvent::Step { epoch: 0, step: 1, loss: 1.0 };
+    let event = TrainEvent::Step {
+        epoch: 0,
+        step: 1,
+        loss: 1.0,
+    };
     let action = logger.on_event(&event);
     assert!(matches!(action, HookAction::Continue));
     let content = std::fs::read_to_string(&path).unwrap_or_default();
@@ -225,22 +251,52 @@ fn checkpoint_roundtrip_with_schedule() {
     let module = ToyModule::new();
     let opt = Sgd::new(0.1, &[(1, 1), (1, 1)]);
     let scaler = GradScaler::new();
-    let schedule = ScheduleState { base_lr: 0.1, schedule: LrSchedule::Step { step_size: 1, gamma: 0.9 } };
-    let state = TrainState { epoch: 2, step: 3, grad_accum: 1, rng_state: Some(42) };
+    let schedule = ScheduleState {
+        base_lr: 0.1,
+        schedule: LrSchedule::Step {
+            step_size: 1,
+            gamma: 0.9,
+        },
+    };
+    let state = TrainState {
+        epoch: 2,
+        step: 3,
+        grad_accum: 1,
+        rng_state: Some(42),
+    };
 
     let dir = temp_dir("ckpt");
     fs::create_dir_all(&dir).unwrap_or(());
-    save_checkpoint::<f64, DefaultBackend, _, _>(&dir, &module, &opt, Some(&scaler), Some(&schedule), &state)
-        .unwrap_or(());
+    save_checkpoint::<f64, DefaultBackend, _, _>(
+        &dir,
+        &module,
+        &opt,
+        Some(&scaler),
+        Some(&schedule),
+        &state,
+    )
+    .unwrap_or(());
 
     let mut module2 = ToyModule::new();
     let mut opt2 = Sgd::new(0.1, &[(1, 1), (1, 1)]);
     let mut scaler2 = GradScaler::new();
-    let mut state2 = TrainState { epoch: 0, step: 0, grad_accum: 1, rng_state: None };
+    let mut state2 = TrainState {
+        epoch: 0,
+        step: 0,
+        grad_accum: 1,
+        rng_state: None,
+    };
     let mut schedule2: Option<ScheduleState> = None;
 
-    load_checkpoint::<f64, DefaultBackend, _, _>(&dir, &mut module2, &mut opt2, Some(&mut scaler2), &mut schedule2, &mut state2)
-        .unwrap_or(());
+    load_checkpoint::<f64, DefaultBackend, _, _>(
+        &dir,
+        &mut module2,
+        &mut opt2,
+        Some(&mut scaler2),
+        &mut schedule2,
+        &mut state2,
+    )
+    .unwrap_or(());
 
     assert_eq!(state2.epoch, 2);
     assert_eq!(state2.step, 3);

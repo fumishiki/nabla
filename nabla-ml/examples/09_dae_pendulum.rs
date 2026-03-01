@@ -25,7 +25,10 @@ fn main() {
         x0,
         z0,
         (0.0, 0.5),
-        &DaeConfig::default().with_dt(0.001).with_tol(1e-10).with_max_iter(100),
+        &DaeConfig::default()
+            .with_dt(0.001)
+            .with_tol(1e-10)
+            .with_max_iter(100),
     )?;
 
     println!("Steps: {}", sol.len());
@@ -35,7 +38,9 @@ fn main() {
         let v = sol.states[idx].get(0, 0);
         println!(
             "t={:.3}: V={:.6} (exact: {:.6})",
-            sol.times[idx], v, 1.0 - (-sol.times[idx] / (r * c)).exp()
+            sol.times[idx],
+            v,
+            1.0 - (-sol.times[idx] / (r * c)).exp()
         );
     }
 

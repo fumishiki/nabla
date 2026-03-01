@@ -13,7 +13,10 @@ fn main() {
     let c = math!(a * b);
     println!(
         "A * B = [{}, {}; {}, {}]",
-        c.get(0, 0), c.get(0, 1), c.get(1, 0), c.get(1, 1)
+        c.get(0, 0),
+        c.get(0, 1),
+        c.get(1, 0),
+        c.get(1, 1)
     );
 
     let rhs = mat![f64: 3.0; 8.0];
@@ -22,7 +25,10 @@ fn main() {
 
     let lu = a.partial_piv_lu()?;
     let recon = lu.reconstruct();
-    println!("LU reconstruct matches: {}", math!((recon - a).abs().sum_all()) < tol);
+    println!(
+        "LU reconstruct matches: {}",
+        math!((recon - a).abs().sum_all()) < tol
+    );
 
     println!("eye = I: {}", math!((eye - b).abs().sum_all()) < tol);
 }

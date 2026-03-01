@@ -66,9 +66,7 @@ pub fn diff(expr: &Expr, var: &str) -> Expr {
             -&(&diff(a, var) / &Expr::sqrt(&(&Expr::lit(1.0) - &Expr::pow(a, &Expr::lit(2.0)))))
         }
         // d/dx atan(a) = a' / (1 + a^2)
-        ExprKind::Atan(a) => {
-            &diff(a, var) / &(&Expr::lit(1.0) + &Expr::pow(a, &Expr::lit(2.0)))
-        }
+        ExprKind::Atan(a) => &diff(a, var) / &(&Expr::lit(1.0) + &Expr::pow(a, &Expr::lit(2.0))),
         // d/dx sinh(a) = a' * cosh(a)
         ExprKind::Sinh(a) => &Expr::cosh(a) * &diff(a, var),
         // d/dx cosh(a) = a' * sinh(a)
@@ -82,9 +80,7 @@ pub fn diff(expr: &Expr, var: &str) -> Expr {
             &diff(a, var) / &Expr::sqrt(&(&Expr::pow(a, &Expr::lit(2.0)) - &Expr::lit(1.0)))
         }
         // d/dx atanh(a) = a' / (1 - a^2)
-        ExprKind::Atanh(a) => {
-            &diff(a, var) / &(&Expr::lit(1.0) - &Expr::pow(a, &Expr::lit(2.0)))
-        }
+        ExprKind::Atanh(a) => &diff(a, var) / &(&Expr::lit(1.0) - &Expr::pow(a, &Expr::lit(2.0))),
         // d/dx tan(a) = a' * (1 + tan(a)^2)
         ExprKind::Tan(a) => {
             let ta = Expr::tan(a);
@@ -93,7 +89,6 @@ pub fn diff(expr: &Expr, var: &str) -> Expr {
         }
     }
 }
-
 
 define_language! {
     enum CasLang {
@@ -452,7 +447,6 @@ fn saturate(rec: &RecExpr<CasLang>) -> Expr {
     from_recexpr(&best, Id::from(best.as_ref().len() - 1))
 }
 
-
 /// Differentiate and simplify via e-graph rewriting.
 #[must_use]
 pub fn diff_simplify(expr: &Expr, var: &str) -> Expr {
@@ -470,7 +464,6 @@ pub fn simplify(expr: &Expr) -> Expr {
     to_recexpr(expr, &mut rec);
     saturate(&rec)
 }
-
 
 /// Evaluate a symbolic expression with concrete variable bindings.
 pub fn eval(expr: &Expr, vars: &HashMap<&str, f64>) -> Result<f64> {
@@ -545,7 +538,6 @@ pub fn eval(expr: &Expr, vars: &HashMap<&str, f64>) -> Result<f64> {
         ExprKind::Tan(a) => Ok(eval(a, vars)?.tan()),
     }
 }
-
 
 /// Evaluate a symbolic expression with tensor-valued variable bindings.
 pub fn eval_tensor<T: Scalar, B: Backend>(
@@ -650,7 +642,6 @@ fn infer_shape<T: Scalar, B: Backend>(
     }
 }
 
-
 /// Replace all occurrences of a variable with a sub-expression.
 #[must_use]
 pub fn substitute(expr: &Expr, var: &str, replacement: &Expr) -> Expr {
@@ -658,18 +649,13 @@ pub fn substitute(expr: &Expr, var: &str, replacement: &Expr) -> Expr {
         ExprKind::Var(s) if s == var => replacement.clone(),
         ExprKind::Var(_) | ExprKind::Lit(_) => expr.clone(),
         ExprKind::Neg(a) => -&substitute(a, var, replacement),
-        ExprKind::Add(a, b) => {
-            &substitute(a, var, replacement) + &substitute(b, var, replacement)
-        }
-        ExprKind::Mul(a, b) => {
-            &substitute(a, var, replacement) * &substitute(b, var, replacement)
-        }
-        ExprKind::Div(a, b) => {
-            &substitute(a, var, replacement) / &substitute(b, var, replacement)
-        }
-        ExprKind::Pow(a, b) => {
-            Expr::pow(&substitute(a, var, replacement), &substitute(b, var, replacement))
-        }
+        ExprKind::Add(a, b) => &substitute(a, var, replacement) + &substitute(b, var, replacement),
+        ExprKind::Mul(a, b) => &substitute(a, var, replacement) * &substitute(b, var, replacement),
+        ExprKind::Div(a, b) => &substitute(a, var, replacement) / &substitute(b, var, replacement),
+        ExprKind::Pow(a, b) => Expr::pow(
+            &substitute(a, var, replacement),
+            &substitute(b, var, replacement),
+        ),
         ExprKind::Sin(a) => Expr::sin(&substitute(a, var, replacement)),
         ExprKind::Cos(a) => Expr::cos(&substitute(a, var, replacement)),
         ExprKind::Exp(a) => Expr::exp(&substitute(a, var, replacement)),
@@ -688,7 +674,6 @@ pub fn substitute(expr: &Expr, var: &str, replacement: &Expr) -> Expr {
         ExprKind::Tan(a) => Expr::tan(&substitute(a, var, replacement)),
     }
 }
-
 
 /// Compute the symbolic gradient of an expression with respect to multiple variables.
 #[must_use]

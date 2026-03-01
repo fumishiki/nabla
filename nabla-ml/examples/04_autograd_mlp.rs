@@ -21,5 +21,10 @@ fn main() {
     println!("Forward pass -- loss: {:.6}", loss.data().get(0, 0));
     println!("dL/dW1 shape: {:?}", g1.shape());
     println!("dL/dW2 shape: {:?}", g2.shape());
-    println!("dL/dW2 = [{:.6}, {:.6}, {:.6}]", g2.get(0, 0), g2.get(0, 1), g2.get(0, 2));
+    println!(
+        "dL/dW2 = [{:.6}, {:.6}, {:.6}]",
+        g2.get(0, 0),
+        g2.get(0, 1),
+        g2.get(0, 2)
+    );
 }

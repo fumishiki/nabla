@@ -1,6 +1,4 @@
-
 use super::storage::{PipelineKey, ShaderOp};
-
 
 pub(super) fn generate_shader(key: PipelineKey) -> String {
     let wg = key.wg_size;
@@ -559,7 +557,6 @@ fn main(
 "
     )
 }
-
 
 fn gen_activation_silu(wg: u32) -> String {
     format!(

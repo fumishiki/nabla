@@ -1,4 +1,3 @@
-
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 use crate::tensor::{Tensor, two};
@@ -100,8 +99,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::from_storage(B::abs_backward(&self.storage, &input.storage))
     }
 }
-
-
 
 use core::marker::PhantomData;
 
@@ -265,7 +262,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-
 #[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Dropout: randomly zeroes elements with probability `p` during training.
@@ -315,8 +311,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         self.dropout(p, training, seed)
     }
 }
-
-
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- Loss functions ----
@@ -476,8 +470,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         }
     }
 }
-
-
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- Attention / Transformer ----

@@ -1,4 +1,3 @@
-
 use crate::backend::BackendCore;
 use crate::scalar::Scalar;
 use rayon::prelude::*;
@@ -215,9 +214,12 @@ impl crate::backend::BackendCore for Cpu {
 
     #[inline]
     fn axpy_inplace<T: Scalar>(y: &mut CpuStorage<T>, alpha: T, x: &CpuStorage<T>) {
-        y.data.par_iter_mut().zip(x.data.par_iter()).for_each(|(yi, &xi)| {
-            *yi = *yi + alpha * xi;
-        });
+        y.data
+            .par_iter_mut()
+            .zip(x.data.par_iter())
+            .for_each(|(yi, &xi)| {
+                *yi = *yi + alpha * xi;
+            });
     }
 
     #[inline]

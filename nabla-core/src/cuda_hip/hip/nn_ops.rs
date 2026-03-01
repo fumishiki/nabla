@@ -221,7 +221,6 @@ pub(super) fn hip_axis_same_shape<T: Scalar>(a: &HipStorage<T>, op: &str) -> Hip
     HipStorage::new(rows, cols, out_buf)
 }
 
-
 pub(super) fn hip_cumsum_cumprod<T: Scalar>(a: &HipStorage<T>, op: &str) -> HipStorage<T> {
     let ctx = get_ctx();
     let rows = a.nrows;
@@ -248,11 +247,9 @@ pub(super) fn hip_cumsum_cumprod<T: Scalar>(a: &HipStorage<T>, op: &str) -> HipS
     HipStorage::new(rows, cols, out_buf)
 }
 
-
 pub(crate) fn hip_prod_all<T: Scalar>(a: &HipStorage<T>) -> T {
     gpu_common::rtc_fold_first_prod(a)
 }
-
 
 pub(super) fn hip_max_pool2d_with_idx<T: Scalar>(
     a: &HipStorage<T>,

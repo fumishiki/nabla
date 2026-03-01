@@ -2,7 +2,7 @@
 //!
 //! Gated behind `#[cfg(feature = "llama")]`.
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{CString, c_char, c_void};
 use std::marker::PhantomData;
 use std::ptr;
 
@@ -13,13 +13,21 @@ use crate::{Error, Result};
 // ---------------------------------------------------------------------------
 
 #[repr(C)]
-pub(crate) struct LlamaModelRaw { _opaque: [u8; 0] }
+pub(crate) struct LlamaModelRaw {
+    _opaque: [u8; 0],
+}
 #[repr(C)]
-pub(crate) struct LlamaContextRaw { _opaque: [u8; 0] }
+pub(crate) struct LlamaContextRaw {
+    _opaque: [u8; 0],
+}
 #[repr(C)]
-pub(crate) struct LlamaSamplerRaw { _opaque: [u8; 0] }
+pub(crate) struct LlamaSamplerRaw {
+    _opaque: [u8; 0],
+}
 #[repr(C)]
-pub(crate) struct LlamaVocabRaw { _opaque: [u8; 0] }
+pub(crate) struct LlamaVocabRaw {
+    _opaque: [u8; 0],
+}
 
 // ---------------------------------------------------------------------------
 // FFI structs (repr(C) mirrors llama.h)
@@ -129,29 +137,49 @@ unsafe extern "C" {
     fn llama_context_default_params() -> LlamaContextParams;
     fn llama_sampler_chain_default_params() -> LlamaSamplerChainParams;
 
-    fn llama_model_load_from_file(path: *const c_char, params: LlamaModelParams) -> *mut LlamaModelRaw;
+    fn llama_model_load_from_file(
+        path: *const c_char,
+        params: LlamaModelParams,
+    ) -> *mut LlamaModelRaw;
     fn llama_model_free(model: *mut LlamaModelRaw);
     fn llama_model_get_vocab(model: *const LlamaModelRaw) -> *const LlamaVocabRaw;
 
-    fn llama_init_from_model(model: *mut LlamaModelRaw, params: LlamaContextParams) -> *mut LlamaContextRaw;
+    fn llama_init_from_model(
+        model: *mut LlamaModelRaw,
+        params: LlamaContextParams,
+    ) -> *mut LlamaContextRaw;
     fn llama_free(ctx: *mut LlamaContextRaw);
 
     fn llama_vocab_n_tokens(vocab: *const LlamaVocabRaw) -> i32;
     fn llama_vocab_is_eog(vocab: *const LlamaVocabRaw, token: i32) -> bool;
 
     fn llama_tokenize(
-        vocab: *const LlamaVocabRaw, text: *const c_char, text_len: i32,
-        tokens: *mut i32, n_tokens_max: i32, add_special: bool, parse_special: bool,
+        vocab: *const LlamaVocabRaw,
+        text: *const c_char,
+        text_len: i32,
+        tokens: *mut i32,
+        n_tokens_max: i32,
+        add_special: bool,
+        parse_special: bool,
     ) -> i32;
 
     fn llama_token_to_piece(
-        vocab: *const LlamaVocabRaw, token: i32,
-        buf: *mut c_char, length: i32, lstrip: i32, special: bool,
+        vocab: *const LlamaVocabRaw,
+        token: i32,
+        buf: *mut c_char,
+        length: i32,
+        lstrip: i32,
+        special: bool,
     ) -> i32;
 
     fn llama_detokenize(
-        vocab: *const LlamaVocabRaw, tokens: *const i32, n_tokens: i32,
-        text: *mut c_char, text_len_max: i32, remove_special: bool, unparse_special: bool,
+        vocab: *const LlamaVocabRaw,
+        tokens: *const i32,
+        n_tokens: i32,
+        text: *mut c_char,
+        text_len_max: i32,
+        remove_special: bool,
+        unparse_special: bool,
     ) -> i32;
 
     fn llama_decode(ctx: *mut LlamaContextRaw, batch: LlamaBatchRaw) -> i32;
@@ -165,7 +193,8 @@ unsafe extern "C" {
     fn llama_sampler_init_top_k(k: i32) -> *mut LlamaSamplerRaw;
     fn llama_sampler_init_top_p(p: f32, min_keep: usize) -> *mut LlamaSamplerRaw;
     fn llama_sampler_init_dist(seed: u32) -> *mut LlamaSamplerRaw;
-    fn llama_sampler_sample(smpl: *mut LlamaSamplerRaw, ctx: *mut LlamaContextRaw, idx: i32) -> i32;
+    fn llama_sampler_sample(smpl: *mut LlamaSamplerRaw, ctx: *mut LlamaContextRaw, idx: i32)
+    -> i32;
 
     fn llama_perf_context(ctx: *const LlamaContextRaw) -> LlamaPerfContextData;
     fn llama_perf_context_reset(ctx: *mut LlamaContextRaw);
@@ -182,7 +211,9 @@ impl LlamaBackend {
     /// Initialize the llama.cpp backend. Call once at program start.
     pub fn init() -> Self {
         // SAFETY: llama_backend_init is idempotent and safe to call from Rust.
-        unsafe { llama_backend_init(); }
+        unsafe {
+            llama_backend_init();
+        }
         Self(())
     }
 }
@@ -190,7 +221,9 @@ impl LlamaBackend {
 impl Drop for LlamaBackend {
     fn drop(&mut self) {
         // SAFETY: paired with init(), releases global backend state.
-        unsafe { llama_backend_free(); }
+        unsafe {
+            llama_backend_free();
+        }
     }
 }
 
@@ -228,13 +261,17 @@ impl LlamaModel {
         unsafe { llama_model_get_vocab(self.ptr) }
     }
 
-    pub(crate) fn as_ptr(&self) -> *mut LlamaModelRaw { self.ptr }
+    pub(crate) fn as_ptr(&self) -> *mut LlamaModelRaw {
+        self.ptr
+    }
 }
 
 impl Drop for LlamaModel {
     fn drop(&mut self) {
         // SAFETY: ptr was allocated by llama_model_load_from_file and is non-null.
-        unsafe { llama_model_free(self.ptr); }
+        unsafe {
+            llama_model_free(self.ptr);
+        }
     }
 }
 
@@ -263,19 +300,31 @@ impl<'m> LlamaContext<'m> {
         if ptr.is_null() {
             return Err(Error::Llama("failed to create context".into()));
         }
-        Ok(Self { ptr, model, _marker: PhantomData })
+        Ok(Self {
+            ptr,
+            model,
+            _marker: PhantomData,
+        })
     }
 
     /// Tokenize text into token ids.
     pub fn tokenize(&self, text: &str, add_bos: bool) -> Result<Vec<i32>> {
         let vocab = self.model.vocab();
         let text_bytes = text.as_bytes();
-        let text_len = i32::try_from(text_bytes.len())
-            .map_err(|_| Error::Llama("text too long".into()))?;
+        let text_len =
+            i32::try_from(text_bytes.len()).map_err(|_| Error::Llama("text too long".into()))?;
         // First call to determine required buffer size
         // SAFETY: vocab is valid, text_bytes.as_ptr() is valid for text_len bytes.
         let n = unsafe {
-            llama_tokenize(vocab, text_bytes.as_ptr().cast(), text_len, ptr::null_mut(), 0, add_bos, false)
+            llama_tokenize(
+                vocab,
+                text_bytes.as_ptr().cast(),
+                text_len,
+                ptr::null_mut(),
+                0,
+                add_bos,
+                false,
+            )
         };
         let capacity = if n < 0 { (-n) as usize } else { n as usize };
         let capacity = capacity.max(1);
@@ -283,8 +332,13 @@ impl<'m> LlamaContext<'m> {
         // SAFETY: tokens buffer is large enough.
         let n2 = unsafe {
             llama_tokenize(
-                vocab, text_bytes.as_ptr().cast(), text_len,
-                tokens.as_mut_ptr(), tokens.len() as i32, add_bos, false,
+                vocab,
+                text_bytes.as_ptr().cast(),
+                text_len,
+                tokens.as_mut_ptr(),
+                tokens.len() as i32,
+                add_bos,
+                false,
             )
         };
         if n2 < 0 {
@@ -297,14 +351,19 @@ impl<'m> LlamaContext<'m> {
     /// Detokenize tokens back to text.
     pub fn detokenize(&self, tokens: &[i32]) -> Result<String> {
         let vocab = self.model.vocab();
-        let n_tokens = i32::try_from(tokens.len())
-            .map_err(|_| Error::Llama("too many tokens".into()))?;
+        let n_tokens =
+            i32::try_from(tokens.len()).map_err(|_| Error::Llama("too many tokens".into()))?;
         let mut buf = vec![0u8; 4096];
         // SAFETY: vocab, tokens, and buf are valid.
         let n = unsafe {
             llama_detokenize(
-                vocab, tokens.as_ptr(), n_tokens,
-                buf.as_mut_ptr().cast(), buf.len() as i32, false, false,
+                vocab,
+                tokens.as_ptr(),
+                n_tokens,
+                buf.as_mut_ptr().cast(),
+                buf.len() as i32,
+                false,
+                false,
             )
         };
         if n < 0 {
@@ -313,8 +372,13 @@ impl<'m> LlamaContext<'m> {
             // SAFETY: buf is now large enough.
             let n2 = unsafe {
                 llama_detokenize(
-                    vocab, tokens.as_ptr(), n_tokens,
-                    buf.as_mut_ptr().cast(), buf.len() as i32, false, false,
+                    vocab,
+                    tokens.as_ptr(),
+                    n_tokens,
+                    buf.as_mut_ptr().cast(),
+                    buf.len() as i32,
+                    false,
+                    false,
                 )
             };
             if n2 < 0 {
@@ -359,14 +423,28 @@ impl<'m> LlamaContext<'m> {
         let mut buf = vec![0u8; 256];
         // SAFETY: vocab and buf are valid.
         let n = unsafe {
-            llama_token_to_piece(vocab, token, buf.as_mut_ptr().cast(), buf.len() as i32, 0, false)
+            llama_token_to_piece(
+                vocab,
+                token,
+                buf.as_mut_ptr().cast(),
+                buf.len() as i32,
+                0,
+                false,
+            )
         };
         if n < 0 {
             let needed = (-n) as usize;
             buf.resize(needed, 0);
             // SAFETY: buf is now large enough.
             let n2 = unsafe {
-                llama_token_to_piece(vocab, token, buf.as_mut_ptr().cast(), buf.len() as i32, 0, false)
+                llama_token_to_piece(
+                    vocab,
+                    token,
+                    buf.as_mut_ptr().cast(),
+                    buf.len() as i32,
+                    0,
+                    false,
+                )
             };
             if n2 < 0 {
                 return Err(Error::Llama("token_to_piece failed".into()));
@@ -393,16 +471,22 @@ impl<'m> LlamaContext<'m> {
     /// Reset performance counters.
     pub fn perf_reset(&mut self) {
         // SAFETY: self.ptr is valid.
-        unsafe { llama_perf_context_reset(self.ptr); }
+        unsafe {
+            llama_perf_context_reset(self.ptr);
+        }
     }
 
-    pub(crate) fn as_ptr(&self) -> *mut LlamaContextRaw { self.ptr }
+    pub(crate) fn as_ptr(&self) -> *mut LlamaContextRaw {
+        self.ptr
+    }
 }
 
 impl Drop for LlamaContext<'_> {
     fn drop(&mut self) {
         // SAFETY: ptr was allocated by llama_init_from_model and is non-null.
-        unsafe { llama_free(self.ptr); }
+        unsafe {
+            llama_free(self.ptr);
+        }
     }
 }
 
@@ -418,7 +502,9 @@ pub struct LlamaBatch {
 impl LlamaBatch {
     /// Create a new empty batch.
     #[must_use]
-    pub fn new() -> Self { Self { tokens: Vec::new() } }
+    pub fn new() -> Self {
+        Self { tokens: Vec::new() }
+    }
 
     /// Add tokens to the batch.
     pub fn add_tokens(&mut self, tokens: &[i32]) -> &mut Self {
@@ -428,19 +514,27 @@ impl LlamaBatch {
 
     /// Number of tokens in the batch.
     #[must_use]
-    pub fn len(&self) -> usize { self.tokens.len() }
+    pub fn len(&self) -> usize {
+        self.tokens.len()
+    }
 
     /// Whether the batch is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool { self.tokens.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
+    }
 
     /// Get the tokens slice.
     #[must_use]
-    pub fn tokens(&self) -> &[i32] { &self.tokens }
+    pub fn tokens(&self) -> &[i32] {
+        &self.tokens
+    }
 }
 
 impl Default for LlamaBatch {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +549,12 @@ pub struct SamplerChain {
 impl SamplerChain {
     /// Create a new sampler chain builder.
     pub fn new() -> SamplerChainBuilder {
-        SamplerChainBuilder { temperature: 0.8, top_k: 40, top_p: 0.95, seed: 0xFFFF_FFFF }
+        SamplerChainBuilder {
+            temperature: 0.8,
+            top_k: 40,
+            top_p: 0.95,
+            seed: 0xFFFF_FFFF,
+        }
     }
 
     /// Sample the next token given a context and batch index.
@@ -470,7 +569,9 @@ impl Drop for SamplerChain {
         // SAFETY: ptr was allocated by llama_sampler_chain_init.
         // Chain owns its sub-samplers, so freeing the chain frees everything.
         // llama.cpp uses llama_sampler_free which handles chain cleanup.
-        unsafe { llama_sampler_free(self.ptr); }
+        unsafe {
+            llama_sampler_free(self.ptr);
+        }
     }
 }
 
@@ -489,16 +590,28 @@ pub struct SamplerChainBuilder {
 impl SamplerChainBuilder {
     /// Set sampling temperature.
     #[must_use]
-    pub fn temperature(mut self, t: f32) -> Self { self.temperature = t; self }
+    pub fn temperature(mut self, t: f32) -> Self {
+        self.temperature = t;
+        self
+    }
     /// Set top-k sampling parameter.
     #[must_use]
-    pub fn top_k(mut self, k: i32) -> Self { self.top_k = k; self }
+    pub fn top_k(mut self, k: i32) -> Self {
+        self.top_k = k;
+        self
+    }
     /// Set top-p (nucleus) sampling parameter.
     #[must_use]
-    pub fn top_p(mut self, p: f32) -> Self { self.top_p = p; self }
+    pub fn top_p(mut self, p: f32) -> Self {
+        self.top_p = p;
+        self
+    }
     /// Set RNG seed for sampling.
     #[must_use]
-    pub fn seed(mut self, s: u32) -> Self { self.seed = s; self }
+    pub fn seed(mut self, s: u32) -> Self {
+        self.seed = s;
+        self
+    }
 
     /// Build the sampler chain.
     pub fn build(self) -> Result<SamplerChain> {

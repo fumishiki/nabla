@@ -10,7 +10,7 @@ use nabla_core::error::Result;
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 
-use super::core::{accum_cell, Tape, TapeEntry, Variable};
+use super::core::{Tape, TapeEntry, Variable, accum_cell};
 
 impl<T: Scalar, B: Backend> Variable<T, B> {
     /// Sum along `axis` (0 = column-wise → 1×n, 1 = row-wise → m×1).
@@ -22,10 +22,14 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let (in_rows, in_cols) = self.data.shape();
-        let entry = TapeEntry::new(move |g| {
-            // g has shape (1, ncols) or (nrows, 1); expand to input shape.
-            Self::prop(&lr, &g.expand(in_rows, in_cols));
-        }, deps, "sum_axis");
+        let entry = TapeEntry::new(
+            move |g| {
+                // g has shape (1, ncols) or (nrows, 1); expand to input shape.
+                Self::prop(&lr, &g.expand(in_rows, in_cols));
+            },
+            deps,
+            "sum_axis",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -40,24 +44,34 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let out = Tensor::fill(1, 1, s / n);
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
-        let entry = TapeEntry::new(move |g| {
-            let g_val = g.get(0, 0) / n;
-            Self::prop(&lr, &Tensor::fill(nrows, ncols, g_val));
-        }, deps, "mean");
+        let entry = TapeEntry::new(
+            move |g| {
+                let g_val = g.get(0, 0) / n;
+                Self::prop(&lr, &Tensor::fill(nrows, ncols, g_val));
+            },
+            deps,
+            "mean",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
     /// Alias for [`Variable::sum_all_var`].
     #[must_use]
-    pub fn sum(&self) -> Self { self.sum_all_var() }
+    pub fn sum(&self) -> Self {
+        self.sum_all_var()
+    }
 
     /// Alias for [`Variable::mean_var`].
     #[must_use]
-    pub fn mean(&self) -> Self { self.mean_var() }
+    pub fn mean(&self) -> Self {
+        self.mean_var()
+    }
 
     /// Alias for [`Variable::sum_axis_var`].
     #[must_use]
-    pub fn sum_axis(&self, axis: usize) -> Self { self.sum_axis_var(axis) }
+    pub fn sum_axis(&self, axis: usize) -> Self {
+        self.sum_axis_var(axis)
+    }
 
     /// Mean along `axis` (0 = column-wise, 1 = row-wise).
     ///
@@ -70,16 +84,22 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let (in_rows, in_cols) = self.data.shape();
         let axis_len = if axis == 0 { in_rows } else { in_cols };
         let inv_n = T::from_f64(1.0 / axis_len as f64);
-        let entry = TapeEntry::new(move |g| {
-            let scaled = g * inv_n;
-            Self::prop(&lr, &scaled.expand(in_rows, in_cols));
-        }, deps, "mean_axis");
+        let entry = TapeEntry::new(
+            move |g| {
+                let scaled = g * inv_n;
+                Self::prop(&lr, &scaled.expand(in_rows, in_cols));
+            },
+            deps,
+            "mean_axis",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
     /// Alias for [`Variable::mean_axis_var`].
     #[must_use]
-    pub fn mean_axis(&self, axis: usize) -> Self { self.mean_axis_var(axis) }
+    pub fn mean_axis(&self, axis: usize) -> Self {
+        self.mean_axis_var(axis)
+    }
 
     /// Cross-entropy loss: fused log-softmax + NLL.
     ///
@@ -97,7 +117,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         if targets_data.shape() != (batch, n) {
             return Err(nabla_core::error::Error::invalid(format!(
                 "cross_entropy shape mismatch -- logits {}x{} vs targets {}x{}",
-                batch, n, targets_data.nrows(), targets_data.ncols()
+                batch,
+                n,
+                targets_data.nrows(),
+                targets_data.ncols()
             )));
         }
         let log_sm = self.data.log_softmax(1);
@@ -108,14 +131,18 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let lr = self.input_refs();
         let logits_data = Rc::clone(&self.data);
         let tgt = targets_data.clone();
-        let entry = TapeEntry::new(move |g| {
-            let sm = logits_data.softmax(1);
-            let inv_batch = T::from_f64(1.0 / batch as f64);
-            let g_val = g.get(0, 0);
-            // dL/d(logits) = (softmax - targets) / batch * upstream_grad
-            let delta = &(&sm - &tgt) * (g_val * inv_batch);
-            Self::prop(&lr, &delta);
-        }, deps, "cross_entropy");
+        let entry = TapeEntry::new(
+            move |g| {
+                let sm = logits_data.softmax(1);
+                let inv_batch = T::from_f64(1.0 / batch as f64);
+                let g_val = g.get(0, 0);
+                // dL/d(logits) = (softmax - targets) / batch * upstream_grad
+                let delta = &(&sm - &tgt) * (g_val * inv_batch);
+                Self::prop(&lr, &delta);
+            },
+            deps,
+            "cross_entropy",
+        );
         Ok(Self::derived(&self.tape, out, entry))
     }
 
@@ -129,10 +156,14 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let out = Tensor::fill(1, 1, s);
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
-        let entry = TapeEntry::new(move |g| {
-            let g_val = g.get(0, 0);
-            Self::prop(&lr, &Tensor::fill(nrows, ncols, g_val));
-        }, deps, "sum");
+        let entry = TapeEntry::new(
+            move |g| {
+                let g_val = g.get(0, 0);
+                Self::prop(&lr, &Tensor::fill(nrows, ncols, g_val));
+            },
+            deps,
+            "sum",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -145,13 +176,17 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let sm = out.clone();
-        let entry = TapeEntry::new(move |g| {
-            let gs = g.emul(&sm);
-            let sum_gs = gs.sum_axis(axis);
-            let (m, n) = sm.shape();
-            let delta = &gs - &sm.emul(&sum_gs.expand(m, n));
-            Self::prop(&lr, &delta);
-        }, deps, "softmax");
+        let entry = TapeEntry::new(
+            move |g| {
+                let gs = g.emul(&sm);
+                let sum_gs = gs.sum_axis(axis);
+                let (m, n) = sm.shape();
+                let delta = &gs - &sm.emul(&sum_gs.expand(m, n));
+                Self::prop(&lr, &delta);
+            },
+            deps,
+            "softmax",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -164,9 +199,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let out = self.data.reshape(nrows, ncols);
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.reshape(orig_r, orig_c));
-        }, deps, "reshape");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.reshape(orig_r, orig_c));
+            },
+            deps,
+            "reshape",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -178,15 +217,21 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let out = self.data.t();
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.t());
-        }, deps, "transpose");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.t());
+            },
+            deps,
+            "transpose",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
     /// Short alias for [`Variable::transpose`].
     #[must_use]
-    pub fn t(&self) -> Self { self.transpose() }
+    pub fn t(&self) -> Self {
+        self.transpose()
+    }
 
     /// Linear forward: `x @ weight^T + bias` (all tracked).
     ///
@@ -197,11 +242,15 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx, weight.entry_idx, bias.entry_idx]);
         let (xr, wr, br) = (self.input_refs(), weight.input_refs(), bias.input_refs());
         let (x_data, w_data) = (Rc::clone(&self.data), Rc::clone(&weight.data));
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&xr, &(g * &*w_data));
-            Self::prop(&wr, &(&g.t() * &*x_data));
-            Self::prop(&br, &g.sum_axis(0));
-        }, deps, "linear");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&xr, &(g * &*w_data));
+                Self::prop(&wr, &(&g.t() * &*x_data));
+                Self::prop(&br, &g.sum_axis(0));
+            },
+            deps,
+            "linear",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -218,9 +267,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
             let out = Tensor::zeros(m, n);
             let deps = Self::deps_of(&[self.entry_idx]);
             let lr = self.input_refs();
-            let entry = TapeEntry::new(move |_g| {
-                Self::prop(&lr, &Tensor::zeros(m, n));
-            }, deps, "dropout");
+            let entry = TapeEntry::new(
+                move |_g| {
+                    Self::prop(&lr, &Tensor::zeros(m, n));
+                },
+                deps,
+                "dropout",
+            );
             return Self::derived(&self.tape, out, entry);
         }
         let scale = T::from_f64(1.0 / (1.0 - p));
@@ -231,14 +284,22 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
             s ^= s << 13;
             s ^= s >> 7;
             s ^= s << 17;
-            if s < threshold { T::zero() } else { T::one_impl() }
+            if s < threshold {
+                T::zero()
+            } else {
+                T::one_impl()
+            }
         });
         let out = self.data.emul(&mask).emul(&Tensor::fill(m, n, scale));
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.emul(&mask).emul(&Tensor::fill(m, n, scale)));
-        }, deps, "dropout");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.emul(&mask).emul(&Tensor::fill(m, n, scale)));
+            },
+            deps,
+            "dropout",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -251,16 +312,24 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let input = Rc::clone(&self.data);
-        let entry = TapeEntry::new(move |g| {
-            let (m, n) = input.shape();
-            let lo_f = lo.to_f64();
-            let hi_f = hi.to_f64();
-            let mask = Tensor::from_fn(m, n, |r, c| {
-                let v = input.get(r, c).to_f64();
-                if v >= lo_f && v <= hi_f { T::one_impl() } else { T::zero() }
-            });
-            Self::prop(&lr, &g.emul(&mask));
-        }, deps, "clamp");
+        let entry = TapeEntry::new(
+            move |g| {
+                let (m, n) = input.shape();
+                let lo_f = lo.to_f64();
+                let hi_f = hi.to_f64();
+                let mask = Tensor::from_fn(m, n, |r, c| {
+                    let v = input.get(r, c).to_f64();
+                    if v >= lo_f && v <= hi_f {
+                        T::one_impl()
+                    } else {
+                        T::zero()
+                    }
+                });
+                Self::prop(&lr, &g.emul(&mask));
+            },
+            deps,
+            "clamp",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -274,7 +343,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     pub fn cross_entropy_indices(&self, targets: &Tensor<T, B>) -> Result<Self> {
         if targets.ncols() != 1 {
             return Err(nabla_core::error::Error::invalid(
-                "cross_entropy_indices: targets must be a column vector (ncols == 1)"
+                "cross_entropy_indices: targets must be a column vector (ncols == 1)",
             ));
         }
         let (batch, n) = self.data.shape();
@@ -299,12 +368,16 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx, target.entry_idx]);
         let (lr, rr) = (self.input_refs(), target.input_refs());
         let two_over_n = T::from_f64(2.0) / count;
-        let entry = TapeEntry::new(move |g| {
-            let g_val = g.get(0, 0);
-            let delta = &diff * (g_val * two_over_n);
-            Self::prop(&lr, &delta);
-            Self::prop(&rr, &(-&delta));
-        }, deps, "mse_loss");
+        let entry = TapeEntry::new(
+            move |g| {
+                let g_val = g.get(0, 0);
+                let delta = &diff * (g_val * two_over_n);
+                Self::prop(&lr, &delta);
+                Self::prop(&rr, &(-&delta));
+            },
+            deps,
+            "mse_loss",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -318,12 +391,17 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let out = pred_data.mse_sum_loss_tensor(&target_data);
         let deps = Self::deps_of(&[self.entry_idx, target.entry_idx]);
         let (lr, rr) = (self.input_refs(), target.input_refs());
-        let entry = TapeEntry::new(move |g| {
-            let grad_storage = B::mse_sum_bwd(pred_data.storage(), target_data.storage(), g.storage());
-            let delta = Tensor::from_storage(grad_storage);
-            Self::prop(&lr, &delta);
-            Self::prop(&rr, &(-&delta));
-        }, deps, "mse_sum_loss");
+        let entry = TapeEntry::new(
+            move |g| {
+                let grad_storage =
+                    B::mse_sum_bwd(pred_data.storage(), target_data.storage(), g.storage());
+                let delta = Tensor::from_storage(grad_storage);
+                Self::prop(&lr, &delta);
+                Self::prop(&rr, &(-&delta));
+            },
+            deps,
+            "mse_sum_loss",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -340,17 +418,27 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx, target.entry_idx]);
         let (lr, rr) = (self.input_refs(), target.input_refs());
         let inv_n = T::one_impl() / count;
-        let entry = TapeEntry::new(move |g| {
-            let g_val = g.get(0, 0);
-            let (dm, dn) = diff.shape();
-            let sign = Tensor::from_fn(dm, dn, |r, c| {
-                let v = diff.get(r, c).to_f64();
-                if v > 0.0 { T::one_impl() } else if v < 0.0 { T::zero() - T::one_impl() } else { T::zero() }
-            });
-            let delta = &sign * (g_val * inv_n);
-            Self::prop(&lr, &delta);
-            Self::prop(&rr, &(-&delta));
-        }, deps, "l1_loss");
+        let entry = TapeEntry::new(
+            move |g| {
+                let g_val = g.get(0, 0);
+                let (dm, dn) = diff.shape();
+                let sign = Tensor::from_fn(dm, dn, |r, c| {
+                    let v = diff.get(r, c).to_f64();
+                    if v > 0.0 {
+                        T::one_impl()
+                    } else if v < 0.0 {
+                        T::zero() - T::one_impl()
+                    } else {
+                        T::zero()
+                    }
+                });
+                let delta = &sign * (g_val * inv_n);
+                Self::prop(&lr, &delta);
+                Self::prop(&rr, &(-&delta));
+            },
+            deps,
+            "l1_loss",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -369,31 +457,42 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         for r in 0..m {
             for c in 0..n {
                 let d = diff.get(r, c).to_f64().abs();
-                total = total + if d <= delta_f {
-                    T::from_f64(0.5 * d * d)
-                } else {
-                    delta * (T::from_f64(d) - half * delta)
-                };
+                total = total
+                    + if d <= delta_f {
+                        T::from_f64(0.5 * d * d)
+                    } else {
+                        delta * (T::from_f64(d) - half * delta)
+                    };
             }
         }
         let out = Tensor::fill(1, 1, total / count);
         let deps = Self::deps_of(&[self.entry_idx, target.entry_idx]);
         let (lr, rr) = (self.input_refs(), target.input_refs());
         let inv_n = T::one_impl() / count;
-        let entry = TapeEntry::new(move |g| {
-            let g_val = g.get(0, 0);
-            let (dm, dn) = diff.shape();
-            let grad_diff = Tensor::from_fn(dm, dn, |r, c| {
-                let d = diff.get(r, c);
-                let ad = d.to_f64().abs();
-                if ad <= delta_f { d * (g_val * inv_n) } else {
-                    let s = if d.to_f64() > 0.0 { T::one_impl() } else { T::zero() - T::one_impl() };
-                    delta * s * (g_val * inv_n)
-                }
-            });
-            Self::prop(&lr, &grad_diff);
-            Self::prop(&rr, &(-&grad_diff));
-        }, deps, "huber_loss");
+        let entry = TapeEntry::new(
+            move |g| {
+                let g_val = g.get(0, 0);
+                let (dm, dn) = diff.shape();
+                let grad_diff = Tensor::from_fn(dm, dn, |r, c| {
+                    let d = diff.get(r, c);
+                    let ad = d.to_f64().abs();
+                    if ad <= delta_f {
+                        d * (g_val * inv_n)
+                    } else {
+                        let s = if d.to_f64() > 0.0 {
+                            T::one_impl()
+                        } else {
+                            T::zero() - T::one_impl()
+                        };
+                        delta * s * (g_val * inv_n)
+                    }
+                });
+                Self::prop(&lr, &grad_diff);
+                Self::prop(&rr, &(-&grad_diff));
+            },
+            deps,
+            "huber_loss",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -413,36 +512,41 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
             for c in 0..n {
                 let d = diff.get(r, c);
                 let ad = d.to_f64().abs();
-                total = total + if ad < beta_f {
-                    half * d * d / beta
-                } else {
-                    T::from_f64(ad) - half * beta
-                };
+                total = total
+                    + if ad < beta_f {
+                        half * d * d / beta
+                    } else {
+                        T::from_f64(ad) - half * beta
+                    };
             }
         }
         let out = Tensor::fill(1, 1, total / count);
         let deps = Self::deps_of(&[self.entry_idx, target.entry_idx]);
         let (lr, rr) = (self.input_refs(), target.input_refs());
         let inv_n = T::one_impl() / count;
-        let entry = TapeEntry::new(move |g| {
-            let g_val = g.get(0, 0);
-            let (dm, dn) = diff.shape();
-            let grad_diff = Tensor::from_fn(dm, dn, |r, c| {
-                let d = diff.get(r, c);
-                let ad = d.to_f64().abs();
-                if ad < beta_f {
-                    d * (g_val * inv_n) / beta
-                } else if d.to_f64() > 0.0 {
-                    T::one_impl() * (g_val * inv_n)
-                } else if d.to_f64() < 0.0 {
-                    (T::zero() - T::one_impl()) * (g_val * inv_n)
-                } else {
-                    T::zero()
-                }
-            });
-            Self::prop(&lr, &grad_diff);
-            Self::prop(&rr, &(-&grad_diff));
-        }, deps, "smooth_l1_loss");
+        let entry = TapeEntry::new(
+            move |g| {
+                let g_val = g.get(0, 0);
+                let (dm, dn) = diff.shape();
+                let grad_diff = Tensor::from_fn(dm, dn, |r, c| {
+                    let d = diff.get(r, c);
+                    let ad = d.to_f64().abs();
+                    if ad < beta_f {
+                        d * (g_val * inv_n) / beta
+                    } else if d.to_f64() > 0.0 {
+                        T::one_impl() * (g_val * inv_n)
+                    } else if d.to_f64() < 0.0 {
+                        (T::zero() - T::one_impl()) * (g_val * inv_n)
+                    } else {
+                        T::zero()
+                    }
+                });
+                Self::prop(&lr, &grad_diff);
+                Self::prop(&rr, &(-&grad_diff));
+            },
+            deps,
+            "smooth_l1_loss",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -461,8 +565,16 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
                 for c in 0..n {
                     let p = self.data.get(r, c);
                     let t = target.data.get(r, c);
-                    let p_clamped = if p.to_f64() < eps.to_f64() { eps } else if p.to_f64() > (one - eps).to_f64() { one - eps } else { p };
-                    s = s - (t * T::from_f64(p_clamped.to_f64().ln()) + (one - t) * T::from_f64((one - p_clamped).to_f64().ln()));
+                    let p_clamped = if p.to_f64() < eps.to_f64() {
+                        eps
+                    } else if p.to_f64() > (one - eps).to_f64() {
+                        one - eps
+                    } else {
+                        p
+                    };
+                    s = s
+                        - (t * T::from_f64(p_clamped.to_f64().ln())
+                            + (one - t) * T::from_f64((one - p_clamped).to_f64().ln()));
                 }
             }
             s
@@ -472,24 +584,42 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let (lr, rr) = (self.input_refs(), target.input_refs());
         let pred_data = Rc::clone(&self.data);
         let tgt_data = Rc::clone(&target.data);
-        let entry = TapeEntry::new(move |g| {
-            let g_val = g.get(0, 0);
-            let inv_n = T::one_impl() / count;
-            let (pm, pn) = pred_data.shape();
-            let grad_pred = Tensor::from_fn(pm, pn, |r, c| {
-                let p = pred_data.get(r, c);
-                let t = tgt_data.get(r, c);
-                let p_c = if p.to_f64() < eps.to_f64() { eps } else if p.to_f64() > (one - eps).to_f64() { one - eps } else { p };
-                (T::zero() - t / p_c + (one - t) / (one - p_c)) * (g_val * inv_n)
-            });
-            let grad_tgt = Tensor::from_fn(pm, pn, |r, c| {
-                let p = pred_data.get(r, c);
-                let p_c = if p.to_f64() < eps.to_f64() { eps } else if p.to_f64() > (one - eps).to_f64() { one - eps } else { p };
-                (T::zero() - T::from_f64(p_c.to_f64().ln()) + T::from_f64((one - p_c).to_f64().ln())) * (g_val * inv_n)
-            });
-            Self::prop(&lr, &grad_pred);
-            Self::prop(&rr, &grad_tgt);
-        }, deps, "bce_loss");
+        let entry = TapeEntry::new(
+            move |g| {
+                let g_val = g.get(0, 0);
+                let inv_n = T::one_impl() / count;
+                let (pm, pn) = pred_data.shape();
+                let grad_pred = Tensor::from_fn(pm, pn, |r, c| {
+                    let p = pred_data.get(r, c);
+                    let t = tgt_data.get(r, c);
+                    let p_c = if p.to_f64() < eps.to_f64() {
+                        eps
+                    } else if p.to_f64() > (one - eps).to_f64() {
+                        one - eps
+                    } else {
+                        p
+                    };
+                    (T::zero() - t / p_c + (one - t) / (one - p_c)) * (g_val * inv_n)
+                });
+                let grad_tgt = Tensor::from_fn(pm, pn, |r, c| {
+                    let p = pred_data.get(r, c);
+                    let p_c = if p.to_f64() < eps.to_f64() {
+                        eps
+                    } else if p.to_f64() > (one - eps).to_f64() {
+                        one - eps
+                    } else {
+                        p
+                    };
+                    (T::zero() - T::from_f64(p_c.to_f64().ln())
+                        + T::from_f64((one - p_c).to_f64().ln()))
+                        * (g_val * inv_n)
+                });
+                Self::prop(&lr, &grad_pred);
+                Self::prop(&rr, &grad_tgt);
+            },
+            deps,
+            "bce_loss",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -520,23 +650,27 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let (lr, rr) = (self.input_refs(), target.input_refs());
         let pred_data = Rc::clone(&self.data);
         let tgt_data = Rc::clone(&target.data);
-        let entry = TapeEntry::new(move |g| {
-            let g_val = g.get(0, 0);
-            let inv_n = T::one_impl() / count;
-            let (pm, pn) = pred_data.shape();
-            let grad_pred = Tensor::from_fn(pm, pn, |r, c| {
-                let x = pred_data.get(r, c);
-                let y = tgt_data.get(r, c);
-                let sig = T::one_impl() / (T::one_impl() + (T::zero() - x).math_exp());
-                (sig - y) * (g_val * inv_n)
-            });
-            let grad_tgt = Tensor::from_fn(pm, pn, |r, c| {
-                let x = pred_data.get(r, c);
-                (T::zero() - x) * (g_val * inv_n)
-            });
-            Self::prop(&lr, &grad_pred);
-            Self::prop(&rr, &grad_tgt);
-        }, deps, "bce_with_logits");
+        let entry = TapeEntry::new(
+            move |g| {
+                let g_val = g.get(0, 0);
+                let inv_n = T::one_impl() / count;
+                let (pm, pn) = pred_data.shape();
+                let grad_pred = Tensor::from_fn(pm, pn, |r, c| {
+                    let x = pred_data.get(r, c);
+                    let y = tgt_data.get(r, c);
+                    let sig = T::one_impl() / (T::one_impl() + (T::zero() - x).math_exp());
+                    (sig - y) * (g_val * inv_n)
+                });
+                let grad_tgt = Tensor::from_fn(pm, pn, |r, c| {
+                    let x = pred_data.get(r, c);
+                    (T::zero() - x) * (g_val * inv_n)
+                });
+                Self::prop(&lr, &grad_pred);
+                Self::prop(&rr, &grad_tgt);
+            },
+            deps,
+            "bce_with_logits",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -571,17 +705,21 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let targets_data = targets.clone();
-        let entry = TapeEntry::new(move |g| {
-            let g_val = g.get(0, 0);
-            let inv_batch = T::from_f64(1.0 / batch as f64);
-            let mut grad = Tensor::zeros(batch, classes);
-            for r in 0..batch {
-                let idx = targets_data.get(r, 0).to_f64() as usize;
-                let old = grad.get(r, idx);
-                grad.set(r, idx, old - g_val * inv_batch);
-            }
-            Self::prop(&lr, &grad);
-        }, deps, "nll_loss");
+        let entry = TapeEntry::new(
+            move |g| {
+                let g_val = g.get(0, 0);
+                let inv_batch = T::from_f64(1.0 / batch as f64);
+                let mut grad = Tensor::zeros(batch, classes);
+                for r in 0..batch {
+                    let idx = targets_data.get(r, 0).to_f64() as usize;
+                    let old = grad.get(r, idx);
+                    grad.set(r, idx, old - g_val * inv_batch);
+                }
+                Self::prop(&lr, &grad);
+            },
+            deps,
+            "nll_loss",
+        );
         Ok(Self::derived(&self.tape, out, entry))
     }
 
@@ -615,42 +753,46 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let (lr, rr) = (self.input_refs(), other.input_refs());
         let x1 = Rc::clone(&self.data);
         let x2 = Rc::clone(&other.data);
-        let entry = TapeEntry::new(move |g| {
-            let g_val = g.get(0, 0);
-            let (m, n) = x1.shape();
-            let dot = (0..m).fold(T::zero(), |acc, r| {
-                (0..n).fold(acc, |a, c| a + x1.get(r, c) * x2.get(r, c))
-            });
-            let n1 = x1.norm();
-            let n2 = x2.norm();
-            let eps = T::from_f64(1e-8);
-            let denom = n1 * n2 + eps;
-            let cos_sim = dot / denom;
-            let v = cos_sim - margin;
-            let gate = if y.to_f64() > 0.0 {
-                T::from_f64(-1.0)
-            } else if v.to_f64() > 0.0 {
-                T::one_impl()
-            } else {
-                T::zero()
-            };
-            let denom_sq = denom * denom;
-            let n1_safe = if n1.to_f64() == 0.0 { eps } else { n1 };
-            let n2_safe = if n2.to_f64() == 0.0 { eps } else { n2 };
-            let coeff_x2 = T::one_impl() / denom;
-            let coeff_x1 = dot * n2_safe / (n1_safe * denom_sq);
-            let coeff_y1 = dot * n1_safe / (n2_safe * denom_sq);
-            let grad_x1 = Tensor::from_fn(m, n, |r, c| {
-                let term = x2.get(r, c) * coeff_x2 - x1.get(r, c) * coeff_x1;
-                term * (g_val * gate)
-            });
-            let grad_x2 = Tensor::from_fn(m, n, |r, c| {
-                let term = x1.get(r, c) * coeff_x2 - x2.get(r, c) * coeff_y1;
-                term * (g_val * gate)
-            });
-            Self::prop(&lr, &grad_x1);
-            Self::prop(&rr, &grad_x2);
-        }, deps, "cosine_embedding_loss");
+        let entry = TapeEntry::new(
+            move |g| {
+                let g_val = g.get(0, 0);
+                let (m, n) = x1.shape();
+                let dot = (0..m).fold(T::zero(), |acc, r| {
+                    (0..n).fold(acc, |a, c| a + x1.get(r, c) * x2.get(r, c))
+                });
+                let n1 = x1.norm();
+                let n2 = x2.norm();
+                let eps = T::from_f64(1e-8);
+                let denom = n1 * n2 + eps;
+                let cos_sim = dot / denom;
+                let v = cos_sim - margin;
+                let gate = if y.to_f64() > 0.0 {
+                    T::from_f64(-1.0)
+                } else if v.to_f64() > 0.0 {
+                    T::one_impl()
+                } else {
+                    T::zero()
+                };
+                let denom_sq = denom * denom;
+                let n1_safe = if n1.to_f64() == 0.0 { eps } else { n1 };
+                let n2_safe = if n2.to_f64() == 0.0 { eps } else { n2 };
+                let coeff_x2 = T::one_impl() / denom;
+                let coeff_x1 = dot * n2_safe / (n1_safe * denom_sq);
+                let coeff_y1 = dot * n1_safe / (n2_safe * denom_sq);
+                let grad_x1 = Tensor::from_fn(m, n, |r, c| {
+                    let term = x2.get(r, c) * coeff_x2 - x1.get(r, c) * coeff_x1;
+                    term * (g_val * gate)
+                });
+                let grad_x2 = Tensor::from_fn(m, n, |r, c| {
+                    let term = x1.get(r, c) * coeff_x2 - x2.get(r, c) * coeff_y1;
+                    term * (g_val * gate)
+                });
+                Self::prop(&lr, &grad_x1);
+                Self::prop(&rr, &grad_x2);
+            },
+            deps,
+            "cosine_embedding_loss",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -672,10 +814,14 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         });
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
-        let entry = TapeEntry::new(move |g| {
-            let (gm, gn) = g.shape();
-            Self::prop(&lr, &Tensor::zeros(gm, gn));
-        }, deps, "sign");
+        let entry = TapeEntry::new(
+            move |g| {
+                let (gm, gn) = g.shape();
+                Self::prop(&lr, &Tensor::zeros(gm, gn));
+            },
+            deps,
+            "sign",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -689,9 +835,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let input = Rc::clone(&self.data);
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.leaky_relu_backward(&*input, alpha_t));
-        }, deps, "leaky_relu");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.leaky_relu_backward(&*input, alpha_t));
+            },
+            deps,
+            "leaky_relu",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -705,9 +855,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let input = Rc::clone(&self.data);
-        let entry = TapeEntry::new(move |g| {
-            Self::prop(&lr, &g.elu_backward(&*input, alpha_t));
-        }, deps, "elu");
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.elu_backward(&*input, alpha_t));
+            },
+            deps,
+            "elu",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -722,32 +876,36 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
         let input = Rc::clone(&self.data);
-        let entry = TapeEntry::new(move |g| {
-            let (m, n) = input.shape();
-            let n_f = T::from_f64(n as f64);
-            // Full layer norm backward per row:
-            // dx = (1/std) * (dout - mean(dout) - x_hat * mean(dout * x_hat))
-            let grad_out = Tensor::from_fn(m, n, |r, c| {
-                // Compute row mean and variance
-                let row_mean = (0..n).fold(T::zero(), |acc, j| acc + input.get(r, j)) / n_f;
-                let row_var = (0..n).fold(T::zero(), |acc, j| {
-                    let d = input.get(r, j) - row_mean;
-                    acc + d * d
-                }) / n_f;
-                let inv_std = T::one_impl() / (row_var + eps_t).math_sqrt();
-                let x_hat = (input.get(r, c) - row_mean) * inv_std;
+        let entry = TapeEntry::new(
+            move |g| {
+                let (m, n) = input.shape();
+                let n_f = T::from_f64(n as f64);
+                // Full layer norm backward per row:
+                // dx = (1/std) * (dout - mean(dout) - x_hat * mean(dout * x_hat))
+                let grad_out = Tensor::from_fn(m, n, |r, c| {
+                    // Compute row mean and variance
+                    let row_mean = (0..n).fold(T::zero(), |acc, j| acc + input.get(r, j)) / n_f;
+                    let row_var = (0..n).fold(T::zero(), |acc, j| {
+                        let d = input.get(r, j) - row_mean;
+                        acc + d * d
+                    }) / n_f;
+                    let inv_std = T::one_impl() / (row_var + eps_t).math_sqrt();
+                    let x_hat = (input.get(r, c) - row_mean) * inv_std;
 
-                // mean(dout) and mean(dout * x_hat) for this row
-                let mean_g = (0..n).fold(T::zero(), |acc, j| acc + g.get(r, j)) / n_f;
-                let mean_gx = (0..n).fold(T::zero(), |acc, j| {
-                    let xh = (input.get(r, j) - row_mean) * inv_std;
-                    acc + g.get(r, j) * xh
-                }) / n_f;
+                    // mean(dout) and mean(dout * x_hat) for this row
+                    let mean_g = (0..n).fold(T::zero(), |acc, j| acc + g.get(r, j)) / n_f;
+                    let mean_gx = (0..n).fold(T::zero(), |acc, j| {
+                        let xh = (input.get(r, j) - row_mean) * inv_std;
+                        acc + g.get(r, j) * xh
+                    }) / n_f;
 
-                inv_std * (g.get(r, c) - mean_g - x_hat * mean_gx)
-            });
-            Self::prop(&lr, &grad_out);
-        }, deps, "layer_norm");
+                    inv_std * (g.get(r, c) - mean_g - x_hat * mean_gx)
+                });
+                Self::prop(&lr, &grad_out);
+            },
+            deps,
+            "layer_norm",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -781,61 +939,65 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let (xr, wr, br) = (self.input_refs(), weight.input_refs(), bias.input_refs());
         let input = Rc::clone(&self.data);
         let weight_data = Rc::clone(&weight.data);
-        let entry = TapeEntry::new(move |g| {
-            let (m, n) = input.shape();
-            let g_size = n / num_groups;
-            let g_size_f = T::from_f64(g_size as f64);
-            let eps_t = T::from_f64(eps);
+        let entry = TapeEntry::new(
+            move |g| {
+                let (m, n) = input.shape();
+                let g_size = n / num_groups;
+                let g_size_f = T::from_f64(g_size as f64);
+                let eps_t = T::from_f64(eps);
 
-            let d_weight = Tensor::from_fn(1, n, |_, c| {
-                (0..m).fold(T::zero(), |acc, r| {
+                let d_weight = Tensor::from_fn(1, n, |_, c| {
+                    (0..m).fold(T::zero(), |acc, r| {
+                        let g_idx = c / g_size;
+                        let g_start = g_idx * g_size;
+                        let mean = (0..g_size)
+                            .fold(T::zero(), |acc2, j| acc2 + input.get(r, g_start + j))
+                            / g_size_f;
+                        let var = (0..g_size).fold(T::zero(), |acc2, j| {
+                            let d = input.get(r, g_start + j) - mean;
+                            acc2 + d * d
+                        }) / g_size_f;
+                        let inv_std = T::one_impl() / (var + eps_t).math_sqrt();
+                        let x_hat = (input.get(r, c) - mean) * inv_std;
+                        acc + g.get(r, c) * x_hat
+                    })
+                });
+                Self::prop(&wr, &d_weight);
+
+                let d_bias = Tensor::from_fn(1, n, |_, c| {
+                    (0..m).fold(T::zero(), |acc, r| acc + g.get(r, c))
+                });
+                Self::prop(&br, &d_bias);
+
+                let d_x = Tensor::from_fn(m, n, |r, c| {
                     let g_idx = c / g_size;
                     let g_start = g_idx * g_size;
-                    let mean = (0..g_size).fold(T::zero(), |acc2, j| {
-                        acc2 + input.get(r, g_start + j)
-                    }) / g_size_f;
-                    let var = (0..g_size).fold(T::zero(), |acc2, j| {
+                    let mean = (0..g_size)
+                        .fold(T::zero(), |acc, j| acc + input.get(r, g_start + j))
+                        / g_size_f;
+                    let var = (0..g_size).fold(T::zero(), |acc, j| {
                         let d = input.get(r, g_start + j) - mean;
-                        acc2 + d * d
+                        acc + d * d
                     }) / g_size_f;
                     let inv_std = T::one_impl() / (var + eps_t).math_sqrt();
-                    let x_hat = (input.get(r, c) - mean) * inv_std;
-                    acc + g.get(r, c) * x_hat
-                })
-            });
-            Self::prop(&wr, &d_weight);
 
-            let d_bias = Tensor::from_fn(1, n, |_, c| {
-                (0..m).fold(T::zero(), |acc, r| acc + g.get(r, c))
-            });
-            Self::prop(&br, &d_bias);
+                    let mean_gw = (0..g_size).fold(T::zero(), |acc, j| {
+                        acc + g.get(r, g_start + j) * weight_data.get(0, g_start + j)
+                    }) / g_size_f;
+                    let mean_gw_xh = (0..g_size).fold(T::zero(), |acc, j| {
+                        let xh = (input.get(r, g_start + j) - mean) * inv_std;
+                        acc + g.get(r, g_start + j) * weight_data.get(0, g_start + j) * xh
+                    }) / g_size_f;
 
-            let d_x = Tensor::from_fn(m, n, |r, c| {
-                let g_idx = c / g_size;
-                let g_start = g_idx * g_size;
-                let mean = (0..g_size).fold(T::zero(), |acc, j| {
-                    acc + input.get(r, g_start + j)
-                }) / g_size_f;
-                let var = (0..g_size).fold(T::zero(), |acc, j| {
-                    let d = input.get(r, g_start + j) - mean;
-                    acc + d * d
-                }) / g_size_f;
-                let inv_std = T::one_impl() / (var + eps_t).math_sqrt();
-
-                let mean_gw = (0..g_size).fold(T::zero(), |acc, j| {
-                    acc + g.get(r, g_start + j) * weight_data.get(0, g_start + j)
-                }) / g_size_f;
-                let mean_gw_xh = (0..g_size).fold(T::zero(), |acc, j| {
-                    let xh = (input.get(r, g_start + j) - mean) * inv_std;
-                    acc + g.get(r, g_start + j) * weight_data.get(0, g_start + j) * xh
-                }) / g_size_f;
-
-                let xh = (input.get(r, c) - mean) * inv_std;
-                let gw = g.get(r, c) * weight_data.get(0, c);
-                inv_std * (gw - mean_gw - xh * mean_gw_xh)
-            });
-            Self::prop(&xr, &d_x);
-        }, deps, "group_norm");
+                    let xh = (input.get(r, c) - mean) * inv_std;
+                    let gw = g.get(r, c) * weight_data.get(0, c);
+                    inv_std * (gw - mean_gw - xh * mean_gw_xh)
+                });
+                Self::prop(&xr, &d_x);
+            },
+            deps,
+            "group_norm",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -854,18 +1016,22 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let lr = self.input_refs();
         let (vocab, dim) = self.data.shape();
         let idx = indices.to_vec();
-        let entry = TapeEntry::new(move |g| {
-            // Scatter-add: accumulate grad rows back into embedding positions.
-            let mut grad_w = Tensor::zeros(vocab, dim);
-            for (i, &row_idx) in idx.iter().enumerate() {
-                for c in 0..dim {
-                    let old = grad_w.get(row_idx, c);
-                    let delta = g.get(i, c);
-                    grad_w.set(row_idx, c, old + delta);
+        let entry = TapeEntry::new(
+            move |g| {
+                // Scatter-add: accumulate grad rows back into embedding positions.
+                let mut grad_w = Tensor::zeros(vocab, dim);
+                for (i, &row_idx) in idx.iter().enumerate() {
+                    for c in 0..dim {
+                        let old = grad_w.get(row_idx, c);
+                        let delta = g.get(i, c);
+                        grad_w.set(row_idx, c, old + delta);
+                    }
                 }
-            }
-            Self::prop(&lr, &grad_w);
-        }, deps, "embedding");
+                Self::prop(&lr, &grad_w);
+            },
+            deps,
+            "embedding",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -910,48 +1076,54 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let input = Rc::clone(&self.data);
         let gamma_data = Rc::clone(&gamma.data);
         let saved_x_hat = x_hat;
-        let entry = TapeEntry::new(move |g| {
-            let (m, n) = input.shape();
-            let m_f = T::from_f64(m as f64);
-            let eps_t = T::from_f64(eps);
+        let entry = TapeEntry::new(
+            move |g| {
+                let (m, n) = input.shape();
+                let m_f = T::from_f64(m as f64);
+                let eps_t = T::from_f64(eps);
 
-            // d_gamma = sum(g * x_hat, axis=0)  →  (1, n)
-            let d_gamma = Tensor::from_fn(1, n, |_, c| {
-                (0..m).fold(T::zero(), |acc, r| acc + g.get(r, c) * saved_x_hat.get(r, c))
-            });
-            Self::prop(&gr, &d_gamma);
+                // d_gamma = sum(g * x_hat, axis=0)  →  (1, n)
+                let d_gamma = Tensor::from_fn(1, n, |_, c| {
+                    (0..m).fold(T::zero(), |acc, r| {
+                        acc + g.get(r, c) * saved_x_hat.get(r, c)
+                    })
+                });
+                Self::prop(&gr, &d_gamma);
 
-            // d_beta = sum(g, axis=0)  →  (1, n)
-            let d_beta = Tensor::from_fn(1, n, |_, c| {
-                (0..m).fold(T::zero(), |acc, r| acc + g.get(r, c))
-            });
-            Self::prop(&br, &d_beta);
+                // d_beta = sum(g, axis=0)  →  (1, n)
+                let d_beta = Tensor::from_fn(1, n, |_, c| {
+                    (0..m).fold(T::zero(), |acc, r| acc + g.get(r, c))
+                });
+                Self::prop(&br, &d_beta);
 
-            // d_x_hat = g * gamma  →  (m, n)
-            // d_x = (1/sqrt(var+eps)) * (d_x_hat - mean(d_x_hat) - x_hat * mean(d_x_hat * x_hat))
-            let d_x = Tensor::from_fn(m, n, |r, c| {
-                // Recompute per-column stats
-                let mu = (0..m).fold(T::zero(), |acc, ri| acc + input.get(ri, c)) / m_f;
-                let var = (0..m).fold(T::zero(), |acc, ri| {
-                    let d = input.get(ri, c) - mu;
-                    acc + d * d
-                }) / m_f;
-                let inv_std = T::one_impl() / (var + eps_t).math_sqrt();
+                // d_x_hat = g * gamma  →  (m, n)
+                // d_x = (1/sqrt(var+eps)) * (d_x_hat - mean(d_x_hat) - x_hat * mean(d_x_hat * x_hat))
+                let d_x = Tensor::from_fn(m, n, |r, c| {
+                    // Recompute per-column stats
+                    let mu = (0..m).fold(T::zero(), |acc, ri| acc + input.get(ri, c)) / m_f;
+                    let var = (0..m).fold(T::zero(), |acc, ri| {
+                        let d = input.get(ri, c) - mu;
+                        acc + d * d
+                    }) / m_f;
+                    let inv_std = T::one_impl() / (var + eps_t).math_sqrt();
 
-                let gam = gamma_data.get(0, c);
-                // d_x_hat_j = g_j * gamma for column c
-                let mean_dxh = (0..m).fold(T::zero(), |acc, ri| acc + g.get(ri, c) * gam) / m_f;
-                let mean_dxh_xh = (0..m).fold(T::zero(), |acc, ri| {
-                    let xh = (input.get(ri, c) - mu) * inv_std;
-                    acc + g.get(ri, c) * gam * xh
-                }) / m_f;
+                    let gam = gamma_data.get(0, c);
+                    // d_x_hat_j = g_j * gamma for column c
+                    let mean_dxh = (0..m).fold(T::zero(), |acc, ri| acc + g.get(ri, c) * gam) / m_f;
+                    let mean_dxh_xh = (0..m).fold(T::zero(), |acc, ri| {
+                        let xh = (input.get(ri, c) - mu) * inv_std;
+                        acc + g.get(ri, c) * gam * xh
+                    }) / m_f;
 
-                let xh = (input.get(r, c) - mu) * inv_std;
-                let dxh = g.get(r, c) * gam;
-                inv_std * (dxh - mean_dxh - xh * mean_dxh_xh)
-            });
-            Self::prop(&xr, &d_x);
-        }, deps, "batch_norm");
+                    let xh = (input.get(r, c) - mu) * inv_std;
+                    let dxh = g.get(r, c) * gam;
+                    inv_std * (dxh - mean_dxh - xh * mean_dxh_xh)
+                });
+                Self::prop(&xr, &d_x);
+            },
+            deps,
+            "batch_norm",
+        );
         Self::derived(&self.tape, out, entry)
     }
 
@@ -972,7 +1144,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let (nrows, ncols) = self.data.shape();
         if nrows != 1 || ncols != 1 {
             return Err(nabla_core::error::Error::invalid(
-                "backward() requires scalar (1,1) output. For non-scalar, use backward_with(grad_output)."
+                "backward() requires scalar (1,1) output. For non-scalar, use backward_with(grad_output).",
             ));
         }
         self.backward_impl(&Tensor::fill(1, 1, T::one_impl()), true)
@@ -990,7 +1162,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let (nrows, ncols) = self.data.shape();
         if nrows != 1 || ncols != 1 {
             return Err(nabla_core::error::Error::invalid(
-                "backward_unchecked() requires scalar (1,1) output. For non-scalar, use backward_with(grad_output)."
+                "backward_unchecked() requires scalar (1,1) output. For non-scalar, use backward_with(grad_output).",
             ));
         }
         self.backward_impl(&Tensor::fill(1, 1, T::one_impl()), false)
@@ -1050,9 +1222,9 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
                         if f.is_nan() || f.is_infinite() {
                             let r = idx / n;
                             let c = idx % n;
-                            return Err(nabla_core::error::Error::eval(
-                                format!("NaN/Inf detected in gradient at ({r}, {c})")
-                            ));
+                            return Err(nabla_core::error::Error::eval(format!(
+                                "NaN/Inf detected in gradient at ({r}, {c})"
+                            )));
                         }
                     }
                 }
@@ -1065,25 +1237,32 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     }
 }
 
-
 /// Generate 4 std::ops impls for a binary Variable op: &&, val-val, val-&, &-val.
 macro_rules! impl_var_op {
     ($trait:ident, $method:ident, $inner:ident) => {
         impl<T: Scalar, B: Backend> $trait for &Variable<T, B> {
             type Output = Variable<T, B>;
-            fn $method(self, rhs: Self) -> Self::Output { self.$inner(rhs) }
+            fn $method(self, rhs: Self) -> Self::Output {
+                self.$inner(rhs)
+            }
         }
         impl<T: Scalar, B: Backend> $trait for Variable<T, B> {
             type Output = Self;
-            fn $method(self, rhs: Self) -> Self::Output { self.$inner(&rhs) }
+            fn $method(self, rhs: Self) -> Self::Output {
+                self.$inner(&rhs)
+            }
         }
         impl<T: Scalar, B: Backend> $trait<&Variable<T, B>> for Variable<T, B> {
             type Output = Self;
-            fn $method(self, rhs: &Variable<T, B>) -> Self::Output { self.$inner(rhs) }
+            fn $method(self, rhs: &Variable<T, B>) -> Self::Output {
+                self.$inner(rhs)
+            }
         }
         impl<T: Scalar, B: Backend> $trait<Variable<T, B>> for &Variable<T, B> {
             type Output = Variable<T, B>;
-            fn $method(self, rhs: Variable<T, B>) -> Self::Output { self.$inner(&rhs) }
+            fn $method(self, rhs: Variable<T, B>) -> Self::Output {
+                self.$inner(&rhs)
+            }
         }
     };
 }
@@ -1094,34 +1273,45 @@ impl_var_op!(Mul, mul, matmul);
 
 impl<T: Scalar, B: Backend> Neg for &Variable<T, B> {
     type Output = Variable<T, B>;
-    fn neg(self) -> Self::Output { self.neg_var() }
+    fn neg(self) -> Self::Output {
+        self.neg_var()
+    }
 }
 
 impl<T: Scalar, B: Backend> Neg for Variable<T, B> {
     type Output = Self;
-    fn neg(self) -> Self::Output { self.neg_var() }
+    fn neg(self) -> Self::Output {
+        self.neg_var()
+    }
 }
 
 impl<T: Scalar, B: Backend> Mul<T> for &Variable<T, B> {
     type Output = Variable<T, B>;
-    fn mul(self, rhs: T) -> Self::Output { self.scale(rhs) }
+    fn mul(self, rhs: T) -> Self::Output {
+        self.scale(rhs)
+    }
 }
 
 impl<T: Scalar, B: Backend> Mul<T> for Variable<T, B> {
     type Output = Self;
-    fn mul(self, rhs: T) -> Self::Output { self.scale(rhs) }
+    fn mul(self, rhs: T) -> Self::Output {
+        self.scale(rhs)
+    }
 }
 
 impl<T: Scalar, B: Backend> Div<T> for &Variable<T, B> {
     type Output = Variable<T, B>;
-    fn div(self, rhs: T) -> Self::Output { self.scale(T::one_impl() / rhs) }
+    fn div(self, rhs: T) -> Self::Output {
+        self.scale(T::one_impl() / rhs)
+    }
 }
 
 impl<T: Scalar, B: Backend> Div<T> for Variable<T, B> {
     type Output = Self;
-    fn div(self, rhs: T) -> Self::Output { (&self).div(rhs) }
+    fn div(self, rhs: T) -> Self::Output {
+        (&self).div(rhs)
+    }
 }
-
 
 /// Precomputed shape info for repeated gradient evaluation.
 pub struct GradPrep<T: Scalar> {
@@ -1144,11 +1334,7 @@ where
 }
 
 /// Compute the gradient of `f` at `x` using a prepared handle.
-pub fn gradient<T, B, F>(
-    f: &F,
-    x: &Tensor<T, B>,
-    prep: &GradPrep<T>,
-) -> Result<Tensor<T, B>>
+pub fn gradient<T, B, F>(f: &F, x: &Tensor<T, B>, prep: &GradPrep<T>) -> Result<Tensor<T, B>>
 where
     T: Scalar,
     B: Backend,
@@ -1157,17 +1343,15 @@ where
     if x.shape() != prep.input_shape {
         return Err(nabla_core::error::Error::invalid(format!(
             "gradient: input shape {:?} != prep shape {:?}",
-            x.shape(), prep.input_shape
+            x.shape(),
+            prep.input_shape
         )));
     }
     grad_impl(f, x)
 }
 
 /// Compute the gradient of scalar-valued `f` at `x` in one call.
-pub fn grad<T, B, F>(
-    f: F,
-    x: &Tensor<T, B>,
-) -> Result<Tensor<T, B>>
+pub fn grad<T, B, F>(f: F, x: &Tensor<T, B>) -> Result<Tensor<T, B>>
 where
     T: Scalar,
     B: Backend,
@@ -1176,10 +1360,7 @@ where
     grad_impl(&f, x)
 }
 
-fn grad_impl<T, B, F>(
-    f: &F,
-    x: &Tensor<T, B>,
-) -> Result<Tensor<T, B>>
+fn grad_impl<T, B, F>(f: &F, x: &Tensor<T, B>) -> Result<Tensor<T, B>>
 where
     T: Scalar,
     B: Backend,
@@ -1191,7 +1372,6 @@ where
     y_var.backward()?;
     x_var.grad()
 }
-
 
 /// Clip gradient tensors by global L2 norm, returning the original norm.
 pub fn clip_grad_norm<T: Scalar, B: Backend>(grads: &mut [Tensor<T, B>], max_norm: f64) -> f64 {

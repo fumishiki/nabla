@@ -20,7 +20,6 @@ fn err(msg: impl std::fmt::Display) -> Error {
     Error::new(Span::call_site(), msg)
 }
 
-
 pub(crate) struct MatInput {
     pub(crate) rows: Vec<Vec<Expr>>,
     pub(crate) type_prefix: Option<syn::Type>,
@@ -72,7 +71,10 @@ fn parse_semicolon_rows(input: ParseStream<'_>) -> Result<MatInput> {
     if rows.is_empty() {
         return Err(err("mat![] requires at least one row"));
     }
-    Ok(MatInput { rows, type_prefix: None })
+    Ok(MatInput {
+        rows,
+        type_prefix: None,
+    })
 }
 
 struct RowExprs {
@@ -95,7 +97,8 @@ impl Parse for RowExprs {
 pub(crate) fn mat_impl(input: TokenStream2) -> Result<TokenStream2> {
     let mi: MatInput = syn::parse2(input)?;
 
-    let first_row = mi.rows
+    let first_row = mi
+        .rows
         .first()
         .ok_or_else(|| err("mat![] requires at least one row"))?;
     let ncols = first_row.len();
@@ -107,13 +110,16 @@ pub(crate) fn mat_impl(input: TokenStream2) -> Result<TokenStream2> {
         if row.len() != ncols {
             return Err(err(format!(
                 "mat![] row {} has {} columns, expected {}",
-                idx, row.len(), ncols
+                idx,
+                row.len(),
+                ncols
             )));
         }
     }
 
     let nrows = mi.rows.len();
-    let row_tokens: Vec<TokenStream2> = mi.rows
+    let row_tokens: Vec<TokenStream2> = mi
+        .rows
         .iter()
         .map(|row| {
             let elems = row.iter();
@@ -135,7 +141,6 @@ pub(crate) fn mat_impl(input: TokenStream2) -> Result<TokenStream2> {
         }
     })
 }
-
 
 pub(crate) fn block_impl(input: TokenStream2) -> Result<TokenStream2> {
     let outer: syn::ExprArray = syn::parse2(input)?;
@@ -175,7 +180,6 @@ pub(crate) fn block_impl(input: TokenStream2) -> Result<TokenStream2> {
     }
     Ok(quote! { nabla::vcat!(#(#row_exprs),*) })
 }
-
 
 struct NamedField {
     name: Ident,
@@ -230,7 +234,6 @@ pub(crate) fn named_impl(input: TokenStream2) -> Result<TokenStream2> {
     }})
 }
 
-
 pub(crate) fn generated_impl(input: TokenStream2) -> Result<TokenStream2> {
     let func: syn::ItemFn = syn::parse2(input)?;
     let vis = &func.vis;
@@ -241,7 +244,6 @@ pub(crate) fn generated_impl(input: TokenStream2) -> Result<TokenStream2> {
         #vis #sig #block
     })
 }
-
 
 pub(crate) fn axis_impl(input: TokenStream2) -> Result<TokenStream2> {
     let names: Punctuated<Ident, Comma> =
@@ -254,7 +256,6 @@ pub(crate) fn axis_impl(input: TokenStream2) -> Result<TokenStream2> {
     });
     Ok(quote! { #(#structs)* })
 }
-
 
 struct NamedZerosInput {
     axes: Vec<Ident>,

@@ -191,9 +191,7 @@ macro_rules! impl_layer {
 mod core;
 mod layers;
 
-pub use core::{
-    ForwardResult, Linear, Module, Sequential, StateError, load_tensors, save_tensors,
-};
+pub use core::{ForwardResult, Linear, Module, Sequential, StateError, load_tensors, save_tensors};
 pub use layers::{
     Activation, ActivationKind, DropoutLayer, EmbeddingLayer, LayerNormModule, embedding,
     kaiming_normal, kv_cache_append, linear, rotary_embedding, xavier_uniform,

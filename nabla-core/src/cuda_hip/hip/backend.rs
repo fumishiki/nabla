@@ -4,42 +4,144 @@ use crate::gpu_common::common::rtc::EnsureCache;
 use super::*;
 
 const KERNEL_NAMES: &[&str] = &[
-    "k_neg_f32", "k_recip_f32", "k_exp_f32", "k_ln_f32",
-    "k_log1p_f32", "k_sin_f32", "k_cos_f32", "k_tanh_f32",
-    "k_sqrt_f32", "k_abs_f32", "k_ceil_f32", "k_floor_f32",
-    "k_round_f32", "k_erf_f32", "k_asin_f32", "k_acos_f32",
-    "k_atan_f32", "k_atan2_f32", "k_sinh_f32", "k_cosh_f32",
-    "k_asinh_f32", "k_acosh_f32", "k_atanh_f32", "k_log2_f32",
-    "k_log10_f32", "k_sigmoid_f32", "k_silu_f32", "k_mish_f32",
-    "k_leaky_relu_f32", "k_elu_f32", "k_hardswish_f32", "k_add_f32",
-    "k_sub_f32", "k_emul_f32", "k_ediv_f32", "k_scale_f32",
-    "k_powf_f32", "k_fill_f32", "k_transpose_f32", "k_matmul_f32",
-    "k_sum_f32", "k_max_f32", "k_min_f32", "k_softmax_f32",
-    "k_layer_norm_f32", "k_rms_norm_f32", "k_sum_axis1_f32", "k_max_axis1_f32",
-    "k_embedding_f32", "k_cumsum_axis1_f32", "k_cumprod_axis1_f32", "k_neg_f64",
-    "k_recip_f64", "k_exp_f64", "k_ln_f64", "k_log1p_f64",
-    "k_sin_f64", "k_cos_f64", "k_tanh_f64", "k_sqrt_f64",
-    "k_abs_f64", "k_ceil_f64", "k_floor_f64", "k_round_f64",
-    "k_erf_f64", "k_asin_f64", "k_acos_f64", "k_atan_f64",
-    "k_atan2_f64", "k_sinh_f64", "k_cosh_f64", "k_asinh_f64",
-    "k_acosh_f64", "k_atanh_f64", "k_log2_f64", "k_log10_f64",
-    "k_sigmoid_f64", "k_silu_f64", "k_mish_f64", "k_leaky_relu_f64",
-    "k_elu_f64", "k_hardswish_f64", "k_add_f64", "k_sub_f64",
-    "k_emul_f64", "k_ediv_f64", "k_scale_f64", "k_powf_f64",
-    "k_fill_f64", "k_transpose_f64", "k_matmul_f64", "k_sum_f64",
-    "k_max_f64", "k_min_f64", "k_softmax_f64", "k_layer_norm_f64",
-    "k_rms_norm_f64", "k_sum_axis1_f64", "k_max_axis1_f64", "k_embedding_f64",
-    "k_cumsum_axis1_f64", "k_cumprod_axis1_f64", "k_prod_partial_f32", "k_prod_partial_f64",
-    "k_max_pool2d_f32", "k_max_pool2d_with_idx_f32", "k_avg_pool2d_f32", "k_adaptive_avg_pool2d_f32",
-    "k_max_pool2d_f64", "k_max_pool2d_with_idx_f64", "k_avg_pool2d_f64", "k_adaptive_avg_pool2d_f64",
-    "k_im2col_f32", "k_im2col_f64", "k_batch_norm_stats_f32", "k_batch_norm_fwd_f32",
-    "k_batch_norm_stats_f64", "k_batch_norm_fwd_f64", "k_cross_entropy_f32", "k_cross_entropy_f64",
-    "k_sdpa_f32", "k_sdpa_f64", "k_conv_transpose2d_f32", "k_conv_transpose2d_f64",
-    "k_axpy_f32", "k_axpy_f64",
-    "k_relu_bwd_f32", "k_relu_bwd_f64", "k_leaky_relu_bwd_f32", "k_leaky_relu_bwd_f64",
-    "k_elu_bwd_f32", "k_elu_bwd_f64", "k_gelu_bwd_f32", "k_gelu_bwd_f64",
-    "k_abs_bwd_f32", "k_abs_bwd_f64",
-    "k_expand_f32", "k_expand_f64",
+    "k_neg_f32",
+    "k_recip_f32",
+    "k_exp_f32",
+    "k_ln_f32",
+    "k_log1p_f32",
+    "k_sin_f32",
+    "k_cos_f32",
+    "k_tanh_f32",
+    "k_sqrt_f32",
+    "k_abs_f32",
+    "k_ceil_f32",
+    "k_floor_f32",
+    "k_round_f32",
+    "k_erf_f32",
+    "k_asin_f32",
+    "k_acos_f32",
+    "k_atan_f32",
+    "k_atan2_f32",
+    "k_sinh_f32",
+    "k_cosh_f32",
+    "k_asinh_f32",
+    "k_acosh_f32",
+    "k_atanh_f32",
+    "k_log2_f32",
+    "k_log10_f32",
+    "k_sigmoid_f32",
+    "k_silu_f32",
+    "k_mish_f32",
+    "k_leaky_relu_f32",
+    "k_elu_f32",
+    "k_hardswish_f32",
+    "k_add_f32",
+    "k_sub_f32",
+    "k_emul_f32",
+    "k_ediv_f32",
+    "k_scale_f32",
+    "k_powf_f32",
+    "k_fill_f32",
+    "k_transpose_f32",
+    "k_matmul_f32",
+    "k_sum_f32",
+    "k_max_f32",
+    "k_min_f32",
+    "k_softmax_f32",
+    "k_layer_norm_f32",
+    "k_rms_norm_f32",
+    "k_sum_axis1_f32",
+    "k_max_axis1_f32",
+    "k_embedding_f32",
+    "k_cumsum_axis1_f32",
+    "k_cumprod_axis1_f32",
+    "k_neg_f64",
+    "k_recip_f64",
+    "k_exp_f64",
+    "k_ln_f64",
+    "k_log1p_f64",
+    "k_sin_f64",
+    "k_cos_f64",
+    "k_tanh_f64",
+    "k_sqrt_f64",
+    "k_abs_f64",
+    "k_ceil_f64",
+    "k_floor_f64",
+    "k_round_f64",
+    "k_erf_f64",
+    "k_asin_f64",
+    "k_acos_f64",
+    "k_atan_f64",
+    "k_atan2_f64",
+    "k_sinh_f64",
+    "k_cosh_f64",
+    "k_asinh_f64",
+    "k_acosh_f64",
+    "k_atanh_f64",
+    "k_log2_f64",
+    "k_log10_f64",
+    "k_sigmoid_f64",
+    "k_silu_f64",
+    "k_mish_f64",
+    "k_leaky_relu_f64",
+    "k_elu_f64",
+    "k_hardswish_f64",
+    "k_add_f64",
+    "k_sub_f64",
+    "k_emul_f64",
+    "k_ediv_f64",
+    "k_scale_f64",
+    "k_powf_f64",
+    "k_fill_f64",
+    "k_transpose_f64",
+    "k_matmul_f64",
+    "k_sum_f64",
+    "k_max_f64",
+    "k_min_f64",
+    "k_softmax_f64",
+    "k_layer_norm_f64",
+    "k_rms_norm_f64",
+    "k_sum_axis1_f64",
+    "k_max_axis1_f64",
+    "k_embedding_f64",
+    "k_cumsum_axis1_f64",
+    "k_cumprod_axis1_f64",
+    "k_prod_partial_f32",
+    "k_prod_partial_f64",
+    "k_max_pool2d_f32",
+    "k_max_pool2d_with_idx_f32",
+    "k_avg_pool2d_f32",
+    "k_adaptive_avg_pool2d_f32",
+    "k_max_pool2d_f64",
+    "k_max_pool2d_with_idx_f64",
+    "k_avg_pool2d_f64",
+    "k_adaptive_avg_pool2d_f64",
+    "k_im2col_f32",
+    "k_im2col_f64",
+    "k_batch_norm_stats_f32",
+    "k_batch_norm_fwd_f32",
+    "k_batch_norm_stats_f64",
+    "k_batch_norm_fwd_f64",
+    "k_cross_entropy_f32",
+    "k_cross_entropy_f64",
+    "k_sdpa_f32",
+    "k_sdpa_f64",
+    "k_conv_transpose2d_f32",
+    "k_conv_transpose2d_f64",
+    "k_axpy_f32",
+    "k_axpy_f64",
+    "k_relu_bwd_f32",
+    "k_relu_bwd_f64",
+    "k_leaky_relu_bwd_f32",
+    "k_leaky_relu_bwd_f64",
+    "k_elu_bwd_f32",
+    "k_elu_bwd_f64",
+    "k_gelu_bwd_f32",
+    "k_gelu_bwd_f64",
+    "k_abs_bwd_f32",
+    "k_abs_bwd_f64",
+    "k_expand_f32",
+    "k_expand_f64",
 ];
 
 pub(super) fn compile_all_kernels(ctx: &HipCtx) -> HipResult<()> {
@@ -136,7 +238,6 @@ pub(super) fn get_kernel(ctx: &HipCtx, name: &str) -> HipResult<hip::hipFunction
         .ok_or_else(|| HipError::KernelNotFound(name.to_owned()))
 }
 
-
 pub(super) fn hip_launch(
     func: hip::hipFunction_t,
     grid: [u32; 3],
@@ -194,7 +295,6 @@ pub(super) fn hip_launch_smem(
     }
 }
 
-
 pub(super) fn hip_prepare_launch<T: Scalar>(
     n: usize,
     op: &str,
@@ -245,7 +345,6 @@ pub(super) fn launch_binary<T: Scalar>(
     HipStorage::new(a.nrows, a.ncols, out_buf)
 }
 
-
 impl crate::backend::private::Sealed for crate::backend::Hip {}
 
 impl crate::backend::BackendCore for crate::backend::Hip {
@@ -281,7 +380,12 @@ impl crate::backend::BackendCore for crate::backend::Hip {
     }
 
     #[inline]
-    fn expand_into<T: Scalar>(out: &mut HipStorage<T>, src: &HipStorage<T>, src_rows: usize, src_cols: usize) {
+    fn expand_into<T: Scalar>(
+        out: &mut HipStorage<T>,
+        src: &HipStorage<T>,
+        src_rows: usize,
+        src_cols: usize,
+    ) {
         hip_expand(out, src, src_rows, src_cols);
     }
 }
@@ -309,11 +413,30 @@ impl crate::backend::BackendBlas for crate::backend::Hip {
 
 impl crate::backend::BackendNN for crate::backend::Hip {
     gpu_common::gpu_unary_ops!(HipStorage; silu, mish, hardswish);
-    #[inline] fn relu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>) -> HipStorage<T> { launch_binary(g, x, "relu_bwd") }
-    #[inline] fn leaky_relu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>, _alpha: T) -> HipStorage<T> { launch_binary(g, x, "leaky_relu_bwd") }
-    #[inline] fn elu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>, _alpha: T) -> HipStorage<T> { launch_binary(g, x, "elu_bwd") }
-    #[inline] fn gelu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>) -> HipStorage<T> { launch_binary(g, x, "gelu_bwd") }
-    #[inline] fn abs_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>) -> HipStorage<T> { launch_binary(g, x, "abs_bwd") }
+    #[inline]
+    fn relu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>) -> HipStorage<T> {
+        launch_binary(g, x, "relu_bwd")
+    }
+    #[inline]
+    fn leaky_relu_backward<T: Scalar>(
+        g: &HipStorage<T>,
+        x: &HipStorage<T>,
+        _alpha: T,
+    ) -> HipStorage<T> {
+        launch_binary(g, x, "leaky_relu_bwd")
+    }
+    #[inline]
+    fn elu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>, _alpha: T) -> HipStorage<T> {
+        launch_binary(g, x, "elu_bwd")
+    }
+    #[inline]
+    fn gelu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>) -> HipStorage<T> {
+        launch_binary(g, x, "gelu_bwd")
+    }
+    #[inline]
+    fn abs_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>) -> HipStorage<T> {
+        launch_binary(g, x, "abs_bwd")
+    }
     gpu_common::rtc_nn_impl! {
         HipStorage; softmax=hip_softmax, layer_norm=hip_layer_norm, rms_norm=hip_rms_norm,
         batch_norm_train=hip_batch_norm_train, cross_entropy_fused=hip_cross_entropy_fused,
@@ -326,23 +449,40 @@ impl crate::backend::BackendNN for crate::backend::Hip {
 
 impl crate::backend::BackendFusion for crate::backend::Hip {
     fn fuse_launch<T: Scalar>(
-        inputs: &[*const u8], nrows: usize, ncols: usize,
+        inputs: &[*const u8],
+        nrows: usize,
+        ncols: usize,
         _cpu_fn: impl FnMut(usize, usize) -> T,
-        gpu_expr: &str, kernel_hash: &str, n_inputs: usize, reg_estimate: usize,
+        gpu_expr: &str,
+        kernel_hash: &str,
+        n_inputs: usize,
+        reg_estimate: usize,
     ) -> HipStorage<T> {
-        hip_fuse_launch::<T>(inputs, nrows, ncols, gpu_expr, kernel_hash, n_inputs, reg_estimate)
+        hip_fuse_launch::<T>(
+            inputs,
+            nrows,
+            ncols,
+            gpu_expr,
+            kernel_hash,
+            n_inputs,
+            reg_estimate,
+        )
     }
 
     fn mega_fuse_launch<'a, T: Scalar>(
         ops: &[(Vec<*const u8>, String, usize, bool)],
-        nrows: usize, ncols: usize,
+        nrows: usize,
+        ncols: usize,
         _cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
         kernel_hash: &str,
     ) -> Vec<HipStorage<T>> {
         let mega_ops: Vec<MegaFuseOp> = ops
             .iter()
             .map(|(inputs, expr, n_in, up)| MegaFuseOp {
-                inputs: inputs.clone(), gpu_expr: expr.clone(), n_inputs: *n_in, uses_prev: *up,
+                inputs: inputs.clone(),
+                gpu_expr: expr.clone(),
+                n_inputs: *n_in,
+                uses_prev: *up,
             })
             .collect();
         hip_mega_fuse_launch::<T>(&mega_ops, nrows, ncols, kernel_hash)
@@ -464,7 +604,6 @@ pub(super) fn hip_fuse_launch<T: Scalar>(
     hip_launch(func, [grid, 1, 1], [BLOCK_SIZE, 1, 1], &mut args);
     HipStorage::new(nrows, ncols, out_buf)
 }
-
 
 pub(crate) struct MegaFuseOp {
     /// Raw pointers to input HipStorage buffers (as `*const u8`).

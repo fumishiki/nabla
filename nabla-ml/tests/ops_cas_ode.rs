@@ -44,12 +44,10 @@ fn cas_diff_simplify_eval_roundtrip() {
     assert!((result - 2.0 * 1.0_f64.cos()).abs() < 1e-10);
 }
 
-
 #[test]
 fn cas_eval_unbound_error() {
     assert!(eval(&Expr::var("x"), &HashMap::new()).is_err());
 }
-
 
 #[test]
 fn cas_eval_tensor_roundtrip() {
@@ -63,7 +61,6 @@ fn cas_eval_tensor_roundtrip() {
     assert!((result.get(1, 1) - 8.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn cas_eval_tensor_generic_type() {
     let x = Expr::var("x");
@@ -75,7 +72,6 @@ fn cas_eval_tensor_generic_type() {
     assert!((result.get(0, 0) - 1.0_f64.exp()).abs() < 1e-10);
     assert!((result.get(1, 1) - 3.0_f64.exp()).abs() < 1e-10);
 }
-
 
 #[test]
 fn cas_simplify_constant_folding() {
@@ -100,7 +96,6 @@ fn cas_simplify_eqsat_exp_ln() {
     assert_eq!(format!("{}", simplify(&Expr::ln(&Expr::exp(&x)))), "x");
 }
 
-
 #[test]
 fn cas_diff_simplify_matches_diff_simplify() {
     use nabla::cas::{Expr, diff, diff_simplify, eval, simplify};
@@ -118,7 +113,6 @@ fn cas_diff_simplify_matches_diff_simplify() {
     }
 }
 
-
 #[test]
 fn cas_diff_multivar_product_rule() {
     use nabla::cas::{Expr, diff_simplify, eval};
@@ -132,7 +126,6 @@ fn cas_diff_multivar_product_rule() {
     assert!((val - 3.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn cas_diff_multivar_other_var() {
     use nabla::cas::{Expr, diff_simplify, eval};
@@ -145,7 +138,6 @@ fn cas_diff_multivar_other_var() {
     let val = eval(&d, &vars).expect("eval");
     assert!(val.abs() < 1e-10);
 }
-
 
 #[test]
 fn cas_diff_chain_rule_exp() {
@@ -175,7 +167,6 @@ fn ode_rk4_accuracy() {
     );
 }
 
-
 #[test]
 fn ode_dormand_prince_adaptive() {
     let y0: Tensor<f64> = Tensor::from_fn(1, 1, |_, _| 1.0_f64);
@@ -191,13 +182,11 @@ fn ode_dormand_prince_adaptive() {
     assert!(sol.len() < 100);
 }
 
-
 #[test]
 fn ode_error_invalid_inputs() {
     let y0: Tensor<f64> = Tensor::from_fn(1, 1, |_, _| 1.0_f64);
     assert!(rk4(|_t, y| Ok(-y), &y0, (0.0, 1.0), -0.1).is_err());
 }
-
 
 #[test]
 fn ode_rk4_generic_type() {
@@ -207,7 +196,6 @@ fn ode_rk4_generic_type() {
         (sol.final_state().expect("final_state failed").get(0, 0) - (-0.5_f64).exp()).abs() < 1e-5
     );
 }
-
 
 #[test]
 fn bdf1_linear_decay() {
@@ -234,7 +222,6 @@ fn bdf1_linear_decay() {
     );
 }
 
-
 #[test]
 fn if_euler_scalar_stiff_stable() {
     // lambda=100, dt=0.1 — forward Euler diverges but IF Euler stays stable
@@ -259,7 +246,6 @@ fn if_euler_scalar_stiff_stable() {
         y_final[(0, 0)]
     );
 }
-
 
 #[test]
 fn dae_simple_constraint() {
@@ -294,7 +280,6 @@ fn dae_simple_constraint() {
     );
 }
 
-
 #[test]
 fn dae_quadratic_constraint() {
     // x' = z, 0 = z - 2*t  =>  z(t) = 2t, x(t) = t^2
@@ -328,7 +313,6 @@ fn dae_quadratic_constraint() {
     );
 }
 
-
 #[test]
 fn metd_linear_decay() {
     // dy/dt = -y  →  L = [-1] (1x1 matrix), N = 0
@@ -336,7 +320,11 @@ fn metd_linear_decay() {
     use nabla::ode::{MetdConfig, metd_solve};
     let l: Tensor<f64> = mat![[-1.0_f64]];
     let y0: Tensor<f64> = mat![[1.0_f64]];
-    let cfg = MetdConfig { dt: 0.01, order: 8, saveat: None };
+    let cfg = MetdConfig {
+        dt: 0.01,
+        order: 8,
+        saveat: None,
+    };
     let sol = metd_solve(
         &l,
         |_t, _y| Tensor::<f64>::zeros(1, 1), // N(t,y) = 0
@@ -353,7 +341,6 @@ fn metd_linear_decay() {
         "metd_linear_decay: got {val}, expected {expected}"
     );
 }
-
 
 #[test]
 fn stormer_verlet_harmonic() {
@@ -385,7 +372,6 @@ fn stormer_verlet_harmonic() {
         );
     }
 }
-
 
 #[test]
 fn parareal_van_der_pol() {

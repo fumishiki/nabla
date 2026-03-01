@@ -1,8 +1,8 @@
 use std::ffi::c_void;
 
 use cudarc::cublas::{result as cublas_result, sys as cublas_sys};
-use cudarc::driver::sys::{CUdeviceptr, CUfunction};
 use cudarc::driver::result;
+use cudarc::driver::sys::{CUdeviceptr, CUfunction};
 
 use crate::gpu_common;
 use crate::gpu_common::type_suffix;
@@ -275,9 +275,8 @@ pub(super) fn cuda_im1col<T: Scalar>(
     let ctx = get_ctx();
     let name = format!("k_im1col_{}", type_suffix::<T>());
     let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
-    let col_buf =
-        CuBuffer::alloc_async(&ctx.stream, n * k_cols * out_l * std::mem::size_of::<T>())
-            .or_panic("CUDA alloc im1col");
+    let col_buf = CuBuffer::alloc_async(&ctx.stream, n * k_cols * out_l * std::mem::size_of::<T>())
+        .or_panic("CUDA alloc im1col");
     let col_elem = (k_cols * out_l) as u32;
     let grid_x = (col_elem + BLOCK_SIZE - 1) / BLOCK_SIZE;
     let (c_in_u, l_u, kl_u, sl_u, pl_u, dl_u, out_l_u) = (

@@ -5,7 +5,6 @@ use nabla_core::error::{Error, Result};
 use nabla_core::tensor::Tensor;
 use rayon::prelude::*;
 
-
 #[inline]
 pub(crate) fn shape_mismatch(expected: (usize, usize), got: (usize, usize)) -> Error {
     Error::mismatch(expected, got)
@@ -40,7 +39,6 @@ pub(crate) fn require_square(shape: (usize, usize), op: &'static str) -> Result<
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     /// Lower triangle.
@@ -48,7 +46,6 @@ pub enum Side {
     /// Upper triangle.
     Upper,
 }
-
 
 pub(crate) fn to_f64_buf(a: &Tensor<f64, Cpu>) -> Vec<f64> {
     a.as_slice().to_vec()
@@ -68,7 +65,6 @@ pub(crate) fn buf_get(buf: &[f64], cols: usize, r: usize, c: usize) -> f64 {
 pub(crate) fn buf_set(buf: &mut [f64], cols: usize, r: usize, c: usize, v: f64) {
     buf[r * cols + c] = v;
 }
-
 
 #[inline]
 pub(crate) fn get_sym(a: &Tensor<f64, Cpu>, i: usize, j: usize, side: Side) -> f64 {
@@ -104,7 +100,6 @@ pub(crate) fn symmetrize_to_buf(a: &Tensor<f64, Cpu>, n: usize, side: Side) -> V
     buf
 }
 
-
 #[inline]
 pub(crate) fn householder_vec(v: &mut [f64]) -> Option<f64> {
     let sigma: f64 = v.iter().map(|&x| x * x).sum::<f64>().sqrt();
@@ -136,29 +131,29 @@ pub(crate) fn householder_apply_left(
     let blocks: Vec<usize> = (col_start..col_end).step_by(BLOCK).collect();
     #[allow(clippy::needless_range_loop)]
     let apply_block = |jb: usize| {
-            let jend = (jb + BLOCK).min(col_end);
-            let width = jend - jb;
-            let mut dots = vec![0.0f64; width];
-            // SAFETY: each column block updates disjoint memory locations; ptr is valid.
-            unsafe {
-                for i in 0..len {
-                    let row = (i + row_off) * ncols;
-                    let vi = v[i];
-                    for (k, jj) in (jb..jend).enumerate() {
-                        let ptr = (base as *mut f64).add(row + jj);
-                        dots[k] += vi * *ptr;
-                    }
-                }
-                for i in 0..len {
-                    let row = (i + row_off) * ncols;
-                    let vi = v[i] * tau;
-                    for (k, jj) in (jb..jend).enumerate() {
-                        let ptr = (base as *mut f64).add(row + jj);
-                        *ptr -= vi * dots[k];
-                    }
+        let jend = (jb + BLOCK).min(col_end);
+        let width = jend - jb;
+        let mut dots = vec![0.0f64; width];
+        // SAFETY: each column block updates disjoint memory locations; ptr is valid.
+        unsafe {
+            for i in 0..len {
+                let row = (i + row_off) * ncols;
+                let vi = v[i];
+                for (k, jj) in (jb..jend).enumerate() {
+                    let ptr = (base as *mut f64).add(row + jj);
+                    dots[k] += vi * *ptr;
                 }
             }
-        };
+            for i in 0..len {
+                let row = (i + row_off) * ncols;
+                let vi = v[i] * tau;
+                for (k, jj) in (jb..jend).enumerate() {
+                    let ptr = (base as *mut f64).add(row + jj);
+                    *ptr -= vi * dots[k];
+                }
+            }
+        }
+    };
     if col_end.saturating_sub(col_start) >= 128 {
         blocks.into_par_iter().for_each(apply_block);
     } else {
@@ -241,7 +236,6 @@ pub(crate) fn matmul_buf(l: &[f64], u: &[f64], n: usize) -> Vec<f64> {
     }
     out
 }
-
 
 macro_rules! impl_factorization_methods {
     // Common methods shared by both symmetric and general factorizations.
@@ -352,7 +346,6 @@ macro_rules! impl_triangular_solve_ip {
         }
     };
 }
-
 
 pub(crate) fn fwd_sub(
     l: &[f64],

@@ -1,9 +1,7 @@
-
 use core::fmt;
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
 use super::{MathOps, RealScalar, ReductionOps, Scalar, erf_approx};
-
 
 /// Dual number `value + deriv·ε` for forward-mode automatic differentiation.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -161,7 +159,6 @@ impl<T: RealScalar> fmt::Display for Dual<T> {
     }
 }
 
-
 impl<T: RealScalar> Add for Dual<T> {
     type Output = Self;
     #[inline]
@@ -220,7 +217,6 @@ impl<T: RealScalar> Neg for Dual<T> {
         )
     }
 }
-
 
 macro_rules! impl_dual_scalar_ops {
     ($scalar:ty) => {
@@ -312,7 +308,6 @@ macro_rules! impl_dual_scalar_ops {
 
 impl_dual_scalar_ops!(f32);
 impl_dual_scalar_ops!(f64);
-
 
 impl<T: RealScalar> MathOps for Dual<T> {
     // exp(a+bε) = exp(a) + exp(a)*b·ε
@@ -535,7 +530,6 @@ impl<T: RealScalar> MathOps for Dual<T> {
     }
 }
 
-
 impl<T: RealScalar> ReductionOps for Dual<T> {
     #[inline]
     fn reduction_add(self, other: Self) -> Self {
@@ -562,7 +556,6 @@ impl<T: RealScalar> ReductionOps for Dual<T> {
         self.value > other.value
     }
 }
-
 
 impl<T: RealScalar> Scalar for Dual<T> {
     type Real = T;

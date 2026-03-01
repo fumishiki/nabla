@@ -1,56 +1,165 @@
 use std::ffi::{CString, c_void};
 
-use cudarc::driver::sys::{CUdeviceptr, CUfunction};
 use cudarc::driver::result;
+use cudarc::driver::sys::{CUdeviceptr, CUfunction};
 use cudarc::nvrtc;
 
-use crate::gpu_common::{self, grid_1d, type_suffix};
 use crate::gpu_common::common::rtc::EnsureCache;
+use crate::gpu_common::{self, grid_1d, type_suffix};
 use crate::kernels_cu::{self, BLOCK_SIZE};
 use crate::scalar::Scalar;
 
 use super::*;
 
 const KERNEL_NAMES: &[&str] = &[
-    "k_neg_f32", "k_recip_f32", "k_exp_f32", "k_ln_f32",
-    "k_log1p_f32", "k_sin_f32", "k_cos_f32", "k_tanh_f32",
-    "k_sqrt_f32", "k_abs_f32", "k_ceil_f32", "k_floor_f32",
-    "k_round_f32", "k_erf_f32", "k_asin_f32", "k_acos_f32",
-    "k_atan_f32", "k_atan2_f32", "k_sinh_f32", "k_cosh_f32",
-    "k_asinh_f32", "k_acosh_f32", "k_atanh_f32", "k_log2_f32",
-    "k_log10_f32", "k_sigmoid_f32", "k_silu_f32", "k_mish_f32",
-    "k_leaky_relu_f32", "k_elu_f32", "k_hardswish_f32", "k_add_f32",
-    "k_sub_f32", "k_emul_f32", "k_ediv_f32", "k_scale_f32",
-    "k_powf_f32", "k_fill_f32", "k_transpose_f32", "k_matmul_f32",
-    "k_sum_f32", "k_max_f32", "k_min_f32", "k_softmax_f32",
-    "k_layer_norm_f32", "k_rms_norm_f32", "k_sum_axis1_f32", "k_max_axis1_f32",
-    "k_embedding_f32", "k_cumsum_axis1_f32", "k_cumprod_axis1_f32", "k_neg_f64",
-    "k_recip_f64", "k_exp_f64", "k_ln_f64", "k_log1p_f64",
-    "k_sin_f64", "k_cos_f64", "k_tanh_f64", "k_sqrt_f64",
-    "k_abs_f64", "k_ceil_f64", "k_floor_f64", "k_round_f64",
-    "k_erf_f64", "k_asin_f64", "k_acos_f64", "k_atan_f64",
-    "k_atan2_f64", "k_sinh_f64", "k_cosh_f64", "k_asinh_f64",
-    "k_acosh_f64", "k_atanh_f64", "k_log2_f64", "k_log10_f64",
-    "k_sigmoid_f64", "k_silu_f64", "k_mish_f64", "k_leaky_relu_f64",
-    "k_elu_f64", "k_hardswish_f64", "k_add_f64", "k_sub_f64",
-    "k_emul_f64", "k_ediv_f64", "k_scale_f64", "k_powf_f64",
-    "k_fill_f64", "k_transpose_f64", "k_matmul_f64", "k_sum_f64",
-    "k_max_f64", "k_min_f64", "k_softmax_f64", "k_layer_norm_f64",
-    "k_rms_norm_f64", "k_sum_axis1_f64", "k_max_axis1_f64", "k_embedding_f64",
-    "k_cumsum_axis1_f64", "k_cumprod_axis1_f64", "k_prod_partial_f32", "k_prod_partial_f64",
-    "k_max_pool2d_f32", "k_max_pool2d_with_idx_f32", "k_avg_pool2d_f32", "k_adaptive_avg_pool2d_f32",
-    "k_max_pool2d_f64", "k_max_pool2d_with_idx_f64", "k_avg_pool2d_f64", "k_adaptive_avg_pool2d_f64",
-    "k_im2col_f32", "k_im2col_f64", "k_im1col_f32", "k_im1col_f64",
-    "k_im3col_f32", "k_im3col_f64", "k_batch_norm_stats_f32", "k_batch_norm_fwd_f32",
-    "k_batch_norm_stats_f64", "k_batch_norm_fwd_f64", "k_cross_entropy_f32", "k_cross_entropy_f64",
-    "k_sdpa_f32", "k_sdpa_f64", "k_conv_transpose2d_f32", "k_conv_transpose2d_f64",
-    "k_axpy_f32", "k_axpy_f64",
-    "k_relu_bwd_f32", "k_relu_bwd_f64", "k_leaky_relu_bwd_f32", "k_leaky_relu_bwd_f64",
-    "k_elu_bwd_f32", "k_elu_bwd_f64", "k_gelu_bwd_f32", "k_gelu_bwd_f64",
-    "k_abs_bwd_f32", "k_abs_bwd_f64",
-    "k_expand_f32", "k_expand_f64",
-    "k_mse_sum_fwd_f32", "k_mse_sum_fwd_f64", "k_mse_sum_bwd_f32", "k_mse_sum_bwd_f64",
-    "k_multi_axpy3_f32", "k_multi_axpy3_f64",
+    "k_neg_f32",
+    "k_recip_f32",
+    "k_exp_f32",
+    "k_ln_f32",
+    "k_log1p_f32",
+    "k_sin_f32",
+    "k_cos_f32",
+    "k_tanh_f32",
+    "k_sqrt_f32",
+    "k_abs_f32",
+    "k_ceil_f32",
+    "k_floor_f32",
+    "k_round_f32",
+    "k_erf_f32",
+    "k_asin_f32",
+    "k_acos_f32",
+    "k_atan_f32",
+    "k_atan2_f32",
+    "k_sinh_f32",
+    "k_cosh_f32",
+    "k_asinh_f32",
+    "k_acosh_f32",
+    "k_atanh_f32",
+    "k_log2_f32",
+    "k_log10_f32",
+    "k_sigmoid_f32",
+    "k_silu_f32",
+    "k_mish_f32",
+    "k_leaky_relu_f32",
+    "k_elu_f32",
+    "k_hardswish_f32",
+    "k_add_f32",
+    "k_sub_f32",
+    "k_emul_f32",
+    "k_ediv_f32",
+    "k_scale_f32",
+    "k_powf_f32",
+    "k_fill_f32",
+    "k_transpose_f32",
+    "k_matmul_f32",
+    "k_sum_f32",
+    "k_max_f32",
+    "k_min_f32",
+    "k_softmax_f32",
+    "k_layer_norm_f32",
+    "k_rms_norm_f32",
+    "k_sum_axis1_f32",
+    "k_max_axis1_f32",
+    "k_embedding_f32",
+    "k_cumsum_axis1_f32",
+    "k_cumprod_axis1_f32",
+    "k_neg_f64",
+    "k_recip_f64",
+    "k_exp_f64",
+    "k_ln_f64",
+    "k_log1p_f64",
+    "k_sin_f64",
+    "k_cos_f64",
+    "k_tanh_f64",
+    "k_sqrt_f64",
+    "k_abs_f64",
+    "k_ceil_f64",
+    "k_floor_f64",
+    "k_round_f64",
+    "k_erf_f64",
+    "k_asin_f64",
+    "k_acos_f64",
+    "k_atan_f64",
+    "k_atan2_f64",
+    "k_sinh_f64",
+    "k_cosh_f64",
+    "k_asinh_f64",
+    "k_acosh_f64",
+    "k_atanh_f64",
+    "k_log2_f64",
+    "k_log10_f64",
+    "k_sigmoid_f64",
+    "k_silu_f64",
+    "k_mish_f64",
+    "k_leaky_relu_f64",
+    "k_elu_f64",
+    "k_hardswish_f64",
+    "k_add_f64",
+    "k_sub_f64",
+    "k_emul_f64",
+    "k_ediv_f64",
+    "k_scale_f64",
+    "k_powf_f64",
+    "k_fill_f64",
+    "k_transpose_f64",
+    "k_matmul_f64",
+    "k_sum_f64",
+    "k_max_f64",
+    "k_min_f64",
+    "k_softmax_f64",
+    "k_layer_norm_f64",
+    "k_rms_norm_f64",
+    "k_sum_axis1_f64",
+    "k_max_axis1_f64",
+    "k_embedding_f64",
+    "k_cumsum_axis1_f64",
+    "k_cumprod_axis1_f64",
+    "k_prod_partial_f32",
+    "k_prod_partial_f64",
+    "k_max_pool2d_f32",
+    "k_max_pool2d_with_idx_f32",
+    "k_avg_pool2d_f32",
+    "k_adaptive_avg_pool2d_f32",
+    "k_max_pool2d_f64",
+    "k_max_pool2d_with_idx_f64",
+    "k_avg_pool2d_f64",
+    "k_adaptive_avg_pool2d_f64",
+    "k_im2col_f32",
+    "k_im2col_f64",
+    "k_im1col_f32",
+    "k_im1col_f64",
+    "k_im3col_f32",
+    "k_im3col_f64",
+    "k_batch_norm_stats_f32",
+    "k_batch_norm_fwd_f32",
+    "k_batch_norm_stats_f64",
+    "k_batch_norm_fwd_f64",
+    "k_cross_entropy_f32",
+    "k_cross_entropy_f64",
+    "k_sdpa_f32",
+    "k_sdpa_f64",
+    "k_conv_transpose2d_f32",
+    "k_conv_transpose2d_f64",
+    "k_axpy_f32",
+    "k_axpy_f64",
+    "k_relu_bwd_f32",
+    "k_relu_bwd_f64",
+    "k_leaky_relu_bwd_f32",
+    "k_leaky_relu_bwd_f64",
+    "k_elu_bwd_f32",
+    "k_elu_bwd_f64",
+    "k_gelu_bwd_f32",
+    "k_gelu_bwd_f64",
+    "k_abs_bwd_f32",
+    "k_abs_bwd_f64",
+    "k_expand_f32",
+    "k_expand_f64",
+    "k_mse_sum_fwd_f32",
+    "k_mse_sum_fwd_f64",
+    "k_mse_sum_bwd_f32",
+    "k_mse_sum_bwd_f64",
+    "k_multi_axpy3_f32",
+    "k_multi_axpy3_f64",
 ];
 
 pub(super) fn compile_all_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResult<()> {
@@ -250,7 +359,12 @@ impl crate::backend::BackendCore for crate::backend::Cuda {
     }
 
     #[inline]
-    fn expand_into<T: Scalar>(out: &mut CudaStorage<T>, src: &CudaStorage<T>, src_rows: usize, src_cols: usize) {
+    fn expand_into<T: Scalar>(
+        out: &mut CudaStorage<T>,
+        src: &CudaStorage<T>,
+        src_rows: usize,
+        src_cols: usize,
+    ) {
         cuda_expand(out, src, src_rows, src_cols);
     }
 }
@@ -274,7 +388,11 @@ impl crate::backend::BackendReduce for crate::backend::Cuda {
     }
 
     #[inline]
-    fn mse_sum_bwd<T: Scalar>(pred: &CudaStorage<T>, target: &CudaStorage<T>, grad: &CudaStorage<T>) -> CudaStorage<T> {
+    fn mse_sum_bwd<T: Scalar>(
+        pred: &CudaStorage<T>,
+        target: &CudaStorage<T>,
+        grad: &CudaStorage<T>,
+    ) -> CudaStorage<T> {
         cuda_mse_sum_bwd(pred, target, grad)
     }
 }
@@ -329,15 +447,23 @@ impl crate::backend::BackendBlas for crate::backend::Cuda {
 
     #[inline]
     fn bmm<T: Scalar>(
-        a: &CudaStorage<T>, b: &CudaStorage<T>,
-        batch: usize, m: usize, k: usize, n: usize,
+        a: &CudaStorage<T>,
+        b: &CudaStorage<T>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
     ) -> CudaStorage<T> {
         cuda_bmm(a, b, batch, m, k, n)
     }
 
     #[inline]
     fn addmm<T: Scalar>(
-        c: &CudaStorage<T>, a: &CudaStorage<T>, b: &CudaStorage<T>, beta: T, alpha: T,
+        c: &CudaStorage<T>,
+        a: &CudaStorage<T>,
+        b: &CudaStorage<T>,
+        beta: T,
+        alpha: T,
     ) -> CudaStorage<T> {
         cuda_addmm(c, a, b, beta, alpha)
     }
@@ -345,8 +471,15 @@ impl crate::backend::BackendBlas for crate::backend::Cuda {
     #[inline]
     #[allow(clippy::too_many_arguments)]
     fn baddbmm<T: Scalar>(
-        c: &CudaStorage<T>, a: &CudaStorage<T>, b: &CudaStorage<T>,
-        batch: usize, m: usize, k: usize, n: usize, beta: T, alpha: T,
+        c: &CudaStorage<T>,
+        a: &CudaStorage<T>,
+        b: &CudaStorage<T>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+        beta: T,
+        alpha: T,
     ) -> CudaStorage<T> {
         cuda_baddbmm(c, a, b, batch, m, k, n, beta, alpha)
     }
@@ -354,11 +487,34 @@ impl crate::backend::BackendBlas for crate::backend::Cuda {
 
 impl crate::backend::BackendNN for crate::backend::Cuda {
     gpu_common::gpu_unary_ops!(CudaStorage; silu, mish, hardswish);
-    #[inline] fn relu_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>) -> CudaStorage<T> { launch_binary(g, x, "relu_bwd") }
-    #[inline] fn leaky_relu_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>, _alpha: T) -> CudaStorage<T> { launch_binary(g, x, "leaky_relu_bwd") }
-    #[inline] fn elu_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>, _alpha: T) -> CudaStorage<T> { launch_binary(g, x, "elu_bwd") }
-    #[inline] fn gelu_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>) -> CudaStorage<T> { launch_binary(g, x, "gelu_bwd") }
-    #[inline] fn abs_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>) -> CudaStorage<T> { launch_binary(g, x, "abs_bwd") }
+    #[inline]
+    fn relu_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>) -> CudaStorage<T> {
+        launch_binary(g, x, "relu_bwd")
+    }
+    #[inline]
+    fn leaky_relu_backward<T: Scalar>(
+        g: &CudaStorage<T>,
+        x: &CudaStorage<T>,
+        _alpha: T,
+    ) -> CudaStorage<T> {
+        launch_binary(g, x, "leaky_relu_bwd")
+    }
+    #[inline]
+    fn elu_backward<T: Scalar>(
+        g: &CudaStorage<T>,
+        x: &CudaStorage<T>,
+        _alpha: T,
+    ) -> CudaStorage<T> {
+        launch_binary(g, x, "elu_bwd")
+    }
+    #[inline]
+    fn gelu_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>) -> CudaStorage<T> {
+        launch_binary(g, x, "gelu_bwd")
+    }
+    #[inline]
+    fn abs_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>) -> CudaStorage<T> {
+        launch_binary(g, x, "abs_bwd")
+    }
     gpu_common::rtc_nn_impl! {
         CudaStorage; softmax=cuda_softmax, layer_norm=cuda_layer_norm, rms_norm=cuda_rms_norm,
         batch_norm_train=cuda_batch_norm_train, cross_entropy_fused=cuda_cross_entropy_fused,
@@ -371,23 +527,40 @@ impl crate::backend::BackendNN for crate::backend::Cuda {
 
 impl crate::backend::BackendFusion for crate::backend::Cuda {
     fn fuse_launch<T: Scalar>(
-        inputs: &[*const u8], nrows: usize, ncols: usize,
+        inputs: &[*const u8],
+        nrows: usize,
+        ncols: usize,
         _cpu_fn: impl FnMut(usize, usize) -> T,
-        gpu_expr: &str, kernel_hash: &str, n_inputs: usize, reg_estimate: usize,
+        gpu_expr: &str,
+        kernel_hash: &str,
+        n_inputs: usize,
+        reg_estimate: usize,
     ) -> CudaStorage<T> {
-        cuda_fuse_launch::<T>(inputs, nrows, ncols, gpu_expr, kernel_hash, n_inputs, reg_estimate)
+        cuda_fuse_launch::<T>(
+            inputs,
+            nrows,
+            ncols,
+            gpu_expr,
+            kernel_hash,
+            n_inputs,
+            reg_estimate,
+        )
     }
 
     fn mega_fuse_launch<'a, T: Scalar>(
         ops: &[(Vec<*const u8>, String, usize, bool)],
-        nrows: usize, ncols: usize,
+        nrows: usize,
+        ncols: usize,
         _cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
         kernel_hash: &str,
     ) -> Vec<CudaStorage<T>> {
         let mega_ops: Vec<MegaFuseOp> = ops
             .iter()
             .map(|(inputs, expr, n_in, up)| MegaFuseOp {
-                inputs: inputs.clone(), gpu_expr: expr.clone(), n_inputs: *n_in, uses_prev: *up,
+                inputs: inputs.clone(),
+                gpu_expr: expr.clone(),
+                n_inputs: *n_in,
+                uses_prev: *up,
             })
             .collect();
         cuda_mega_fuse_launch::<T>(&mega_ops, nrows, ncols, kernel_hash)
@@ -395,10 +568,25 @@ impl crate::backend::BackendFusion for crate::backend::Cuda {
 
     #[allow(clippy::too_many_arguments)]
     fn fuse_reduce_launch<T: Scalar>(
-        inputs: &[*const u8], nrows: usize, ncols: usize,
+        inputs: &[*const u8],
+        nrows: usize,
+        ncols: usize,
         _cpu_fn: impl FnMut(usize, usize) -> T,
-        gpu_expr: &str, kernel_hash: &str, n_inputs: usize, reduce_op: u8, axis: u8,
+        gpu_expr: &str,
+        kernel_hash: &str,
+        n_inputs: usize,
+        reduce_op: u8,
+        axis: u8,
     ) -> CudaStorage<T> {
-        cuda_fuse_reduce_launch::<T>(inputs, nrows, ncols, gpu_expr, kernel_hash, n_inputs, reduce_op, axis)
+        cuda_fuse_reduce_launch::<T>(
+            inputs,
+            nrows,
+            ncols,
+            gpu_expr,
+            kernel_hash,
+            n_inputs,
+            reduce_op,
+            axis,
+        )
     }
 }

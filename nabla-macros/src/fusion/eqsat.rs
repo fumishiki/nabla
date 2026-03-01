@@ -9,7 +9,6 @@ use proc_macro2::{Ident, Span};
 use quote::quote;
 use syn::{Expr, ExprBinary, ExprPath, ExprUnary};
 
-
 define_language! {
     pub(crate) enum FuseExpr {
         "+" = Add([Id; 2]),
@@ -30,7 +29,6 @@ define_language! {
         Symbol(Symbol),
     }
 }
-
 
 fn fuse_rules() -> Vec<Rewrite<FuseExpr, ()>> {
     vec![
@@ -54,7 +52,6 @@ fn fuse_rules() -> Vec<Rewrite<FuseExpr, ()>> {
         rewrite!("sqrt-pow2";  "(pow (sqrt ?x) 2)" => "(abs ?x)"),
     ]
 }
-
 
 fn add_opaque_symbol(
     expr: &Expr,
@@ -183,7 +180,6 @@ fn expr_to_egg(expr: &Expr, rec: &mut RecExpr<FuseExpr>, sym_map: &mut Vec<(Stri
     }
 }
 
-
 fn egg_to_expr(rec: &RecExpr<FuseExpr>, id: Id, sym_map: &[(String, Expr)]) -> Expr {
     let node = &rec[id];
     match node {
@@ -246,7 +242,6 @@ fn pow_expr(rec: &RecExpr<FuseExpr>, sym_map: &[(String, Expr)], a: Id, b: Id) -
     let lb = egg_to_expr(rec, b, sym_map);
     syn::parse_quote!(#la.powf(#lb))
 }
-
 
 pub(crate) fn eqsat_simplify(expr: &Expr) -> Expr {
     let mut rec = RecExpr::default();

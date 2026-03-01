@@ -40,7 +40,6 @@ fn mat_macro_roundtrip() {
     assert!(approx_eq(a.get(1, 1), 4.0));
 }
 
-
 #[test]
 fn einsum_gemm() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
@@ -52,7 +51,6 @@ fn einsum_gemm() {
     assert!(approx_eq(c.get(1, 0), 43.0));
     assert!(approx_eq(c.get(1, 1), 50.0));
 }
-
 
 #[test]
 fn einsum_batch_gemm_3d() {
@@ -84,7 +82,6 @@ fn einsum_batch_gemm_3d() {
     }
 }
 
-
 #[test]
 fn einsum_nd_fallback() {
     let t = NdTensor::<f64>::from_fn(&[2, 3, 4], |idx| {
@@ -113,7 +110,6 @@ fn einsum_nd_fallback() {
     }
 }
 
-
 #[test]
 fn fuse_pipeline() {
     let x: Tensor<f64> = linear_f64(4, 4);
@@ -126,7 +122,6 @@ fn fuse_pipeline() {
     }
 }
 
-
 #[test]
 fn named_tuple() {
     let p = named!(x: f64 = 1.0, y: f64 = 2.0, z: f64 = 3.0);
@@ -134,7 +129,6 @@ fn named_tuple() {
     assert!(approx_eq(p.y, 2.0));
     assert!(approx_eq(p.z, 3.0));
 }
-
 
 #[test]
 fn generated_specialization() {
@@ -159,7 +153,6 @@ fn generated_specialization() {
     assert!(approx_eq(norm_sq(&[1.0_f64, 1.0, 1.0, 1.0]), 4.0));
 }
 
-
 #[test]
 fn map_and_map_() {
     let a: Tensor<f64> = linear_f64(2, 2);
@@ -179,7 +172,6 @@ fn map_and_map_() {
     assert!(approx_eq(out.get(1, 1), 8.0));
 }
 
-
 #[test]
 fn splat_tuple() {
     use nabla::splat;
@@ -195,7 +187,6 @@ fn splat_tuple() {
     assert!(approx_eq(splat!(mul2, (3.0_f64, 4.0)), 12.0));
 }
 
-
 #[test]
 fn einsum_canon_term_order_independent() {
     let a = mat![[1.0_f64, 2.0], [3.0, 4.0]];
@@ -208,7 +199,6 @@ fn einsum_canon_term_order_independent() {
     assert_approx_grid(&c2, &expected, 1e-10);
 }
 
-
 #[test]
 fn einsum_canon_index_rename() {
     let a = mat![[1.0_f64, 2.0], [3.0, 4.0]];
@@ -218,7 +208,6 @@ fn einsum_canon_index_rename() {
     let c: Tensor<f64> = einsum!(c[x, y] = a[x, z] * b[z, y]);
     assert_approx_grid(&c, &expected, 1e-10);
 }
-
 
 #[test]
 fn einsum_three_tensor_chain() {
@@ -232,7 +221,6 @@ fn einsum_three_tensor_chain() {
     assert_approx_grid(&result, &expected, 1e-10);
 }
 
-
 #[test]
 fn einsum_three_tensor_vs_manual() {
     // Verify 3-tensor einsum matches manual matmul chain
@@ -243,7 +231,6 @@ fn einsum_three_tensor_vs_manual() {
     let manual = &(&a * &b) * &d; // a @ b @ I = a @ b
     assert_approx_grid(&result, &manual, 1e-10);
 }
-
 
 #[test]
 fn vcat_macro_three_tensors() {
@@ -258,7 +245,6 @@ fn vcat_macro_three_tensors() {
     assert!(approx_eq(r.get(2, 0), 5.0));
 }
 
-
 #[test]
 fn hcat_macro_three_tensors() {
     let a: Tensor<f64> = mat![[1.0_f64], [2.0]];
@@ -272,7 +258,6 @@ fn hcat_macro_three_tensors() {
     assert!(approx_eq(r.get(0, 2), 5.0));
 }
 
-
 #[test]
 fn vcat_macro_two_tensors() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0]];
@@ -280,7 +265,6 @@ fn vcat_macro_two_tensors() {
     let r = nabla::vcat!(a, b);
     assert_eq!(r.shape(), (2, 2));
 }
-
 
 #[test]
 fn named_axes_zero_cost() {
@@ -296,7 +280,6 @@ fn named_axes_zero_cost() {
     );
 }
 
-
 #[test]
 fn named_axes_named_zeros_macro() {
     axis!(Time, Freq);
@@ -304,7 +287,6 @@ fn named_axes_named_zeros_macro() {
     assert_eq!(t.shape(), (16, 256));
     assert!(approx_eq(t.get(0, 0), 0.0));
 }
-
 
 #[test]
 fn einsum_nd_fallback_tiled_large() {
@@ -335,7 +317,6 @@ fn einsum_nd_fallback_tiled_large() {
     }
 }
 
-
 #[test]
 fn einsum_three_tensor_non_square() {
     // 3-tensor contraction with non-square matrices exercises greedy path optimizer
@@ -346,7 +327,6 @@ fn einsum_three_tensor_non_square() {
     let manual = &(&a * &b) * &d;
     assert_approx_grid(&result, &manual, 1e-6);
 }
-
 
 #[test]
 fn fuse_multi_tensor() {
@@ -363,7 +343,6 @@ fn fuse_multi_tensor() {
     }
 }
 
-
 #[test]
 fn fuse_deep_chain() {
     let x: Tensor<f64> = Tensor::from_fn(2, 3, |r, c| (r * 3 + c + 1) as f64 * 0.5);
@@ -376,7 +355,6 @@ fn fuse_deep_chain() {
         }
     }
 }
-
 
 #[test]
 fn fuse_neg_and_arithmetic() {
@@ -391,7 +369,6 @@ fn fuse_neg_and_arithmetic() {
     }
 }
 
-
 #[test]
 fn fuse_gemm_sigmoid() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
@@ -400,7 +377,6 @@ fn fuse_gemm_sigmoid() {
     let expected = (&a * &b).sigmoid();
     assert_approx_grid(&fused, &expected, 1e-12);
 }
-
 
 #[test]
 fn fuse_gemm_relu() {
@@ -412,7 +388,6 @@ fn fuse_gemm_relu() {
 }
 
 // Parareal parallel-in-time ODE solver
-
 
 #[test]
 fn einsum_canon_swapped_operands_with_renamed_indices() {
@@ -427,7 +402,6 @@ fn einsum_canon_swapped_operands_with_renamed_indices() {
     assert_approx_grid(&c1, &expected, 1e-10);
     assert_approx_grid(&c2, &expected, 1e-10);
 }
-
 
 #[test]
 fn einsum_canon_gemv_swapped() {
@@ -445,7 +419,6 @@ fn einsum_canon_gemv_swapped() {
     }
 }
 
-
 #[test]
 fn einsum_canon_hadamard_renamed() {
     // h[i,j] = a[i,j]*b[i,j]  vs  h[p,q] = b[p,q]*a[p,q]
@@ -460,7 +433,6 @@ fn einsum_canon_hadamard_renamed() {
 }
 
 // ── New operations tests (§14.1 parity) ──────────────────────────
-
 
 #[test]
 fn einsum_compile_errors() {

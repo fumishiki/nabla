@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 
-use cudarc::driver::sys::CUdeviceptr;
 use cudarc::driver::result;
+use cudarc::driver::sys::CUdeviceptr;
 
 use crate::gpu_common::type_suffix;
 use crate::kernels_cu::BLOCK_SIZE;
@@ -406,8 +406,8 @@ pub(super) fn cuda_embedding<T: Scalar>(
     let total = n_tokens * embed_dim;
     let name = format!("k_embedding_{}", type_suffix::<T>());
     let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
-    let out_buf = CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>())
-        .or_panic("CUDA alloc");
+    let out_buf =
+        CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>()).or_panic("CUDA alloc");
     let n_tokens_u32 = n_tokens as u32;
     let embed_dim_u32 = embed_dim as u32;
     unsafe {

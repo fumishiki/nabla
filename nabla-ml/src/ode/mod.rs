@@ -1,4 +1,3 @@
-
 #![allow(clippy::many_single_char_names)]
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 #![allow(clippy::missing_errors_doc)]
@@ -32,17 +31,23 @@ pub trait IntoOdeRhs<T: Scalar, B: Backend> {
 
 impl<T: Scalar, B: Backend> IntoOdeRhs<T, B> for Tensor<T, B> {
     #[inline]
-    fn into_rhs(self) -> Result<Tensor<T, B>> { Ok(self) }
+    fn into_rhs(self) -> Result<Tensor<T, B>> {
+        Ok(self)
+    }
 }
 
 impl<T: Scalar, B: Backend> IntoOdeRhs<T, B> for Result<Tensor<T, B>> {
     #[inline]
-    fn into_rhs(self) -> Result<Tensor<T, B>> { self }
+    fn into_rhs(self) -> Result<Tensor<T, B>> {
+        self
+    }
 }
 
 pub(crate) fn wrap_rhs<T, B, R, F>(f: F) -> impl Fn(f64, &Tensor<T, B>) -> Result<Tensor<T, B>>
 where
-    T: Scalar, B: Backend, R: IntoOdeRhs<T, B>,
+    T: Scalar,
+    B: Backend,
+    R: IntoOdeRhs<T, B>,
     F: Fn(f64, &Tensor<T, B>) -> R,
 {
     move |t, y| f(t, y).into_rhs()
@@ -326,13 +331,25 @@ impl Default for DaeConfig {
 
 impl DaeConfig {
     /// Set the fixed step size.
-    pub fn with_dt(mut self, dt: f64) -> Self { self.dt = dt; self }
+    pub fn with_dt(mut self, dt: f64) -> Self {
+        self.dt = dt;
+        self
+    }
     /// Set the Newton convergence tolerance.
-    pub fn with_tol(mut self, tol: f64) -> Self { self.tol = tol; self }
+    pub fn with_tol(mut self, tol: f64) -> Self {
+        self.tol = tol;
+        self
+    }
     /// Set the maximum Newton iterations per step.
-    pub fn with_max_iter(mut self, max_iter: usize) -> Self { self.max_iter = max_iter; self }
+    pub fn with_max_iter(mut self, max_iter: usize) -> Self {
+        self.max_iter = max_iter;
+        self
+    }
     /// Record solution only at specific output times.
-    pub fn with_saveat(mut self, times: Vec<f64>) -> Self { self.saveat = Some(times); self }
+    pub fn with_saveat(mut self, times: Vec<f64>) -> Self {
+        self.saveat = Some(times);
+        self
+    }
 }
 
 /// Configuration for the scalar integrating-factor Euler method.
@@ -423,7 +440,6 @@ impl Default for PararealConfig {
     }
 }
 
-
 #[inline]
 fn require_positive(name: &str, v: f64) -> Result<()> {
     if v <= 0.0 {
@@ -476,11 +492,7 @@ pub(crate) fn alloc_trajectory<T: Scalar, B: Backend>(
 
 #[inline]
 pub(crate) fn time_direction(t_span: (f64, f64)) -> f64 {
-    if t_span.1 >= t_span.0 {
-        1.0
-    } else {
-        -1.0
-    }
+    if t_span.1 >= t_span.0 { 1.0 } else { -1.0 }
 }
 
 #[inline]
@@ -526,11 +538,7 @@ where
 #[cfg(feature = "cpu")]
 #[inline]
 pub(crate) fn phi1(z: f64) -> f64 {
-    if z.abs() < 1e-8 {
-        1.0
-    } else {
-        z.exp_m1() / z
-    }
+    if z.abs() < 1e-8 { 1.0 } else { z.exp_m1() / z }
 }
 
 #[cfg(feature = "cpu")]
@@ -609,7 +617,6 @@ pub(crate) fn apply_saveat<T: Scalar, B: Backend>(
     }
 }
 
-
 /// Configuration for the explicit Euler method.
 pub struct EulerConfig {
     /// Fixed step size.
@@ -657,7 +664,6 @@ impl Rk4Config {
         self
     }
 }
-
 
 /// Bundled ODE initial-value problem (RHS, initial state, time span).
 pub struct OdeProblem<T: Scalar, B: Backend, F> {
@@ -711,7 +717,6 @@ where
     }
 }
 
-
 #[cfg(feature = "cpu")]
 impl<T: Scalar, R: IntoOdeRhs<T, Cpu>, F> OdeProblem<T, Cpu, F>
 where
@@ -728,11 +733,13 @@ where
     }
 
     /// Solve with the scalar integrating-factor Euler method for stiff ODEs.
-    pub fn solve_if_euler_scalar(self, config: &IfEulerScalarConfig) -> Result<OdeSolution<T, Cpu>> {
+    pub fn solve_if_euler_scalar(
+        self,
+        config: &IfEulerScalarConfig,
+    ) -> Result<OdeSolution<T, Cpu>> {
         if_euler_scalar(self.f, &self.y0, self.t_span, config)
     }
 }
-
 
 /// Explicit Euler method for initial value problems.
 pub fn euler<T: Scalar, B: Backend, R: IntoOdeRhs<T, B>, F>(
@@ -778,7 +785,6 @@ where
     let sol = euler(f, y0, t_span, config.dt)?;
     Ok(apply_saveat(sol, &config.saveat))
 }
-
 
 /// Classic fourth-order Runge-Kutta method.
 pub fn rk4<T: Scalar, B: Backend, R: IntoOdeRhs<T, B>, F>(
@@ -833,7 +839,6 @@ where
     let sol = rk4(f, y0, t_span, config.dt)?;
     Ok(apply_saveat(sol, &config.saveat))
 }
-
 
 const A21: f64 = 1.0 / 5.0;
 const A31: f64 = 3.0 / 40.0;

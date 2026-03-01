@@ -55,7 +55,11 @@ pub mod constructors {
                 seed
             } else {
                 let seed = default_seed();
-                if seed == 0 { 0x1234_5678_9ABC_DEF0_u64 } else { seed }
+                if seed == 0 {
+                    0x1234_5678_9ABC_DEF0_u64
+                } else {
+                    seed
+                }
             }
         })
     }

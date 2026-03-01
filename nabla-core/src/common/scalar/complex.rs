@@ -1,9 +1,7 @@
-
 use core::fmt;
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
 use super::{MathOps, RealScalar, ReductionOps, Scalar, erf_approx};
-
 
 /// Complex number `a + bi` over a real scalar `T`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -147,7 +145,6 @@ impl<T: RealScalar> Complex<T> {
     }
 }
 
-
 macro_rules! impl_complex_binop {
     ($Op:ident, $fn_name:ident, $op:tt) => {
         impl<T: RealScalar> $Op for Complex<T> {
@@ -209,7 +206,6 @@ impl<T: RealScalar> fmt::Display for Complex<T> {
         write!(f, "{}+{}i", self.re, self.im)
     }
 }
-
 
 macro_rules! impl_complex_mathops {
     ($ty:ty, $real:ty) => {
@@ -304,7 +300,6 @@ macro_rules! impl_complex_mathops {
 impl_complex_mathops!(c32, f32);
 impl_complex_mathops!(c64, f64);
 
-
 macro_rules! mag2 {
     ($z:expr) => {
         $z.re * $z.re + $z.im * $z.im
@@ -344,7 +339,6 @@ macro_rules! impl_complex_reduction {
 
 impl_complex_reduction!(c32);
 impl_complex_reduction!(c64);
-
 
 macro_rules! impl_complex_scalar {
     ($T:ty, $F:ty, $from_f64:expr, $to_f64:expr) => {

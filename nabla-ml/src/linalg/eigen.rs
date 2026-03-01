@@ -1,4 +1,3 @@
-
 use nabla_core::backend::Cpu;
 use nabla_core::error::Result;
 use nabla_core::scalar::Scalar;
@@ -8,7 +7,6 @@ use super::{
     Side, buf_get, factorization_failed, from_f64_buf, householder_apply_left,
     householder_apply_right, householder_vec, require_square, symmetrize_to_buf,
 };
-
 
 pub struct SelfAdjointEigen<T: Scalar> {
     /// Eigenvectors stored as columns (V matrix).
@@ -303,8 +301,8 @@ mod francis {
                 return Err(Error::invalid("eig_into: Francis QR failed to converge"));
             }
 
-            let tol = f64::EPSILON
-                * (buf_get(h, n, hi - 1, hi - 1).abs() + buf_get(h, n, hi, hi).abs());
+            let tol =
+                f64::EPSILON * (buf_get(h, n, hi - 1, hi - 1).abs() + buf_get(h, n, hi, hi).abs());
             if buf_get(h, n, hi, hi - 1).abs() <= tol {
                 buf_set(h, n, hi, hi - 1, 0.0);
                 hi = hi.saturating_sub(1);

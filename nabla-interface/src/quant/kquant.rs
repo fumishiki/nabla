@@ -1,8 +1,8 @@
 //! K-quant quantization: `Q2_K`, `Q3_K`, `Q4_K` (S/M), `Q5_K` (S/M), `Q6_K`.
 //! `Q*_K_S` and `Q*_K_M` share the same block format; S/M difference is per-layer mixing only.
 
-use half::f16;
 use crate::{Error, Result};
+use half::f16;
 
 const QK_K: usize = 256;
 const BQ2_K: usize = 84; // scales(16) + qs(64) + d+dmin(4)
@@ -13,7 +13,9 @@ const BQ6_K: usize = 210; // ql(128) + qh(64) + scales(16) + d(2)
 
 fn check_len(name: &str, len: usize, divisor: usize) -> Result<()> {
     if !len.is_multiple_of(divisor) {
-        return Err(Error::Quant(format!("{name}: len {len} not divisible by {divisor}")));
+        return Err(Error::Quant(format!(
+            "{name}: len {len} not divisible by {divisor}"
+        )));
     }
     Ok(())
 }
@@ -35,7 +37,11 @@ pub fn quantize_q2_k(data: &[f32]) -> Result<Vec<u8>> {
             let range = vmax - vmin;
             let inv_d = if range == 0.0 { 0.0 } else { 3.0 / range };
             let sc = if range == 0.0 { 0 } else { 15u8 };
-            let mq = if range == 0.0 { 0 } else { ((vmin.abs() / range * 15.0).clamp(0.0, 15.0) as u8) & 0x0F };
+            let mq = if range == 0.0 {
+                0
+            } else {
+                ((vmin.abs() / range * 15.0).clamp(0.0, 15.0) as u8) & 0x0F
+            };
             scales[sb] = sc | (mq << 4);
             for (j, &v) in sub.iter().enumerate() {
                 let q = ((v - vmin) * inv_d + 0.5).clamp(0.0, 3.0) as u8;
@@ -97,7 +103,11 @@ pub fn quantize_q3_k(data: &[f32]) -> Result<Vec<u8>> {
         let mut sc_raw = [0i8; 16];
         for (sb, sub) in blk.chunks_exact(16).enumerate() {
             let sb_max = sub.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
-            let sc = if d == 0.0 { 0 } else { (sb_max / d).clamp(-128.0, 127.0) as i8 };
+            let sc = if d == 0.0 {
+                0
+            } else {
+                (sb_max / d).clamp(-128.0, 127.0) as i8
+            };
             sc_raw[sb] = sc;
             let sb_d = f32::from(sc) * d;
             let inv_sb_d = if sb_d == 0.0 { 0.0 } else { 1.0 / sb_d };
@@ -105,18 +115,24 @@ pub fn quantize_q3_k(data: &[f32]) -> Result<Vec<u8>> {
                 let q = ((v * inv_sb_d + 4.5).clamp(0.0, 7.0) as u8) & 0x07;
                 let idx = sb * 16 + j;
                 qs[idx / 4] |= (q & 0x03) << ((idx % 4) * 2);
-                if q & 0x04 != 0 { hmask[idx / 8] |= 1 << (idx & 7); }
+                if q & 0x04 != 0 {
+                    hmask[idx / 8] |= 1 << (idx & 7);
+                }
             }
         }
         out.extend_from_slice(&hmask);
         out.extend_from_slice(&qs);
         // Pack 16 6-bit scales into 12 bytes
         let mut sp = [0u8; 12];
-        for i in 0..8 { sp[i] = (sc_raw[i] as u8) & 0x3F; }
+        for i in 0..8 {
+            sp[i] = (sc_raw[i] as u8) & 0x3F;
+        }
         for i in 8..16 {
             let s = (sc_raw[i] as u8) & 0x3F;
             sp[i - 8] |= (s & 0x03) << 6;
-            if i < 12 { sp[4 + (i - 8)] = s >> 2; }
+            if i < 12 {
+                sp[4 + (i - 8)] = s >> 2;
+            }
         }
         out.extend_from_slice(&sp);
         out.extend_from_slice(&f16::from_f32(d).to_le_bytes());
@@ -143,10 +159,16 @@ pub fn dequantize_q3_k(data: &[u8]) -> Result<Vec<f32>> {
         let d = f16::from_le_bytes([data[p], data[p + 1]]).to_f32();
         p += 2;
         let mut sc_vals = [0i8; 16];
-        for i in 0..8 { sc_vals[i] = (sp[i] & 0x3F) as i8; }
+        for i in 0..8 {
+            sc_vals[i] = (sp[i] & 0x3F) as i8;
+        }
         for i in 8..16 {
             let lo = (sp[i - 8] >> 6) & 0x03;
-            let hi = if i < 12 { (sp[4 + (i - 8)] & 0x0F) << 2 } else { 0 };
+            let hi = if i < 12 {
+                (sp[4 + (i - 8)] & 0x0F) << 2
+            } else {
+                0
+            };
             sc_vals[i] = (lo | hi) as i8;
         }
         for (sb, &sc) in sc_vals.iter().enumerate() {
@@ -214,7 +236,11 @@ pub fn quantize_q4_k(data: &[f32]) -> Result<Vec<u8>> {
             for (j, &v) in sub.iter().enumerate() {
                 let q = ((v + mn) * inv + 0.5).clamp(0.0, 15.0) as u8;
                 let idx = si * 16 + j / 2;
-                if j % 2 == 0 { packed_qs[idx] = q; } else { packed_qs[idx] |= q << 4; }
+                if j % 2 == 0 {
+                    packed_qs[idx] = q;
+                } else {
+                    packed_qs[idx] |= q << 4;
+                }
             }
         }
         out.extend_from_slice(&packed_qs);
@@ -252,7 +278,11 @@ pub fn dequantize_q4_k(data: &[u8]) -> Result<Vec<f32>> {
             let mn = f32::from(qm6[si]) * dm;
             for j in 0..32 {
                 let idx = si * 16 + j / 2;
-                let q = if j % 2 == 0 { qs[idx] & 0xF } else { qs[idx] >> 4 };
+                let q = if j % 2 == 0 {
+                    qs[idx] & 0xF
+                } else {
+                    qs[idx] >> 4
+                };
                 out.push(f32::from(q) * sc / 15.0 - mn);
             }
         }
@@ -313,7 +343,9 @@ pub fn quantize_q5_k(data: &[f32]) -> Result<Vec<u8>> {
                 let q = ((v + mn) * inv + 0.5).clamp(0.0, 31.0) as u8;
                 let idx = si * 32 + j;
                 packed_qs[idx / 2] |= (q & 0x0F) << (4 * (idx & 1));
-                if q & 0x10 != 0 { qh[idx / 8] |= 1 << (idx & 7); }
+                if q & 0x10 != 0 {
+                    qh[idx / 8] |= 1 << (idx & 7);
+                }
             }
         }
         out.extend_from_slice(&qh);
@@ -380,7 +412,11 @@ pub fn quantize_q6_k(data: &[f32]) -> Result<Vec<u8>> {
         let mut scales = [0i8; 16];
         for (sb, sub) in blk.chunks_exact(16).enumerate() {
             let sb_max = sub.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
-            let sc = if d == 0.0 { 0 } else { (sb_max / d).clamp(-128.0, 127.0) as i8 };
+            let sc = if d == 0.0 {
+                0
+            } else {
+                (sb_max / d).clamp(-128.0, 127.0) as i8
+            };
             scales[sb] = sc;
             let sb_d = f32::from(sc) * d;
             let inv_sb_d = if sb_d == 0.0 { 0.0 } else { 1.0 / sb_d };
@@ -437,10 +473,14 @@ pub fn dequantize_q6_k(data: &[u8]) -> Result<Vec<f32>> {
 ///
 /// # Errors
 /// Returns `Error::Quant` if `data.len()` is not a multiple of 256.
-pub fn quantize_q4_k_m(data: &[f32]) -> Result<Vec<u8>> { quantize_q4_k(data) }
+pub fn quantize_q4_k_m(data: &[f32]) -> Result<Vec<u8>> {
+    quantize_q4_k(data)
+}
 
 /// Alias for [`dequantize_q4_k`].
 ///
 /// # Errors
 /// Returns `Error::Quant` if `data.len()` is not a multiple of 144.
-pub fn dequantize_q4_k_m(data: &[u8]) -> Result<Vec<f32>> { dequantize_q4_k(data) }
+pub fn dequantize_q4_k_m(data: &[u8]) -> Result<Vec<f32>> {
+    dequantize_q4_k(data)
+}

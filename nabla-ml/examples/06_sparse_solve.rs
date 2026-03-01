@@ -22,7 +22,12 @@ fn main() {
         }
     }
     let a = SparseMatrix::try_new_from_triplets(n, n, &trips)?;
-    println!("Sparse matrix: {}x{}, nnz={}", a.nrows(), a.ncols(), a.nnz());
+    println!(
+        "Sparse matrix: {}x{}, nnz={}",
+        a.nrows(),
+        a.ncols(),
+        a.nnz()
+    );
 
     let rhs = Tensor::fill(n, 1, 1.0_f64);
 

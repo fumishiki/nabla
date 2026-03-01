@@ -40,18 +40,26 @@ impl<T: Scalar, B: Backend> CalibrationStats<T, B> {
     /// Feed one activation batch `(batch_rows, channels)` into the statistics.
     pub fn update(&mut self, activations: &Tensor<T, B>) {
         let (_rows, cols) = activations.shape();
-        assert_eq!(cols, self.accum_sum.ncols(), "nabla-train: calibration channel mismatch");
+        assert_eq!(
+            cols,
+            self.accum_sum.ncols(),
+            "nabla-train: calibration channel mismatch"
+        );
         let abs_act = activations.map(T::math_abs);
         let batch_sum = Tensor::from_fn(1, cols, |_, c| {
             let mut s = T::zero();
-            for r in 0..activations.nrows() { s = s + abs_act.get(r, c); }
+            for r in 0..activations.nrows() {
+                s = s + abs_act.get(r, c);
+            }
             s
         });
         let batch_max: Tensor<T, B> = Tensor::from_fn(1, cols, |_, c| {
             let mut m = T::zero();
             for r in 0..activations.nrows() {
                 let v = abs_act.get(r, c);
-                if v.to_f64() > m.to_f64() { m = v; }
+                if v.to_f64() > m.to_f64() {
+                    m = v;
+                }
             }
             m
         });
@@ -103,13 +111,17 @@ fn compute_awq_scales<T: Scalar, B: Backend>(
         let mut w_max = T::zero();
         for c in g_start..g_end {
             let v = weight.get(row, c).math_abs();
-            if v.to_f64() > w_max.to_f64() { w_max = v; }
+            if v.to_f64() > w_max.to_f64() {
+                w_max = v;
+            }
         }
         // activation importance for this group
         let mut act_importance = T::zero();
         for c in g_start..g_end {
             let a = stats.channel_absmax.get(0, c);
-            if a.to_f64() > act_importance.to_f64() { act_importance = a; }
+            if a.to_f64() > act_importance.to_f64() {
+                act_importance = a;
+            }
         }
         // grid search: scale ∈ [0.1, 1.0], minimize MSE(quant(w*s) / s, w)
         let mut best_scale = T::one();
@@ -118,20 +130,29 @@ fn compute_awq_scales<T: Scalar, B: Backend>(
             let alpha = 0.1 + 0.9 * (step as f64) / ((GRID_STEPS - 1) as f64);
             // scale = act_importance^alpha
             let s = T::from_f64(act_importance.to_f64().powf(alpha));
-            if s.to_f64() <= 0.0 { continue; }
+            if s.to_f64() <= 0.0 {
+                continue;
+            }
             let mut mse = 0.0;
             for c in g_start..g_end {
                 let w = weight.get(row, c);
                 let ws = w * s;
                 // quantize ws to INT4 range, then dequant
                 let q_scale = T::from_f64(w_max.to_f64() * s.to_f64() / f64::from(INT4_MAX));
-                if q_scale.to_f64() <= 0.0 { continue; }
-                let q = (ws.to_f64() / q_scale.to_f64()).round().clamp(f64::from(INT4_MIN), f64::from(INT4_MAX));
+                if q_scale.to_f64() <= 0.0 {
+                    continue;
+                }
+                let q = (ws.to_f64() / q_scale.to_f64())
+                    .round()
+                    .clamp(f64::from(INT4_MIN), f64::from(INT4_MAX));
                 let deq = q * q_scale.to_f64() / s.to_f64();
                 let diff = w.to_f64() - deq;
                 mse += diff * diff;
             }
-            if mse < best_mse { best_mse = mse; best_scale = s; }
+            if mse < best_mse {
+                best_mse = mse;
+                best_scale = s;
+            }
         }
         best_scale
     })
@@ -142,10 +163,19 @@ fn quantize_group<T: Scalar>(weights: &[T], act_scale: f64) -> (Vec<i8>, f64, f6
     // scale weights by activation scale
     let scaled: Vec<f64> = weights.iter().map(|w| w.to_f64() * act_scale).collect();
     let w_max = scaled.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
-    let q_scale = if w_max > 0.0 { w_max / f64::from(INT4_MAX) } else { 1.0 };
-    let quantized: Vec<i8> = scaled.iter().map(|&v| {
-        (v / q_scale).round().clamp(f64::from(INT4_MIN), f64::from(INT4_MAX)) as i8
-    }).collect();
+    let q_scale = if w_max > 0.0 {
+        w_max / f64::from(INT4_MAX)
+    } else {
+        1.0
+    };
+    let quantized: Vec<i8> = scaled
+        .iter()
+        .map(|&v| {
+            (v / q_scale)
+                .round()
+                .clamp(f64::from(INT4_MIN), f64::from(INT4_MAX)) as i8
+        })
+        .collect();
     (quantized, q_scale / act_scale, 0.0)
 }
 
@@ -170,7 +200,11 @@ pub fn unpack_int4(packed: u32) -> [i8; 8] {
     for i in 0..8 {
         let bits = ((packed >> (i * 4)) & 0x0F) as u8;
         // sign-extend 4-bit to i8
-        out[i] = if bits & 0x08 != 0 { (bits | 0xF0) as i8 } else { bits as i8 };
+        out[i] = if bits & 0x08 != 0 {
+            (bits | 0xF0) as i8
+        } else {
+            bits as i8
+        };
     }
     out
 }
@@ -183,7 +217,11 @@ pub fn quantize_awq<T: Scalar, B: Backend>(
     stats: &CalibrationStats<T, B>,
     group_size: usize,
 ) -> QuantizedWeight<T, B> {
-    let gs = if group_size == 0 { DEFAULT_GROUP_SIZE } else { group_size };
+    let gs = if group_size == 0 {
+        DEFAULT_GROUP_SIZE
+    } else {
+        group_size
+    };
     let (out_f, in_f) = weight.shape();
     let num_groups = (in_f + gs - 1) / gs;
     let packed_cols = (in_f + 7) / 8;
@@ -204,7 +242,9 @@ pub fn quantize_awq<T: Scalar, B: Backend>(
             zero_data.push(T::from_f64(z));
         }
         // pad to multiple of 8
-        while row_nibbles.len() % 8 != 0 { row_nibbles.push(0); }
+        while row_nibbles.len() % 8 != 0 {
+            row_nibbles.push(0);
+        }
         for chunk in row_nibbles.chunks(8) {
             all_packed.push(pack_int4(chunk));
         }
@@ -213,7 +253,9 @@ pub fn quantize_awq<T: Scalar, B: Backend>(
         packed: all_packed,
         scales: Tensor::from_vec(scale_data, out_f, num_groups),
         zeros: Tensor::from_vec(zero_data, out_f, num_groups),
-        out_features: out_f, in_features: in_f, group_size: gs,
+        out_features: out_f,
+        in_features: in_f,
+        group_size: gs,
     }
 }
 

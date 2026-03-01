@@ -5,7 +5,7 @@ use nabla::prelude::*;
 
 #[nabla::main(cpu)]
 fn main() {
-    let f = sym!(x^3 + sin(x) * exp(x));
+    let f = sym!(x ^ 3 + sin(x) * exp(x));
     println!("f(x) = {f}");
 
     let df = diff(&f, "x");
@@ -17,7 +17,7 @@ fn main() {
     let df2 = diff_simplify(&f, "x");
     println!("diff_simplify(f, x) = {df2}");
 
-    let vars = cas_vars!{ x: 1.0 };
+    let vars = cas_vars! { x: 1.0 };
     let val = eval(&f, &vars)?;
     let dval = eval(&df_simple, &vars)?;
     println!("f(1.0) = {val:.6}");

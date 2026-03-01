@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 
-use cudarc::driver::sys::CUdeviceptr;
 use cudarc::driver::result;
+use cudarc::driver::sys::CUdeviceptr;
 
 use crate::gpu_common::{grid_1d, type_suffix};
 use crate::kernels_cu::BLOCK_SIZE;
@@ -27,8 +27,8 @@ pub(super) fn cuda_max_pool2d<T: Scalar>(
     let total = nc * out_h * out_w;
     let name = format!("k_max_pool2d_{}", type_suffix::<T>());
     let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
-    let out_buf = CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>())
-        .or_panic("CUDA alloc");
+    let out_buf =
+        CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>()).or_panic("CUDA alloc");
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (
         h as u32,
         w as u32,
@@ -88,8 +88,8 @@ pub(super) fn cuda_avg_pool2d<T: Scalar>(
     let total = nc * out_h * out_w;
     let name = format!("k_avg_pool2d_{}", type_suffix::<T>());
     let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
-    let out_buf = CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>())
-        .or_panic("CUDA alloc");
+    let out_buf =
+        CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>()).or_panic("CUDA alloc");
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (
         h as u32,
         w as u32,
@@ -143,8 +143,8 @@ pub(super) fn cuda_adaptive_avg_pool2d<T: Scalar>(
     let total = nc * out_h * out_w;
     let name = format!("k_adaptive_avg_pool2d_{}", type_suffix::<T>());
     let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
-    let out_buf = CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>())
-        .or_panic("CUDA alloc");
+    let out_buf =
+        CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>()).or_panic("CUDA alloc");
     let (in_h_u, in_w_u, out_h_u, out_w_u, nc_u) = (
         in_h as u32,
         in_w as u32,
@@ -304,9 +304,8 @@ pub(crate) fn cuda_prod_all<T: Scalar>(a: &CudaStorage<T>) -> T {
     let func_name = format!("k_prod_partial_{tsuf}");
     let func = expect_ok(get_kernel(ctx, &func_name), "CUDA kernel lookup");
     let grid1 = ((n as u32) + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    let partial_buf =
-        CuBuffer::alloc_async(&ctx.stream, grid1 as usize * std::mem::size_of::<T>())
-            .or_panic("CUDA alloc partial");
+    let partial_buf = CuBuffer::alloc_async(&ctx.stream, grid1 as usize * std::mem::size_of::<T>())
+        .or_panic("CUDA alloc partial");
     let n_u32 = n as u32;
     unsafe {
         result::launch_kernel(
@@ -366,8 +365,8 @@ pub(super) fn cuda_max_pool2d_with_idx<T: Scalar>(
     let total = nc * out_h * out_w;
     let name = format!("k_max_pool2d_with_idx_{}", type_suffix::<T>());
     let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
-    let out_buf = CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>())
-        .or_panic("CUDA alloc");
+    let out_buf =
+        CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>()).or_panic("CUDA alloc");
     let idx_buf = CuBuffer::alloc_async(&ctx.stream, total * std::mem::size_of::<T>())
         .or_panic("CUDA alloc idx");
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (

@@ -17,16 +17,14 @@ use syn::{
     parse::{Parse, ParseStream},
 };
 
-
 const KNOWN_FNS: &[&str] = &[
-    "sin", "cos", "exp", "ln", "tanh", "sqrt", "abs",
-    "asin", "acos", "atan", "sinh", "cosh", "asinh", "acosh", "atanh",
+    "sin", "cos", "exp", "ln", "tanh", "sqrt", "abs", "asin", "acos", "atan", "sinh", "cosh",
+    "asinh", "acosh", "atanh",
 ];
 
 fn is_known_fn(name: &str) -> bool {
     KNOWN_FNS.contains(&name)
 }
-
 
 enum SymExpr {
     /// Named variable: `x` → `Expr::var("x")`.
@@ -48,7 +46,6 @@ enum SymExpr {
     /// Function call: `sin(e)`, `cos(e)`, etc.
     Fn(String, Box<SymExpr>, Span),
 }
-
 
 impl SymExpr {
     /// Lower the AST into a `TokenStream2` that constructs `nabla::cas::Expr`.
@@ -107,7 +104,6 @@ impl SymExpr {
         }
     }
 }
-
 
 #[derive(Clone, Copy)]
 struct Bp(u8);
@@ -239,18 +235,18 @@ fn parse_prefix(input: ParseStream<'_>) -> Result<SymExpr> {
     // Float literal.
     if input.peek(LitFloat) {
         let lit: LitFloat = input.parse()?;
-        let val: f64 = lit.base10_parse().map_err(|e| {
-            syn::Error::new(lit.span(), format!("invalid float literal: {e}"))
-        })?;
+        let val: f64 = lit
+            .base10_parse()
+            .map_err(|e| syn::Error::new(lit.span(), format!("invalid float literal: {e}")))?;
         return Ok(SymExpr::Lit(val, lit.span()));
     }
 
     // Integer literal.
     if input.peek(LitInt) {
         let lit: LitInt = input.parse()?;
-        let val: u64 = lit.base10_parse().map_err(|e| {
-            syn::Error::new(lit.span(), format!("invalid integer literal: {e}"))
-        })?;
+        let val: u64 = lit
+            .base10_parse()
+            .map_err(|e| syn::Error::new(lit.span(), format!("invalid integer literal: {e}")))?;
         #[allow(clippy::cast_precision_loss)]
         let fval = val as f64;
         return Ok(SymExpr::Lit(fval, lit.span()));
@@ -261,7 +257,6 @@ fn parse_prefix(input: ParseStream<'_>) -> Result<SymExpr> {
         "expected variable, number, function call, or parenthesized expression",
     ))
 }
-
 
 struct SymInput {
     expr: SymExpr,
@@ -279,7 +274,6 @@ impl Parse for SymInput {
         Ok(Self { expr })
     }
 }
-
 
 pub(crate) fn sym_impl(input: TokenStream2) -> Result<TokenStream2> {
     let parsed: SymInput = syn::parse2(input)?;

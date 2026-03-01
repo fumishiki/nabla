@@ -17,18 +17,28 @@ pub struct BenchmarkDataset<T: Scalar, B: Backend> {
 impl<T: Scalar, B: Backend> BenchmarkDataset<T, B> {
     #[must_use]
     pub fn new(inputs: Vec<Tensor<T, B>>, labels: Vec<usize>) -> Self {
-        assert_eq!(inputs.len(), labels.len(), "nabla-bench: inputs/labels length mismatch");
+        assert_eq!(
+            inputs.len(),
+            labels.len(),
+            "nabla-bench: inputs/labels length mismatch"
+        );
         Self { inputs, labels }
     }
 
     #[must_use]
-    pub fn len(&self) -> usize { self.inputs.len() }
+    pub fn len(&self) -> usize {
+        self.inputs.len()
+    }
 }
 
 impl<T: Scalar, B: Backend> Dataset for BenchmarkDataset<T, B> {
     type Item = (Tensor<T, B>, usize);
-    fn len(&self) -> usize { self.inputs.len() }
-    fn get(&self, idx: usize) -> Self::Item { (self.inputs[idx].clone(), self.labels[idx]) }
+    fn len(&self) -> usize {
+        self.inputs.len()
+    }
+    fn get(&self, idx: usize) -> Self::Item {
+        (self.inputs[idx].clone(), self.labels[idx])
+    }
 }
 
 /// Batcher that stacks benchmark samples into (batched_input, label_vec).
@@ -73,14 +83,22 @@ where
             let log_sm = logits.log_softmax(1);
             let (_, nc) = log_sm.shape();
             let nc = nc.min(num_classes);
-            let nll = if *label < nc { -log_sm.get(0, *label).to_f64() } else { 0.0 };
+            let nll = if *label < nc {
+                -log_sm.get(0, *label).to_f64()
+            } else {
+                0.0
+            };
             losses.push(nll);
         }
     }
     let n = losses.len().max(1) as f64;
     let mean_loss = losses.iter().sum::<f64>() / n;
     let perplexity = mean_loss.exp();
-    PerplexityResult { per_sample_loss: losses, mean_loss, perplexity }
+    PerplexityResult {
+        per_sample_loss: losses,
+        mean_loss,
+        perplexity,
+    }
 }
 
 // -- P6-BENCH-03: Accuracy / Top-k accuracy --
@@ -134,9 +152,14 @@ where
     }
     let t = total.max(1) as f64;
     AccuracyResult {
-        correct, total, accuracy: correct as f64 / t,
-        topk_correct, topk_accuracy: topk_correct as f64 / t,
-        k, per_sample_correct: per_correct, per_sample_topk_correct: per_topk,
+        correct,
+        total,
+        accuracy: correct as f64 / t,
+        topk_correct,
+        topk_accuracy: topk_correct as f64 / t,
+        k,
+        per_sample_correct: per_correct,
+        per_sample_topk_correct: per_topk,
     }
 }
 
@@ -151,7 +174,10 @@ pub struct BenchmarkReport {
 impl BenchmarkReport {
     #[must_use]
     pub fn new(perplexity: PerplexityResult, accuracy: AccuracyResult) -> Self {
-        Self { perplexity, accuracy }
+        Self {
+            perplexity,
+            accuracy,
+        }
     }
 
     /// Serialize the report to a JSON string (no serde dependency).
@@ -161,10 +187,22 @@ impl BenchmarkReport {
         s.push_str("{\n");
         // summary
         s.push_str("  \"summary\": {\n");
-        let _ = write!(s, "    \"perplexity\": {:.6},\n", self.perplexity.perplexity);
-        let _ = write!(s, "    \"mean_cross_entropy\": {:.6},\n", self.perplexity.mean_loss);
+        let _ = write!(
+            s,
+            "    \"perplexity\": {:.6},\n",
+            self.perplexity.perplexity
+        );
+        let _ = write!(
+            s,
+            "    \"mean_cross_entropy\": {:.6},\n",
+            self.perplexity.mean_loss
+        );
         let _ = write!(s, "    \"accuracy\": {:.6},\n", self.accuracy.accuracy);
-        let _ = write!(s, "    \"top{}_accuracy\": {:.6},\n", self.accuracy.k, self.accuracy.topk_accuracy);
+        let _ = write!(
+            s,
+            "    \"top{}_accuracy\": {:.6},\n",
+            self.accuracy.k, self.accuracy.topk_accuracy
+        );
         let _ = write!(s, "    \"total_samples\": {},\n", self.accuracy.total);
         let _ = write!(s, "    \"correct\": {},\n", self.accuracy.correct);
         let _ = write!(s, "    \"topk_correct\": {}\n", self.accuracy.topk_correct);
@@ -174,10 +212,25 @@ impl BenchmarkReport {
         let n = self.perplexity.per_sample_loss.len();
         for i in 0..n {
             let loss = self.perplexity.per_sample_loss[i];
-            let correct = self.accuracy.per_sample_correct.get(i).copied().unwrap_or(false);
-            let topk = self.accuracy.per_sample_topk_correct.get(i).copied().unwrap_or(false);
-            let _ = write!(s, "    {{\"idx\": {i}, \"nll\": {loss:.6}, \"correct\": {correct}, \"topk_correct\": {topk}}}");
-            if i + 1 < n { s.push(','); }
+            let correct = self
+                .accuracy
+                .per_sample_correct
+                .get(i)
+                .copied()
+                .unwrap_or(false);
+            let topk = self
+                .accuracy
+                .per_sample_topk_correct
+                .get(i)
+                .copied()
+                .unwrap_or(false);
+            let _ = write!(
+                s,
+                "    {{\"idx\": {i}, \"nll\": {loss:.6}, \"correct\": {correct}, \"topk_correct\": {topk}}}"
+            );
+            if i + 1 < n {
+                s.push(',');
+            }
             s.push('\n');
         }
         s.push_str("  ]\n");

@@ -1,9 +1,7 @@
-
 use core::fmt;
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
 use super::{MathOps, RealScalar, ReductionOps, Scalar, erf_approx};
-
 
 /// Multi-lane dual number for computing `N` partial derivatives simultaneously.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,7 +72,6 @@ impl<T: RealScalar, const N: usize> PartialOrd for MultiDual<T, N> {
         self.value.partial_cmp(&other.value)
     }
 }
-
 
 impl<T: RealScalar, const N: usize> Add for MultiDual<T, N> {
     type Output = Self;
@@ -156,7 +153,6 @@ impl<T: RealScalar, const N: usize> Neg for MultiDual<T, N> {
         Self::new(T::from_f64(-self.value.into()), d)
     }
 }
-
 
 impl<T: RealScalar, const N: usize> MathOps for MultiDual<T, N> {
     #[inline]
@@ -343,7 +339,6 @@ impl<T: RealScalar, const N: usize> MathOps for MultiDual<T, N> {
     }
 }
 
-
 impl<T: RealScalar, const N: usize> ReductionOps for MultiDual<T, N> {
     #[inline]
     fn reduction_add(self, other: Self) -> Self {
@@ -370,7 +365,6 @@ impl<T: RealScalar, const N: usize> ReductionOps for MultiDual<T, N> {
         self.value > other.value
     }
 }
-
 
 impl<T: RealScalar, const N: usize> Scalar for MultiDual<T, N> {
     type Real = T;

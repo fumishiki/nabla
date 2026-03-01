@@ -6,7 +6,9 @@ use std::time::Instant;
 
 #[cfg(feature = "cuda")]
 #[inline]
-fn gpu_sync() { nabla::cuda_synchronize(); }
+fn gpu_sync() {
+    nabla::cuda_synchronize();
+}
 #[cfg(not(feature = "cuda"))]
 #[inline]
 fn gpu_sync() {}
@@ -24,7 +26,10 @@ fn rand_tensor(rows: usize, cols: usize) -> Tensor<f32> {
     thread_local! { static SEED: Cell<u64> = const { Cell::new(42) }; }
     Tensor::from_fn(rows, cols, |_, _| {
         SEED.with(|s| {
-            let x = s.get().wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let x = s
+                .get()
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             s.set(x);
             (x >> 33) as f32 / (1u64 << 31) as f32 - 1.0
         })
@@ -44,10 +49,10 @@ fn main() {
     println!();
 
     for &(name, burst_count) in &[
-        ("exp x100",    100usize),
-        ("exp x1000",   1000),
-        ("add x100",    100),
-        ("add x1000",   1000),
+        ("exp x100", 100usize),
+        ("exp x1000", 1000),
+        ("add x100", 100),
+        ("add x1000", 1000),
     ] {
         for _ in 0..WARMUP {
             let _ = a.exp();
@@ -68,7 +73,12 @@ fn main() {
         gpu_sync();
         let elapsed = start.elapsed();
         let per_op_ns = elapsed.as_nanos() as f64 / burst_count as f64;
-        println!("  {:<20} {:>8.0} ns/op  ({:.3} ms total)", name, per_op_ns, elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "  {:<20} {:>8.0} ns/op  ({:.3} ms total)",
+            name,
+            per_op_ns,
+            elapsed.as_secs_f64() * 1000.0
+        );
         drop(ring);
     }
 
@@ -106,8 +116,16 @@ fn main() {
     let fused_ms = start.elapsed().as_secs_f64() * 1000.0;
     drop(ring);
 
-    println!("  Unfused (4 launches)  {:>8.3} ms / {iters} iters  ({:.1} ns/iter)", unfused_ms, unfused_ms / iters as f64 * 1e6);
-    println!("  Fused   (1 launch)    {:>8.3} ms / {iters} iters  ({:.1} ns/iter)", fused_ms, fused_ms / iters as f64 * 1e6);
+    println!(
+        "  Unfused (4 launches)  {:>8.3} ms / {iters} iters  ({:.1} ns/iter)",
+        unfused_ms,
+        unfused_ms / iters as f64 * 1e6
+    );
+    println!(
+        "  Fused   (1 launch)    {:>8.3} ms / {iters} iters  ({:.1} ns/iter)",
+        fused_ms,
+        fused_ms / iters as f64 * 1e6
+    );
     println!("  Speedup: {:.2}x", unfused_ms / fused_ms);
 
     println!();
@@ -155,8 +173,14 @@ fn main() {
         };
         match tg.step(&mut step_fn) {
             Err(_) => {
-                println!("  Eager dispatch:    {:>8.3} ms / {steps} steps  ({:.1} us/step)", eager_ms, eager_ms / steps as f64 * 1000.0);
-                println!("  CUDA Graph: skipped (stream capture unsupported — cuMemAlloc during capture)");
+                println!(
+                    "  Eager dispatch:    {:>8.3} ms / {steps} steps  ({:.1} us/step)",
+                    eager_ms,
+                    eager_ms / steps as f64 * 1000.0
+                );
+                println!(
+                    "  CUDA Graph: skipped (stream capture unsupported — cuMemAlloc during capture)"
+                );
             }
             Ok(_) => {
                 for _ in 1..5 {
@@ -185,12 +209,22 @@ fn main() {
                 cuda_synchronize();
                 let graph_ms = start.elapsed().as_secs_f64() * 1000.0;
 
-                println!("  Eager dispatch:    {:>8.3} ms / {steps} steps  ({:.1} us/step)", eager_ms, eager_ms / steps as f64 * 1000.0);
+                println!(
+                    "  Eager dispatch:    {:>8.3} ms / {steps} steps  ({:.1} us/step)",
+                    eager_ms,
+                    eager_ms / steps as f64 * 1000.0
+                );
                 if replay_ok {
-                    println!("  CUDA Graph replay: {:>8.3} ms / {steps} steps  ({:.1} us/step)", graph_ms, graph_ms / steps as f64 * 1000.0);
+                    println!(
+                        "  CUDA Graph replay: {:>8.3} ms / {steps} steps  ({:.1} us/step)",
+                        graph_ms,
+                        graph_ms / steps as f64 * 1000.0
+                    );
                     println!("  Speedup: {:.2}x", eager_ms / graph_ms);
                 } else {
-                    println!("  CUDA Graph: skipped (stream capture unsupported — cuMemAlloc during capture)");
+                    println!(
+                        "  CUDA Graph: skipped (stream capture unsupported — cuMemAlloc during capture)"
+                    );
                 }
             }
         }
@@ -198,7 +232,11 @@ fn main() {
 
     #[cfg(not(feature = "cuda"))]
     {
-        println!("  Eager dispatch:    {:>8.3} ms / {steps} steps  ({:.1} us/step)", eager_ms, eager_ms / steps as f64 * 1000.0);
+        println!(
+            "  Eager dispatch:    {:>8.3} ms / {steps} steps  ({:.1} us/step)",
+            eager_ms,
+            eager_ms / steps as f64 * 1000.0
+        );
         println!("  (CUDA Graph not available on CPU backend)");
     }
 
@@ -271,18 +309,26 @@ fn main() {
     println!("  {:<12} {:.3} ms/iter", "fuse exp+sin", ms);
     drop(ring);
 
-    for _ in 0..20 { let _ = a.sum_all(); }
+    for _ in 0..20 {
+        let _ = a.sum_all();
+    }
     gpu_sync();
     let start = Instant::now();
-    for _ in 0..iters { let _ = a.sum_all(); }
+    for _ in 0..iters {
+        let _ = a.sum_all();
+    }
     gpu_sync();
     let ms = per_iter_ms(start, iters);
     println!("  {:<12} {:.3} ms/iter", "sum_all", ms);
 
-    for _ in 0..20 { let _ = a.max_all(); }
+    for _ in 0..20 {
+        let _ = a.max_all();
+    }
     gpu_sync();
     let start = Instant::now();
-    for _ in 0..iters { let _ = a.max_all(); }
+    for _ in 0..iters {
+        let _ = a.max_all();
+    }
     gpu_sync();
     let ms = per_iter_ms(start, iters);
     println!("  {:<12} {:.3} ms/iter", "max_all", ms);

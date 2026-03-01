@@ -51,14 +51,12 @@ fn stencil_laplacian() {
     assert!(approx_eq(out.get(5, 5), 0.0));
 }
 
-
 #[test]
 fn par_from_fn_matches_sequential() {
     let seq: Tensor<f64> = Tensor::from_fn(50, 50, |r, c| ((r * 50 + c) as f64).sin());
     let par: Tensor<f64> = Tensor::par_from_fn(50, 50, |r, c| ((r * 50 + c) as f64).sin());
     assert_approx_grid(&seq, &par, 1e-10);
 }
-
 
 #[test]
 fn utility_exports() {
@@ -86,7 +84,6 @@ fn utility_exports() {
     assert!((z32.im - 4.0_f32).abs() < 1e-6);
 }
 
-
 #[test]
 fn matmul_non_square() {
     let a: Tensor<f64> = linear_f64(2, 3);
@@ -98,7 +95,6 @@ fn matmul_non_square() {
     assert!(approx_eq(c.get(1, 0), 49.0));
     assert!(approx_eq(c.get(1, 1), 64.0));
 }
-
 
 #[test]
 fn ndtensor_slice_2d_roundtrip() {
@@ -125,7 +121,6 @@ fn ndtensor_slice_2d_roundtrip() {
     }
 }
 
-
 #[test]
 fn static_tensor_roundtrip() {
     let a = StaticMatrix::<f64, 2, 2>::from_fn(|r, c| (r * 2 + c + 1) as f64);
@@ -142,7 +137,6 @@ fn static_tensor_roundtrip() {
     }
 }
 
-
 #[test]
 fn hierarchy_matmul_dyn() {
     use nabla::tensor::Array;
@@ -153,7 +147,6 @@ fn hierarchy_matmul_dyn() {
     assert!(approx_eq(c.get(0, 0), 19.0));
     assert!(approx_eq(c.get(1, 1), 50.0));
 }
-
 
 #[test]
 fn diagonal_mul_dense() {
@@ -172,7 +165,6 @@ fn diagonal_mul_dense() {
     assert!(approx_eq(r.get(1, 1), 12.0));
 }
 
-
 #[test]
 fn reductions_boundary() {
     let a: Tensor<f64> = mat![[3.0_f64, 1.0], [5.0, 2.0]];
@@ -180,7 +172,6 @@ fn reductions_boundary() {
     assert_eq!(a.argmax(), (1, 0));
     assert_eq!(a.argmin(), (0, 1));
 }
-
 
 #[test]
 fn tensor_permute_2d_transpose() {
@@ -191,7 +182,6 @@ fn tensor_permute_2d_transpose() {
     assert!(approx_eq(p.get(0, 1), 4.0));
     assert!(approx_eq(p.get(2, 1), 6.0));
 }
-
 
 #[test]
 fn multi_dual_batch_jacobian() {
@@ -208,7 +198,6 @@ fn multi_dual_batch_jacobian() {
     assert_eq!(fsum.derivs[1], 1.0); // d(x+y)/dy = 1
 }
 
-
 #[test]
 fn index_bracket_read() {
     let a = mat![[1.0_f64, 2.0], [3.0, 4.0]];
@@ -218,7 +207,6 @@ fn index_bracket_read() {
     assert_eq!(a[(1, 1)], 4.0);
 }
 
-
 #[test]
 fn index_bracket_write() {
     let mut a = Tensor::<f64>::zeros(2, 2);
@@ -227,14 +215,12 @@ fn index_bracket_write() {
     assert_eq!(a[(0, 0)], 0.0);
 }
 
-
 #[test]
 fn ndtensor_index_bracket() {
     let t = NdTensor::<f64>::zeros(&[2, 3, 4]);
     assert_eq!(t[&[0, 0, 0]], 0.0);
     assert_eq!(t[&[1, 2, 3]], 0.0);
 }
-
 
 #[test]
 fn f16_zeros_and_arithmetic() {
@@ -249,7 +235,6 @@ fn f16_zeros_and_arithmetic() {
     assert!((f32::from(scaled[(1, 1)]) - 8.0).abs() < 0.01);
 }
 
-
 #[test]
 fn broadcast_add_rows() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0], [5.0, 6.0]];
@@ -261,7 +246,6 @@ fn broadcast_add_rows() {
     assert!((r.get(2, 1) - 26.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn broadcast_add_cols() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0], [5.0, 6.0]];
@@ -271,7 +255,6 @@ fn broadcast_add_cols() {
     assert!((r.get(1, 0) - 23.0).abs() < 1e-10);
     assert!((r.get(2, 1) - 36.0).abs() < 1e-10);
 }
-
 
 #[test]
 fn broadcast_mul_rows() {
@@ -284,7 +267,6 @@ fn broadcast_mul_rows() {
     assert!((r.get(1, 1) - 400.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn broadcast_mul_cols() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
@@ -296,7 +278,6 @@ fn broadcast_mul_cols() {
     assert!((r.get(1, 1) - 400.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn diag_square() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
@@ -305,7 +286,6 @@ fn diag_square() {
     assert!((d.get(0, 0) - 1.0).abs() < 1e-10);
     assert!((d.get(1, 0) - 4.0).abs() < 1e-10);
 }
-
 
 #[test]
 fn max_axis_1_row_wise() {
@@ -316,7 +296,6 @@ fn max_axis_1_row_wise() {
     assert!((mx.get(1, 0) - 6.0).abs() < 1e-10); // max(4,2,6)
 }
 
-
 #[test]
 fn min_axis_1_row_wise() {
     let a: Tensor<f64> = mat![[1.0_f64, 5.0, 3.0], [4.0, 2.0, 6.0]]; // 2×3
@@ -325,7 +304,6 @@ fn min_axis_1_row_wise() {
     assert!((mn.get(0, 0) - 1.0).abs() < 1e-10); // min(1,5,3)
     assert!((mn.get(1, 0) - 2.0).abs() < 1e-10); // min(4,2,6)
 }
-
 
 #[test]
 fn max_axis_keepdim_shape() {
@@ -338,7 +316,6 @@ fn max_axis_keepdim_shape() {
     assert!((mkd1.get(1, 0) - 6.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn min_axis_keepdim_shape() {
     let a: Tensor<f64> = mat![[1.0_f64, 5.0, 3.0], [4.0, 2.0, 6.0]]; // 2×3
@@ -350,7 +327,6 @@ fn min_axis_keepdim_shape() {
     assert!((mkd1.get(0, 0) - 1.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn var_axis_constant_is_zero() {
     let a: Tensor<f64> = Tensor::fill(3, 3, 5.0_f64);
@@ -361,7 +337,6 @@ fn var_axis_constant_is_zero() {
     }
 }
 
-
 #[test]
 fn var_axis_1_known_value() {
     // var([1,2,3]) = E[X²]-E[X]² = (1+4+9)/3 - 4 = 14/3 - 4 = 2/3
@@ -371,14 +346,12 @@ fn var_axis_1_known_value() {
     assert!((v.get(0, 0) - 2.0 / 3.0).abs() < 1e-10);
 }
 
-
 #[test]
 fn std_axis_1_known_value() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0, 3.0]];
     let s = a.std_axis(1);
     assert!((s.get(0, 0) - (2.0_f64 / 3.0).sqrt()).abs() < 1e-10);
 }
-
 
 #[test]
 fn clamp_basic() {
@@ -388,7 +361,6 @@ fn clamp_basic() {
     assert!((c.get(0, 1) - 0.5).abs() < 1e-10);
     assert!((c.get(0, 2) - 1.0).abs() < 1e-10);
 }
-
 
 #[test]
 fn from_diag_col_vector() {
@@ -402,13 +374,11 @@ fn from_diag_col_vector() {
     assert!(d.get(1, 0).abs() < 1e-10);
 }
 
-
 #[test]
 fn trace_2x2() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0], [3.0, 4.0]];
     assert!((a.trace() - 5.0).abs() < 1e-10);
 }
-
 
 #[test]
 fn gather_rows_duplicates() {
@@ -418,7 +388,6 @@ fn gather_rows_duplicates() {
     assert!((g.get(2, 0) - 1.0).abs() < 1e-10);
     assert!((g.get(2, 1) - 2.0).abs() < 1e-10);
 }
-
 
 #[test]
 fn one_hot_with_cross_entropy() {
@@ -430,7 +399,6 @@ fn one_hot_with_cross_entropy() {
     assert!(loss > 0.0 && loss < 1.0);
 }
 
-
 #[test]
 fn cumsum_axis1_row_wise() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0, 3.0]];
@@ -439,7 +407,6 @@ fn cumsum_axis1_row_wise() {
     assert!((cs.get(0, 1) - 3.0).abs() < 1e-10);
     assert!((cs.get(0, 2) - 6.0).abs() < 1e-10);
 }
-
 
 #[test]
 fn sparse_bcsr_roundtrip() {
@@ -462,7 +429,6 @@ fn sparse_bcsr_roundtrip() {
     assert_approx_grid(&bcsr_result, &dense_result, 1e-10);
 }
 
-
 #[test]
 fn sparse_bcsr_spmm_accuracy() {
     // 16×16 sparse (~10% density), block=4, compare with dense matmul
@@ -481,7 +447,6 @@ fn sparse_bcsr_spmm_accuracy() {
     let dense_result = s.matmul_dense(&x).expect("matmul_dense");
     assert_approx_grid(&bcsr_result, &dense_result, 1e-8);
 }
-
 
 #[test]
 fn sparse_mixed_precision() {
@@ -509,7 +474,6 @@ fn sparse_mixed_precision() {
     }
 }
 
-
 #[test]
 fn reshape_basic() {
     let a: Tensor<f64> = linear_f64(2, 3);
@@ -521,7 +485,6 @@ fn reshape_basic() {
     assert!(approx_eq(b.get(2, 1), 6.0));
 }
 
-
 #[test]
 fn flatten_shape() {
     let a: Tensor<f64> = Tensor::from_fn(3, 4, |i, j| (i * 4 + j) as f64);
@@ -530,7 +493,6 @@ fn flatten_shape() {
     assert!(approx_eq(f.get(0, 0), 0.0));
     assert!(approx_eq(f.get(0, 11), 11.0));
 }
-
 
 #[test]
 fn sum_axis_0_values() {
@@ -541,7 +503,6 @@ fn sum_axis_0_values() {
     assert!(approx_eq(s.get(0, 1), 12.0));
 }
 
-
 #[test]
 fn sum_axis_1_values() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0, 3.0], [4.0, 5.0, 6.0]];
@@ -550,7 +511,6 @@ fn sum_axis_1_values() {
     assert!(approx_eq(s.get(0, 0), 6.0));
     assert!(approx_eq(s.get(1, 0), 15.0));
 }
-
 
 #[test]
 fn mean_axis_values() {
@@ -566,7 +526,6 @@ fn mean_axis_values() {
     assert!(approx_eq(m1.get(1, 0), 7.0));
 }
 
-
 #[test]
 fn vcat_two_tensors() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0]];
@@ -578,7 +537,6 @@ fn vcat_two_tensors() {
     assert!(approx_eq(c.get(1, 0), 3.0));
     assert!(approx_eq(c.get(1, 1), 4.0));
 }
-
 
 #[test]
 fn hcat_two_tensors() {
@@ -592,7 +550,6 @@ fn hcat_two_tensors() {
     assert!(approx_eq(c.get(1, 1), 4.0));
 }
 
-
 #[test]
 fn cat_axis0_equals_vcat() {
     let a: Tensor<f64> = mat![[1.0_f64, 2.0]];
@@ -601,5 +558,3 @@ fn cat_axis0_equals_vcat() {
     let vcat_result = Tensor::vcat(&[&a, &b]);
     assert_approx_grid(&cat_result, &vcat_result, 1e-10);
 }
-
-

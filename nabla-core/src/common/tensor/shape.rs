@@ -1,4 +1,3 @@
-
 #[cfg(feature = "cpu")]
 use rayon::prelude::*;
 
@@ -667,7 +666,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         }
     }
 }
-
 
 #[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Tensor<T, B> {

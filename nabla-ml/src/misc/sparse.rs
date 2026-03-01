@@ -1,4 +1,3 @@
-
 use core::fmt;
 use core::ops::{Add, Mul};
 
@@ -127,9 +126,13 @@ impl<T: Scalar> SparseMatrix<T> {
         let cap = if n == 1 { 1 } else { 3 * n - 2 };
         let mut trips = Vec::with_capacity(cap);
         for i in 0..n {
-            if i > 0 { trips.push(Triplet::new(i, i - 1, sub)); }
+            if i > 0 {
+                trips.push(Triplet::new(i, i - 1, sub));
+            }
             trips.push(Triplet::new(i, i, diag));
-            if i + 1 < n { trips.push(Triplet::new(i, i + 1, sup)); }
+            if i + 1 < n {
+                trips.push(Triplet::new(i, i + 1, sup));
+            }
         }
         Self::try_new_from_triplets(n, n, &trips)
     }
@@ -248,17 +251,16 @@ impl<T: Scalar> SparseMatrix<T> {
         });
         // Transposed dimensions: rows become cols and vice versa.
         // build_csc cannot fail here because indices are guaranteed in bounds.
-        Self::build_csc(self.ncols, self.nrows, &triplets)
-            .unwrap_or_else(|_| {
-                // Indices originate from a valid matrix, so this is unreachable.
-                Self {
-                    nrows: self.ncols,
-                    ncols: self.nrows,
-                    col_ptr: vec![0; self.nrows + 1],
-                    row_idx: Vec::new(),
-                    values: Vec::new(),
-                }
-            })
+        Self::build_csc(self.ncols, self.nrows, &triplets).unwrap_or_else(|_| {
+            // Indices originate from a valid matrix, so this is unreachable.
+            Self {
+                nrows: self.ncols,
+                ncols: self.nrows,
+                col_ptr: vec![0; self.nrows + 1],
+                row_idx: Vec::new(),
+                values: Vec::new(),
+            }
+        })
     }
 
     /// Short alias for [`transpose`](Self::transpose).
@@ -313,7 +315,8 @@ impl<T: Scalar> SparseMatrix<T> {
 
         for e in &sorted {
             if let (Some(&last_r), Some(&last_c)) = (merged_row.last(), merged_col.last())
-                && last_r == e.row && last_c == e.col
+                && last_r == e.row
+                && last_c == e.col
             {
                 if let Some(v) = merged_val.last_mut() {
                     *v = *v + e.val;
@@ -439,7 +442,9 @@ fn find_or_insert_block<S: Scalar>(
     b2: usize,
 ) -> &mut Vec<S> {
     let pos = map.iter().position(|((r, c), _)| *r == br && *c == bc);
-    if let Some(i) = pos { &mut map[i].1 } else {
+    if let Some(i) = pos {
+        &mut map[i].1
+    } else {
         map.push(((br, bc), vec![S::zero(); b2]));
         let last = map.len() - 1;
         &mut map[last].1

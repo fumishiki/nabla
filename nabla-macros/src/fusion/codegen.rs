@@ -11,7 +11,6 @@ use syn::{Error, Expr, ExprBinary, ExprMethodCall, ExprPath, ExprUnary, Result};
 
 use super::expr::{contains_tensor, scalar_method_name};
 
-
 fn cuda_method_expr(method: &str, recv: &str) -> Option<String> {
     match method {
         "exp" => Some(format!("exp({recv})")),
@@ -54,7 +53,6 @@ fn cast_int_lit(expr: &Expr) -> Option<f64> {
         _ => None,
     }
 }
-
 
 pub(crate) fn scalar_expr(expr: &Expr, tensor_names: &[String]) -> Result<TokenStream2> {
     scalar_expr_inner(expr, tensor_names, None, None)
@@ -169,7 +167,6 @@ fn scalar_expr_inner(
     }
 }
 
-
 pub(crate) fn cuda_expr(expr: &Expr, tensor_names: &[String]) -> Result<String> {
     cuda_expr_inner(expr, tensor_names, false)
 }
@@ -266,7 +263,6 @@ fn cuda_expr_inner(expr: &Expr, tensor_names: &[String], mega_mode: bool) -> Res
     }
 }
 
-
 pub(crate) fn lift_expr(expr: &Expr, tensor_names: &[String]) -> TokenStream2 {
     match expr {
         Expr::Path(_) => expr.to_token_stream(),
@@ -341,7 +337,6 @@ fn lift_unary(op: &syn::UnOp, inner: TokenStream2, has_tensor: bool) -> TokenStr
         quote! { (#op #inner) }
     }
 }
-
 
 pub(crate) const MAX_FUSE_REGISTERS: usize = 120;
 
@@ -433,9 +428,7 @@ fn count_ops(
 
 fn method_cost(method: &str) -> (usize, usize) {
     match method {
-        "exp" | "ln" | "sqrt" | "sin" | "cos" | "tanh" | "erf" | "log1p" | "powf" => {
-            (1, 0)
-        }
+        "exp" | "ln" | "sqrt" | "sin" | "cos" | "tanh" | "erf" | "log1p" | "powf" => (1, 0),
         "abs" | "ceil" | "floor" | "round" | "neg" | "recip" => (0, 1),
         _ => (0, 0),
     }

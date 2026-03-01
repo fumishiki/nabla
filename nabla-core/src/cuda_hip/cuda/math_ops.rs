@@ -2,10 +2,10 @@ use std::ffi::c_void;
 use std::sync::Mutex;
 
 use cudarc::cublas::{result as cublas_result, sys as cublas_sys};
-use cudarc::driver::sys::CUdeviceptr;
 use cudarc::driver::result;
+use cudarc::driver::sys::CUdeviceptr;
 
-use crate::gpu_common::{grid_1d, lock_or_recover, type_suffix, RtcStorage};
+use crate::gpu_common::{RtcStorage, grid_1d, lock_or_recover, type_suffix};
 use crate::kernels_cu::BLOCK_SIZE;
 use crate::scalar::Scalar;
 
@@ -230,7 +230,12 @@ pub(crate) fn cuda_powf<T: Scalar>(a: &CudaStorage<T>, p: T) -> CudaStorage<T> {
     CudaStorage::new(a.nrows, a.ncols, out_buf)
 }
 
-pub(crate) fn cuda_expand<T: Scalar>(out: &mut CudaStorage<T>, src: &CudaStorage<T>, src_rows: usize, src_cols: usize) {
+pub(crate) fn cuda_expand<T: Scalar>(
+    out: &mut CudaStorage<T>,
+    src: &CudaStorage<T>,
+    src_rows: usize,
+    src_cols: usize,
+) {
     let ctx = get_ctx();
     let dst_rows = out.nrows;
     let dst_cols = out.ncols;
@@ -387,9 +392,14 @@ pub(crate) fn cuda_matmul<T: Scalar>(
 // Row-major C = A^T @ B via cuBLAS. A is [k,m], B is [k,n], C is [m,n].
 // Col-major: C^T(n,m) = B_col(n,k) @ A_col(m,k)^T(k,m) => gemm(N, T, n, m, k, B, n, A, m, C, n)
 pub(super) fn cublas_gemm_tn<T: Scalar>(
-    ctx: &CudaCtx, out: &mut CudaStorage<T>, a: &CudaStorage<T>, b: &CudaStorage<T>,
+    ctx: &CudaCtx,
+    out: &mut CudaStorage<T>,
+    a: &CudaStorage<T>,
+    b: &CudaStorage<T>,
 ) {
-    if out.n() == 0 { return; }
+    if out.n() == 0 {
+        return;
+    }
     let m = a.ncols as i32;
     let k = a.nrows as i32;
     let n = b.ncols as i32;
@@ -402,28 +412,42 @@ pub(super) fn cublas_gemm_tn<T: Scalar>(
                 ctx.blas.0,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_T,
-                n, m, k,
+                n,
+                m,
+                k,
                 &alpha as *const f32 as *const std::ffi::c_void,
                 b.buf.ptr as *const std::ffi::c_void,
-                cublas_sys::cudaDataType_t::CUDA_R_32F, n,
+                cublas_sys::cudaDataType_t::CUDA_R_32F,
+                n,
                 a.buf.ptr as *const std::ffi::c_void,
-                cublas_sys::cudaDataType_t::CUDA_R_32F, m,
+                cublas_sys::cudaDataType_t::CUDA_R_32F,
+                m,
                 &beta as *const f32 as *const std::ffi::c_void,
                 out.buf.ptr as *mut std::ffi::c_void,
-                cublas_sys::cudaDataType_t::CUDA_R_32F, n,
+                cublas_sys::cudaDataType_t::CUDA_R_32F,
+                n,
                 cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_TF32,
                 cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
-            ).or_panic("cuBLAS gemm_ex tn f32");
+            )
+            .or_panic("cuBLAS gemm_ex tn f32");
         } else if TypeId::of::<T>() == TypeId::of::<f64>() {
             cublas_result::dgemm(
                 ctx.blas.0,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_T,
-                n, m, k, &1.0f64,
-                b.buf.ptr as *const f64, n,
-                a.buf.ptr as *const f64, m,
-                &0.0f64, out.buf.ptr as *mut f64, n,
-            ).or_panic("cuBLAS dgemm tn");
+                n,
+                m,
+                k,
+                &1.0f64,
+                b.buf.ptr as *const f64,
+                n,
+                a.buf.ptr as *const f64,
+                m,
+                &0.0f64,
+                out.buf.ptr as *mut f64,
+                n,
+            )
+            .or_panic("cuBLAS dgemm tn");
         } else {
             let a_t = cuda_transpose(a);
             cuda_matmul_tiled(ctx, out, &a_t, b);
@@ -434,9 +458,14 @@ pub(super) fn cublas_gemm_tn<T: Scalar>(
 // Row-major C = A @ B^T via cuBLAS. A is [m,k], B is [n,k], C is [m,n].
 // Col-major: C^T(n,m) = B_col^T(n,k)(T,k) @ A_col(k,m)(N) => gemm(T, N, n, m, k, B, k, A, k, C, n)
 pub(super) fn cublas_gemm_nt<T: Scalar>(
-    ctx: &CudaCtx, out: &mut CudaStorage<T>, a: &CudaStorage<T>, b: &CudaStorage<T>,
+    ctx: &CudaCtx,
+    out: &mut CudaStorage<T>,
+    a: &CudaStorage<T>,
+    b: &CudaStorage<T>,
 ) {
-    if out.n() == 0 { return; }
+    if out.n() == 0 {
+        return;
+    }
     let m = a.nrows as i32;
     let k = a.ncols as i32;
     let n = b.nrows as i32;
@@ -449,28 +478,42 @@ pub(super) fn cublas_gemm_nt<T: Scalar>(
                 ctx.blas.0,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_T,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-                n, m, k,
+                n,
+                m,
+                k,
                 &alpha as *const f32 as *const std::ffi::c_void,
                 b.buf.ptr as *const std::ffi::c_void,
-                cublas_sys::cudaDataType_t::CUDA_R_32F, k,
+                cublas_sys::cudaDataType_t::CUDA_R_32F,
+                k,
                 a.buf.ptr as *const std::ffi::c_void,
-                cublas_sys::cudaDataType_t::CUDA_R_32F, k,
+                cublas_sys::cudaDataType_t::CUDA_R_32F,
+                k,
                 &beta as *const f32 as *const std::ffi::c_void,
                 out.buf.ptr as *mut std::ffi::c_void,
-                cublas_sys::cudaDataType_t::CUDA_R_32F, n,
+                cublas_sys::cudaDataType_t::CUDA_R_32F,
+                n,
                 cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_TF32,
                 cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
-            ).or_panic("cuBLAS gemm_ex nt f32");
+            )
+            .or_panic("cuBLAS gemm_ex nt f32");
         } else if TypeId::of::<T>() == TypeId::of::<f64>() {
             cublas_result::dgemm(
                 ctx.blas.0,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_T,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-                n, m, k, &1.0f64,
-                b.buf.ptr as *const f64, k,
-                a.buf.ptr as *const f64, k,
-                &0.0f64, out.buf.ptr as *mut f64, n,
-            ).or_panic("cuBLAS dgemm nt");
+                n,
+                m,
+                k,
+                &1.0f64,
+                b.buf.ptr as *const f64,
+                k,
+                a.buf.ptr as *const f64,
+                k,
+                &0.0f64,
+                out.buf.ptr as *mut f64,
+                n,
+            )
+            .or_panic("cuBLAS dgemm nt");
         } else {
             let b_t = cuda_transpose(b);
             cuda_matmul_tiled(ctx, out, a, &b_t);
@@ -479,7 +522,9 @@ pub(super) fn cublas_gemm_nt<T: Scalar>(
 }
 
 pub(crate) fn cuda_matmul_tn<T: Scalar>(
-    out: &mut CudaStorage<T>, a: &CudaStorage<T>, b: &CudaStorage<T>,
+    out: &mut CudaStorage<T>,
+    a: &CudaStorage<T>,
+    b: &CudaStorage<T>,
 ) {
     let ctx = get_ctx();
     out.invalidate_cache();
@@ -487,7 +532,9 @@ pub(crate) fn cuda_matmul_tn<T: Scalar>(
 }
 
 pub(crate) fn cuda_matmul_nt<T: Scalar>(
-    out: &mut CudaStorage<T>, a: &CudaStorage<T>, b: &CudaStorage<T>,
+    out: &mut CudaStorage<T>,
+    a: &CudaStorage<T>,
+    b: &CudaStorage<T>,
 ) {
     let ctx = get_ctx();
     out.invalidate_cache();
@@ -768,10 +815,7 @@ pub(super) fn cublas_gemm_strided_batched<T: Scalar>(
                     let c_view = RtcStorage::new(
                         m,
                         n,
-                        CuBuffer::borrow_ptr(
-                            out.buf.ptr + c_off,
-                            m * n * std::mem::size_of::<T>(),
-                        ),
+                        CuBuffer::borrow_ptr(out.buf.ptr + c_off, m * n * std::mem::size_of::<T>()),
                     );
                     let mut ab_tmp = cuda_zeros::<T>(m, n);
                     cuda_matmul_tiled(ctx, &mut ab_tmp, &a_slice, &b_slice);
@@ -969,7 +1013,8 @@ fn cuda_write_submatrix<T: Scalar>(
 }
 
 pub(crate) fn cuda_mse_sum_fwd<T: Scalar>(
-    pred: &CudaStorage<T>, target: &CudaStorage<T>,
+    pred: &CudaStorage<T>,
+    target: &CudaStorage<T>,
 ) -> CudaStorage<T> {
     use crate::kernels_cu::{REDUCE_BLOCK, REDUCE_GRID_CAP};
     let ctx = get_ctx();
@@ -987,14 +1032,23 @@ pub(crate) fn cuda_mse_sum_fwd<T: Scalar>(
     // SAFETY: launching reduction kernel; scratch is pre-allocated, out_buf is freshly allocated.
     unsafe {
         cudarc::driver::sys::cuLaunchKernel(
-            func, grid1, 1, 1, REDUCE_BLOCK, 1, 1, 0, ctx.stream.cu_stream(),
+            func,
+            grid1,
+            1,
+            1,
+            REDUCE_BLOCK,
+            1,
+            1,
+            0,
+            ctx.stream.cu_stream(),
             [
                 &pred.buf.ptr as *const CUdeviceptr as *mut c_void,
                 &target.buf.ptr as *const CUdeviceptr as *mut c_void,
                 &scratch as *const CUdeviceptr as *mut c_void,
                 &n_u32 as *const u32 as *mut c_void,
                 &out_buf.ptr as *const CUdeviceptr as *mut c_void,
-            ].as_mut_ptr(),
+            ]
+            .as_mut_ptr(),
             std::ptr::null_mut(),
         );
     }
@@ -1002,7 +1056,9 @@ pub(crate) fn cuda_mse_sum_fwd<T: Scalar>(
 }
 
 pub(crate) fn cuda_mse_sum_bwd<T: Scalar>(
-    pred: &CudaStorage<T>, target: &CudaStorage<T>, grad: &CudaStorage<T>,
+    pred: &CudaStorage<T>,
+    target: &CudaStorage<T>,
+    grad: &CudaStorage<T>,
 ) -> CudaStorage<T> {
     let ctx = get_ctx();
     let n = pred.n();
@@ -1015,7 +1071,11 @@ pub(crate) fn cuda_mse_sum_bwd<T: Scalar>(
     unsafe {
         expect_ok(
             result::launch_kernel(
-                func, (grid, 1, 1), (BLOCK_SIZE, 1, 1), 0, ctx.stream.cu_stream(),
+                func,
+                (grid, 1, 1),
+                (BLOCK_SIZE, 1, 1),
+                0,
+                ctx.stream.cu_stream(),
                 &mut [
                     &pred.buf.ptr as *const CUdeviceptr as *mut c_void,
                     &target.buf.ptr as *const CUdeviceptr as *mut c_void,
@@ -1031,14 +1091,18 @@ pub(crate) fn cuda_mse_sum_bwd<T: Scalar>(
 }
 
 pub(crate) fn cuda_multi_axpy3_inplace<T: Scalar>(
-    y: [&mut CudaStorage<T>; 3], x: [&CudaStorage<T>; 3], alpha: T,
+    y: [&mut CudaStorage<T>; 3],
+    x: [&CudaStorage<T>; 3],
+    alpha: T,
 ) {
     let ctx = get_ctx();
     let n0 = y[0].n() as u32;
     let n1 = y[1].n() as u32;
     let n2 = y[2].n() as u32;
     let total = n0.max(n1).max(n2) as usize;
-    if total == 0 { return; }
+    if total == 0 {
+        return;
+    }
     let name = format!("k_multi_axpy3_{}", type_suffix::<T>());
     let func = expect_ok(get_kernel(ctx, &name), "CUDA multi_axpy3 kernel");
     let grid = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
@@ -1050,7 +1114,11 @@ pub(crate) fn cuda_multi_axpy3_inplace<T: Scalar>(
     unsafe {
         expect_ok(
             result::launch_kernel(
-                func, (grid, 1, 1), (BLOCK_SIZE, 1, 1), 0, ctx.stream.cu_stream(),
+                func,
+                (grid, 1, 1),
+                (BLOCK_SIZE, 1, 1),
+                0,
+                ctx.stream.cu_stream(),
                 &mut [
                     &y[0].buf.ptr as *const CUdeviceptr as *mut c_void,
                     &x[0].buf.ptr as *const CUdeviceptr as *mut c_void,

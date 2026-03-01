@@ -1,9 +1,7 @@
-
 #![allow(clippy::many_single_char_names)]
 
 use core::fmt;
 use core::ops::{Add, Div, Mul, Neg, Sub};
-
 
 #[inline]
 pub(crate) fn erf_approx(x: f64) -> f64 {
@@ -15,7 +13,6 @@ pub(crate) fn erf_approx(x: f64) -> f64 {
     let result = 1.0 - poly * (-x * x).exp();
     result.copysign(x)
 }
-
 
 /// Element-wise math operations dispatched per scalar type.
 #[allow(missing_docs)]
@@ -82,7 +79,6 @@ macro_rules! impl_real_mathops {
 impl_real_mathops!(f32, |x: f32| erf_approx(f64::from(x)) as f32);
 impl_real_mathops!(f64, erf_approx);
 
-
 pub(crate) trait ReductionOps: Sized + Copy {
     /// Accumulate `self + other` for sum reduction.
     fn reduction_add(self, other: Self) -> Self;
@@ -122,7 +118,6 @@ macro_rules! impl_real_reduction {
 
 impl_real_reduction!(f32);
 impl_real_reduction!(f64);
-
 
 /// Scalar element type for tensors (f32, f64, complex, dual numbers).
 #[allow(private_bounds)]
@@ -223,13 +218,11 @@ macro_rules! impl_real_scalar {
 impl_real_scalar!(f32, 0.0, 1.0, |v: f64| v as f32, f64::from);
 impl_real_scalar!(f64, 0.0, 1.0, |v: f64| v, |x: f64| x);
 
-
 /// Marker trait for real-valued scalars (f32, f64) with total ordering.
 pub trait RealScalar: Scalar<Real = Self> + PartialOrd + Into<f64> {}
 
 impl RealScalar for f32 {}
 impl RealScalar for f64 {}
-
 
 #[cfg(feature = "cpu")]
 mod complex;
@@ -338,7 +331,6 @@ mod half_impl {
     impl_half_scalar!(half::f16);
     impl_half_scalar!(half::bf16);
 }
-
 
 /// Free-function wrappers for common scalar operations.
 pub mod math_utils {

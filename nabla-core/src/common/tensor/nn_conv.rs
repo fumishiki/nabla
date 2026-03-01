@@ -1,8 +1,6 @@
-
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 use crate::tensor::{Tensor, two};
-
 
 /// Configuration for 2-D convolution (stride, padding, dilation, groups).
 pub struct Conv2dConfig {
@@ -388,7 +386,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-
 #[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// 3-D convolution.
@@ -481,8 +478,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         )
     }
 }
-
-
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- Pooling ----
@@ -621,7 +616,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         })
     }
 }
-
 
 #[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Tensor<T, B> {

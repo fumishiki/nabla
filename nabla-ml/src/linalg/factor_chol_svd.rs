@@ -7,8 +7,8 @@ pub mod chol {
     use nabla_core::tensor::Tensor;
 
     use super::super::{
-        Side, buf_get, buf_set, factorization_failed, from_f64_buf, fwd_sub, get_sym, require_square,
-        symmetrize_to_buf, to_f64_buf,
+        Side, buf_get, buf_set, factorization_failed, from_f64_buf, fwd_sub, get_sym,
+        require_square, symmetrize_to_buf, to_f64_buf,
     };
 
     const LDLT_PIVOT_EPS: f64 = f64::EPSILON * 1e-10;
@@ -391,12 +391,12 @@ pub mod svd {
     use nabla_core::tensor::Tensor;
     use rayon::prelude::*;
 
-    use super::super::{
-        buf_get, from_f64_buf, householder_apply_left, householder_apply_right, householder_vec,
-        to_f64_buf, Side,
-    };
     use super::super::eigen::SelfAdjointEigen;
     use super::super::qr::Qr;
+    use super::super::{
+        Side, buf_get, from_f64_buf, householder_apply_left, householder_apply_right,
+        householder_vec, to_f64_buf,
+    };
 
     // ===========================================================================
     // 8. Svd — Golub-Kahan bidiagonalization + implicit QR
@@ -504,7 +504,8 @@ pub mod svd {
                         householder_apply_left(&mut buf, n, j, j, n, &v, tau);
                     }
                     if j + 2 < n {
-                        let mut w: Vec<f64> = ((j + 1)..n).map(|c| buf_get(&buf, n, j, c)).collect();
+                        let mut w: Vec<f64> =
+                            ((j + 1)..n).map(|c| buf_get(&buf, n, j, c)).collect();
                         if let Some(tau) = householder_vec(&mut w) {
                             householder_apply_right(&mut buf, n, j, m, j + 1, &w, tau);
                         }
@@ -515,7 +516,11 @@ pub mod svd {
                     .map(|i| buf_get(&buf, n, i, i + 1))
                     .collect();
                 Self::bidiag_qr_svd(&mut d, &mut e, None, None, m, n, k, params)?;
-                d.sort_by(|a, b| b.abs().partial_cmp(&a.abs()).unwrap_or(core::cmp::Ordering::Equal));
+                d.sort_by(|a, b| {
+                    b.abs()
+                        .partial_cmp(&a.abs())
+                        .unwrap_or(core::cmp::Ordering::Equal)
+                });
                 Ok(d.into_iter().map(f64::abs).collect())
             } else {
                 let at = a.t();
@@ -547,7 +552,9 @@ pub mod svd {
             if m == 0 || n == 0 {
                 return Err(Error::invalid("randomized_svd: empty matrix"));
             }
-            let k = rank.saturating_add(params.randomized_oversample).min(m.min(n));
+            let k = rank
+                .saturating_add(params.randomized_oversample)
+                .min(m.min(n));
             if k == 0 {
                 return Err(Error::invalid("randomized_svd: rank must be > 0"));
             }
@@ -711,7 +718,14 @@ pub mod svd {
         }
 
         /// Sort singular values descending and permute U/Vt accordingly.
-        fn sort_svd(d: &[f64], u_mat: &[f64], vt_mat: &[f64], m: usize, n: usize, k: usize) -> Self {
+        fn sort_svd(
+            d: &[f64],
+            u_mat: &[f64],
+            vt_mat: &[f64],
+            m: usize,
+            n: usize,
+            k: usize,
+        ) -> Self {
             let mut indices: Vec<usize> = (0..k).collect();
             indices.sort_by(|&a, &b| {
                 d[b].abs()
@@ -804,8 +818,10 @@ pub mod svd {
                                         unsafe {
                                             let v0 = *((base as *mut f64).add(i * n + col));
                                             let v1 = *((base as *mut f64).add((j + 1) * n + col));
-                                            *((base as *mut f64).add(i * n + col)) = c * v0 + s * v1;
-                                            *((base as *mut f64).add((j + 1) * n + col)) = -s * v0 + c * v1;
+                                            *((base as *mut f64).add(i * n + col)) =
+                                                c * v0 + s * v1;
+                                            *((base as *mut f64).add((j + 1) * n + col)) =
+                                                -s * v0 + c * v1;
                                         }
                                     });
                                 } else {
@@ -814,8 +830,10 @@ pub mod svd {
                                         unsafe {
                                             let v0 = *((base as *mut f64).add(i * n + col));
                                             let v1 = *((base as *mut f64).add((j + 1) * n + col));
-                                            *((base as *mut f64).add(i * n + col)) = c * v0 + s * v1;
-                                            *((base as *mut f64).add((j + 1) * n + col)) = -s * v0 + c * v1;
+                                            *((base as *mut f64).add(i * n + col)) =
+                                                c * v0 + s * v1;
+                                            *((base as *mut f64).add((j + 1) * n + col)) =
+                                                -s * v0 + c * v1;
                                         }
                                     }
                                 }
@@ -844,7 +862,8 @@ pub mod svd {
                 let a12 = d[p - 2] * e[p - 2];
                 let a22 = d[p - 1] * d[p - 1] + e[p - 2] * e[p - 2];
                 let delta = (a11 - a22) * 0.5;
-                let mu = a22 - a12 * a12 / (delta + delta.signum() * delta.hypot(a12) + f64::EPSILON);
+                let mu =
+                    a22 - a12 * a12 / (delta + delta.signum() * delta.hypot(a12) + f64::EPSILON);
 
                 // Golub-Kahan implicit QR step (Golub & Van Loan, Algorithm 8.6.2)
                 let mut y = d[q] * d[q] - mu;
@@ -865,11 +884,11 @@ pub mod svd {
                     // Apply right Givens to rows of Vt
                     if let Some(vt_mat) = vt.as_deref_mut() {
                         let base = vt_mat.as_mut_ptr() as usize;
-                                if n >= params.givens_parallel_threshold {
-                                    (0..n).into_par_iter().for_each(|col| {
-                                        // SAFETY: each column updates disjoint memory locations for rows i and i+1.
-                                        unsafe {
-                                            let v0 = *((base as *mut f64).add(i * n + col));
+                        if n >= params.givens_parallel_threshold {
+                            (0..n).into_par_iter().for_each(|col| {
+                                // SAFETY: each column updates disjoint memory locations for rows i and i+1.
+                                unsafe {
+                                    let v0 = *((base as *mut f64).add(i * n + col));
                                     let v1 = *((base as *mut f64).add((i + 1) * n + col));
                                     *((base as *mut f64).add(i * n + col)) = c * v0 + s * v1;
                                     *((base as *mut f64).add((i + 1) * n + col)) = -s * v0 + c * v1;

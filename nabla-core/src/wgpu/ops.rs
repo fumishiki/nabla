@@ -1,4 +1,3 @@
-
 use std::any::TypeId;
 
 use wgpu::util::DeviceExt;
@@ -7,7 +6,6 @@ use crate::scalar::Scalar;
 
 use super::shaders::*;
 use super::storage::*;
-
 
 fn params_buf(data: &[u32]) -> wgpu::Buffer {
     let ctx = get_context();
@@ -32,7 +30,6 @@ fn workgroups(n: usize, wg_size: u32) -> u32 {
         n.div_ceil(wg_size as usize) as u32
     }
 }
-
 
 #[allow(clippy::cast_possible_truncation)]
 fn run_1in(
@@ -264,7 +261,6 @@ fn run_fill_identity_f32(ctx: &GpuContext, n: usize) -> wgpu::Buffer {
     out
 }
 
-
 fn run_reduce_f32(ctx: &GpuContext, a: &wgpu::Buffer, n: usize, op: ShaderOp) -> Vec<f32> {
     let wg = ctx.wg_size;
     let num_blocks = n.div_ceil(wg as usize);
@@ -316,7 +312,6 @@ fn run_argreduce_f32(
     let idxs: Vec<u32> = bytes_to_u32(&ibytes);
     (vals, idxs)
 }
-
 
 fn run_activation_1in(
     ctx: &GpuContext,
@@ -558,8 +553,6 @@ pub(crate) fn gpu_embedding<T: Scalar>(
     GpuStorage::from_buffer(n_tokens, embed_dim, out)
 }
 
-
-
 pub(crate) fn gpu_zeros<T: Scalar>(nrows: usize, ncols: usize) -> GpuStorage<T> {
     assert_is_f32::<T>();
     let ctx = get_context();
@@ -678,10 +671,17 @@ pub(crate) fn gpu_axpy_inplace<T: Scalar>(y: &mut GpuStorage<T>, alpha: T, x: &G
     #[allow(clippy::borrow_as_ptr, clippy::ptr_cast_constness)]
     let alpha_f32: f32 = unsafe { *std::ptr::from_ref(&alpha).cast::<f32>() };
     let wg = ctx.wg_size;
-    let key = PipelineKey { op: ShaderOp::Axpy, wg_size: wg };
+    let key = PipelineKey {
+        op: ShaderOp::Axpy,
+        wg_size: wg,
+    };
     let p = params_buf(&[n as u32, alpha_f32.to_bits()]);
     with_pipeline(ctx, key, |pipeline| {
-        let bg = bind_group(ctx, pipeline, &[(&y.buffer, false), (&x.buffer, true), (&p, true)]);
+        let bg = bind_group(
+            ctx,
+            pipeline,
+            &[(&y.buffer, false), (&x.buffer, true), (&p, true)],
+        );
         dispatch_and_wait(ctx, pipeline, &bg, workgroups(n, wg));
     });
     *lock_or_recover(&y.host_cache) = None;
@@ -715,7 +715,6 @@ pub(crate) fn gpu_powf<T: Scalar>(a: &GpuStorage<T>, p: T) -> GpuStorage<T> {
     let buf = run_powf_f32(ctx, &a.buffer, n, power);
     GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
-
 
 macro_rules! impl_gpu_unary {
     ($name:ident, $op:expr) => {
@@ -753,7 +752,6 @@ impl_gpu_unary!(gpu_acosh, 21);
 impl_gpu_unary!(gpu_atanh, 22);
 impl_gpu_unary!(gpu_log2, 23);
 impl_gpu_unary!(gpu_log10, 24);
-
 
 pub(crate) fn gpu_sum_all<T: Scalar>(s: &GpuStorage<T>) -> T {
     assert_is_f32::<T>();
@@ -852,7 +850,6 @@ pub(crate) fn gpu_argmin_all<T: Scalar>(s: &GpuStorage<T>) -> (usize, usize) {
     (flat / ncols, flat % ncols)
 }
 
-
 #[inline]
 fn assert_is_f32<T: Scalar>() {
     assert!(
@@ -886,7 +883,6 @@ macro_rules! gpu_fwd_binary {
     };
 }
 
-
 #[cfg(feature = "gpu")]
 impl crate::backend::BackendCore for crate::backend::Gpu {
     type Storage<T: crate::scalar::Scalar> = GpuStorage<T>;
@@ -908,16 +904,22 @@ impl crate::backend::BackendCore for crate::backend::Gpu {
 
     #[inline]
     fn from_fn<T: crate::scalar::Scalar>(
-        r: usize, c: usize, f: impl FnMut(usize, usize) -> T,
+        r: usize,
+        c: usize,
+        f: impl FnMut(usize, usize) -> T,
     ) -> GpuStorage<T> {
         gpu_from_fn::<T>(r, c, f)
     }
 
     #[inline]
-    fn nrows<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> usize { s.nrows }
+    fn nrows<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> usize {
+        s.nrows
+    }
 
     #[inline]
-    fn ncols<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> usize { s.ncols }
+    fn ncols<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> usize {
+        s.ncols
+    }
 
     #[inline]
     fn get<T: crate::scalar::Scalar>(s: &GpuStorage<T>, r: usize, c: usize) -> T {
@@ -975,13 +977,19 @@ impl crate::backend::BackendMath for crate::backend::Gpu {
 #[cfg(feature = "gpu")]
 impl crate::backend::BackendReduce for crate::backend::Gpu {
     #[inline]
-    fn sum_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> T { gpu_sum_all::<T>(s) }
+    fn sum_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> T {
+        gpu_sum_all::<T>(s)
+    }
 
     #[inline]
-    fn max_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> T { gpu_max_all::<T>(s) }
+    fn max_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> T {
+        gpu_max_all::<T>(s)
+    }
 
     #[inline]
-    fn min_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> T { gpu_min_all::<T>(s) }
+    fn min_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> T {
+        gpu_min_all::<T>(s)
+    }
 
     #[inline]
     fn argmax_all<T: crate::scalar::Scalar>(s: &GpuStorage<T>) -> (usize, usize) {
@@ -1006,7 +1014,9 @@ impl crate::backend::BackendReduce for crate::backend::Gpu {
 impl crate::backend::BackendBlas for crate::backend::Gpu {
     #[inline]
     fn matmul_into<T: crate::scalar::Scalar>(
-        out: &mut GpuStorage<T>, a: &GpuStorage<T>, b: &GpuStorage<T>,
+        out: &mut GpuStorage<T>,
+        a: &GpuStorage<T>,
+        b: &GpuStorage<T>,
     ) {
         gpu_matmul::<T>(out, a, b);
     }
@@ -1014,8 +1024,12 @@ impl crate::backend::BackendBlas for crate::backend::Gpu {
 
 #[cfg(feature = "gpu")]
 impl crate::backend::BackendNN for crate::backend::Gpu {
-    fn silu<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_silu(a) }
-    fn mish<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_mish(a) }
+    fn silu<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_silu(a)
+    }
+    fn mish<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_mish(a)
+    }
     fn leaky_relu<T: crate::scalar::Scalar>(a: &GpuStorage<T>, s: T) -> GpuStorage<T> {
         gpu_leaky_relu(a, s)
     }
@@ -1025,14 +1039,21 @@ impl crate::backend::BackendNN for crate::backend::Gpu {
     fn hardswish<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
         gpu_hardswish(a)
     }
-    fn softmax<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> { gpu_softmax(a) }
+    fn softmax<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_softmax(a)
+    }
     fn layer_norm<T: crate::scalar::Scalar>(
-        a: &GpuStorage<T>, g: &GpuStorage<T>, b: &GpuStorage<T>, eps: T,
+        a: &GpuStorage<T>,
+        g: &GpuStorage<T>,
+        b: &GpuStorage<T>,
+        eps: T,
     ) -> GpuStorage<T> {
         gpu_layer_norm(a, g, b, eps)
     }
     fn rms_norm<T: crate::scalar::Scalar>(
-        a: &GpuStorage<T>, g: &GpuStorage<T>, eps: T,
+        a: &GpuStorage<T>,
+        g: &GpuStorage<T>,
+        eps: T,
     ) -> GpuStorage<T> {
         gpu_rms_norm(a, g, eps)
     }
@@ -1044,16 +1065,22 @@ impl crate::backend::BackendNN for crate::backend::Gpu {
 #[cfg(feature = "gpu")]
 impl crate::backend::BackendFusion for crate::backend::Gpu {
     fn fuse_launch<T: crate::scalar::Scalar>(
-        _inputs: &[*const u8], _nrows: usize, _ncols: usize,
+        _inputs: &[*const u8],
+        _nrows: usize,
+        _ncols: usize,
         _cpu_fn: impl FnMut(usize, usize) -> T,
-        _gpu_expr: &str, _kernel_hash: &str, _n_inputs: usize, _reg_estimate: usize,
+        _gpu_expr: &str,
+        _kernel_hash: &str,
+        _n_inputs: usize,
+        _reg_estimate: usize,
     ) -> GpuStorage<T> {
         panic!("fuse_launch: not supported on wgpu backend; use cpu/cuda/hip backend")
     }
 
     fn mega_fuse_launch<'a, T: crate::scalar::Scalar>(
         _ops: &[(Vec<*const u8>, String, usize, bool)],
-        _nrows: usize, _ncols: usize,
+        _nrows: usize,
+        _ncols: usize,
         _cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
         _kernel_hash: &str,
     ) -> Vec<GpuStorage<T>> {

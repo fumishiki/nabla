@@ -1,8 +1,6 @@
-
 use std::fmt;
 use std::ops::{Add, Deref, Div, Mul, Neg, Sub};
 use std::sync::Arc;
-
 
 fn expr_eq(a: &ExprKind, b: &ExprKind) -> bool {
     match (a, b) {
@@ -91,7 +89,6 @@ impl PartialEq for ExprKind {
 }
 impl Eq for ExprKind {}
 
-
 /// Symbolic mathematical expression (Arc-wrapped).
 #[derive(Debug, Clone)]
 pub struct Expr(Arc<ExprKind>);
@@ -154,7 +151,6 @@ cas_unary!(
     asinh => Asinh, acosh => Acosh, atanh => Atanh,
 );
 
-
 macro_rules! cas_method {
     ($($method:ident => $assoc:ident),+ $(,)?) => {
         impl Expr {
@@ -190,7 +186,6 @@ impl Expr {
     }
 }
 
-
 impl From<f64> for Expr {
     #[inline]
     fn from(v: f64) -> Self {
@@ -205,14 +200,12 @@ impl From<i32> for Expr {
     }
 }
 
-
 /// Create a named symbolic variable.
 #[inline]
 #[must_use]
 pub fn var(name: &str) -> Expr {
     Expr::var(name)
 }
-
 
 macro_rules! impl_expr_binop {
     ($($trait:ident, $method:ident, $variant:ident);+ $(;)?) => {
@@ -242,7 +235,6 @@ impl Sub for &Expr {
     }
 }
 
-
 macro_rules! impl_expr_f64_binop {
     ($($trait:ident, $method:ident);+ $(;)?) => {
         $(
@@ -262,7 +254,6 @@ macro_rules! impl_expr_f64_binop {
     };
 }
 impl_expr_f64_binop!(Add, add; Mul, mul; Sub, sub; Div, div);
-
 
 macro_rules! impl_owned_binop {
     ($($trait:ident, $method:ident);+ $(;)?) => {
@@ -293,9 +284,10 @@ impl_owned_binop!(Add, add; Sub, sub; Mul, mul; Div, div);
 impl Neg for Expr {
     type Output = Expr;
     #[inline]
-    fn neg(self) -> Expr { Neg::neg(&self) }
+    fn neg(self) -> Expr {
+        Neg::neg(&self)
+    }
 }
-
 
 macro_rules! impl_owned_f64_binop {
     ($($trait:ident, $method:ident);+ $(;)?) => {
@@ -314,7 +306,6 @@ macro_rules! impl_owned_f64_binop {
     };
 }
 impl_owned_f64_binop!(Add, add; Sub, sub; Mul, mul; Div, div);
-
 
 fn precedence(e: &ExprKind) -> u8 {
     match e {
@@ -414,5 +405,3 @@ impl fmt::Display for Expr {
         fmt::Display::fmt(&*self.0, f)
     }
 }
-
-

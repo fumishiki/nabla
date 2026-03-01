@@ -6,8 +6,10 @@
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{Error, Expr, Ident, Result, Token, parse::{Parse, ParseStream}};
-
+use syn::{
+    Error, Expr, Ident, Result, Token,
+    parse::{Parse, ParseStream},
+};
 
 #[derive(Clone)]
 pub(crate) enum IdxExpr {
@@ -53,7 +55,6 @@ pub(crate) struct StencilInput {
     out_indices: Vec<Ident>,
     terms: Vec<RhsTerm>,
 }
-
 
 fn parse_idx_expr(input: ParseStream<'_>) -> Result<IdxExpr> {
     let var: Ident = input.parse()?;
@@ -161,7 +162,6 @@ fn parse_term_sign(input: ParseStream<'_>) -> Result<Option<bool>> {
         Ok(None)
     }
 }
-
 
 fn idx_expr_token(idx: &IdxExpr, loop_var: &Ident) -> TokenStream2 {
     let off = idx.offset();

@@ -27,7 +27,6 @@
 #[cfg(not(any(feature = "cpu", feature = "gpu", feature = "cuda", feature = "hip")))]
 compile_error!("nabla-core: enable at least one backend feature (cpu / wgpu / cuda / hip)");
 
-
 /// Scalar trait and primitive numeric types (f32, f64, complex, dual).
 #[path = "common/scalar/mod.rs"]
 pub mod scalar;
@@ -46,18 +45,15 @@ pub use backend::error;
 #[path = "common/layout.rs"]
 pub mod layout;
 
-
 #[cfg(feature = "cpu")]
 #[allow(missing_docs)]
 #[path = "cpu/mod.rs"]
 pub(crate) mod cpu;
 
-
 #[cfg(feature = "gpu")]
 #[allow(missing_docs)]
 #[path = "wgpu/mod.rs"]
 pub mod gpu;
-
 
 #[cfg(any(feature = "cuda", feature = "hip"))]
 #[path = "cuda_hip/common/kernels/mod.rs"]
@@ -74,7 +70,6 @@ pub use gpu_common::cuda as cuda_backend;
 #[cfg(feature = "hip")]
 pub(crate) use gpu_common::hip as hip_backend;
 
-
 pub use backend::{Backend, DefaultBackend};
 pub use layout::{LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64};
 pub use scalar::Scalar;
@@ -82,8 +77,7 @@ pub use tensor::{MatrixLike, Tensor, TensorView};
 
 #[cfg(feature = "cuda")]
 pub use cuda_backend::{
-    CuBuffer, CudaError, CudaResult, Epilogue, KernelNodeState, NablaCudaGraph,
-    PyGraph, PyGraphTrainingGraph, TrainingGraph,
-    cuda_copy_from_host, cuda_graph_capture, cuda_graph_capture_cached,
-    cuda_matmul_epilogue, cuda_synchronize,
+    CuBuffer, CudaError, CudaResult, Epilogue, KernelNodeState, NablaCudaGraph, PyGraph,
+    PyGraphTrainingGraph, TrainingGraph, cuda_copy_from_host, cuda_graph_capture,
+    cuda_graph_capture_cached, cuda_matmul_epilogue, cuda_synchronize,
 };

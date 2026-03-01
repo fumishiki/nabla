@@ -6,7 +6,9 @@ use std::time::Instant;
 
 #[cfg(feature = "cuda")]
 #[inline]
-fn gpu_sync() { nabla::cuda_synchronize(); }
+fn gpu_sync() {
+    nabla::cuda_synchronize();
+}
 #[cfg(not(feature = "cuda"))]
 #[inline]
 fn gpu_sync() {}

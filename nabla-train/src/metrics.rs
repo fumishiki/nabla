@@ -42,7 +42,9 @@ impl MovingAverage {
     }
 
     #[must_use]
-    pub fn len(&self) -> usize { self.buf.len() }
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
 }
 
 pub struct StdoutLogger {
@@ -60,7 +62,9 @@ impl StdoutLogger {
     }
 
     #[must_use]
-    pub fn moving_average(&self) -> Option<f64> { self.avg.value() }
+    pub fn moving_average(&self) -> Option<f64> {
+        self.avg.value()
+    }
 }
 
 impl TrainHook for StdoutLogger {
@@ -83,7 +87,11 @@ impl TrainHook for StdoutLogger {
                     println!("eval epoch={epoch} step={step} loss={loss:.6} avg={avg:.6}");
                 }
             }
-            TrainEvent::EvalEnd { epoch, steps, avg_loss } => {
+            TrainEvent::EvalEnd {
+                epoch,
+                steps,
+                avg_loss,
+            } => {
                 println!("eval epoch={epoch} steps={steps} avg_loss={avg_loss:.6}");
             }
         }
@@ -117,16 +125,26 @@ impl TrainHook for JsonLogger {
         }
         let line = match event {
             TrainEvent::Step { epoch, step, loss } => {
-                format!("{{\"event\":\"step\",\"epoch\":{epoch},\"step\":{step},\"loss\":{loss}}}\n")
+                format!(
+                    "{{\"event\":\"step\",\"epoch\":{epoch},\"step\":{step},\"loss\":{loss}}}\n"
+                )
             }
             TrainEvent::EpochEnd { epoch, steps } => {
                 format!("{{\"event\":\"epoch_end\",\"epoch\":{epoch},\"steps\":{steps}}}\n")
             }
             TrainEvent::EvalStep { epoch, step, loss } => {
-                format!("{{\"event\":\"eval_step\",\"epoch\":{epoch},\"step\":{step},\"loss\":{loss}}}\n")
+                format!(
+                    "{{\"event\":\"eval_step\",\"epoch\":{epoch},\"step\":{step},\"loss\":{loss}}}\n"
+                )
             }
-            TrainEvent::EvalEnd { epoch, steps, avg_loss } => {
-                format!("{{\"event\":\"eval_end\",\"epoch\":{epoch},\"steps\":{steps},\"avg_loss\":{avg_loss}}}\n")
+            TrainEvent::EvalEnd {
+                epoch,
+                steps,
+                avg_loss,
+            } => {
+                format!(
+                    "{{\"event\":\"eval_end\",\"epoch\":{epoch},\"steps\":{steps},\"avg_loss\":{avg_loss}}}\n"
+                )
             }
         };
         if let Err(_) = self.writer.write_all(line.as_bytes()) {

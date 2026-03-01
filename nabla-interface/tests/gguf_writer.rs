@@ -24,12 +24,18 @@ fn gguf_v3_magic_and_version() {
 #[test]
 fn gguf_metadata_string() {
     let mut gguf: GgufWriter<Cursor<Vec<u8>>> = GgufWriter::new();
-    gguf.add_metadata("general.architecture", MetadataValue::String("llama".into()));
+    gguf.add_metadata(
+        "general.architecture",
+        MetadataValue::String("llama".into()),
+    );
     let mut buf = Cursor::new(Vec::new());
     gguf.write_to(&mut buf).expect("write failed");
     let data = buf.into_inner();
     // metadata_kv_count should be 1
-    assert_eq!(u64::from_le_bytes(data[16..24].try_into().expect("slice")), 1);
+    assert_eq!(
+        u64::from_le_bytes(data[16..24].try_into().expect("slice")),
+        1
+    );
 }
 
 #[test]
@@ -39,7 +45,10 @@ fn gguf_metadata_u32() {
     let mut buf = Cursor::new(Vec::new());
     gguf.write_to(&mut buf).expect("write failed");
     let data = buf.into_inner();
-    assert_eq!(u64::from_le_bytes(data[16..24].try_into().expect("slice")), 1);
+    assert_eq!(
+        u64::from_le_bytes(data[16..24].try_into().expect("slice")),
+        1
+    );
 }
 
 #[test]
@@ -58,7 +67,10 @@ fn gguf_with_tensor_data() {
     gguf.write_to(&mut buf).expect("write failed");
     let data = buf.into_inner();
     // tensor_count should be 1
-    assert_eq!(u64::from_le_bytes(data[8..16].try_into().expect("slice")), 1);
+    assert_eq!(
+        u64::from_le_bytes(data[8..16].try_into().expect("slice")),
+        1
+    );
     // File should be non-trivially sized (header + metadata + tensor_info + padding + data)
     assert!(data.len() > 128, "file too small: {}", data.len());
 }
@@ -68,15 +80,25 @@ fn gguf_32byte_alignment() {
     let mut gguf: GgufWriter<Cursor<Vec<u8>>> = GgufWriter::new();
     let tensor_data = vec![1u8; 64];
     let info = TensorInfo {
-        name: "t".into(), dims: vec![16], qtype: GgufQuantType::F32, data_size: 64,
+        name: "t".into(),
+        dims: vec![16],
+        qtype: GgufQuantType::F32,
+        data_size: 64,
     };
     gguf.add_tensor(info, tensor_data);
     let mut buf = Cursor::new(Vec::new());
     gguf.write_to(&mut buf).expect("write failed");
     let data = buf.into_inner();
     // Find the tensor data by looking for the first 0x01 byte after alignment padding
-    let pos = data.iter().rposition(|&b| b == 1).expect("no tensor data found");
+    let pos = data
+        .iter()
+        .rposition(|&b| b == 1)
+        .expect("no tensor data found");
     // The start of tensor data should be 32-byte aligned
     let start = pos - 63; // 64 bytes of 0x01, so start = pos - 63
-    assert_eq!(start % 32, 0, "tensor data not 32-byte aligned: offset {start}");
+    assert_eq!(
+        start % 32,
+        0,
+        "tensor data not 32-byte aligned: offset {start}"
+    );
 }

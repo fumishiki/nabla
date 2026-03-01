@@ -8,9 +8,13 @@ struct VecDataset<T> {
 impl<T: Clone> Dataset for VecDataset<T> {
     type Item = T;
 
-    fn len(&self) -> usize { self.data.len() }
+    fn len(&self) -> usize {
+        self.data.len()
+    }
 
-    fn get(&self, idx: usize) -> Self::Item { self.data[idx].clone() }
+    fn get(&self, idx: usize) -> Self::Item {
+        self.data[idx].clone()
+    }
 }
 
 fn collect_order(loader: DataLoader<VecDataset<usize>, VecBatcher>) -> Vec<usize> {
@@ -25,18 +29,26 @@ fn collect_order(loader: DataLoader<VecDataset<usize>, VecBatcher>) -> Vec<usize
 
 #[test]
 fn shuffle_seed_is_reproducible() {
-    let dataset = VecDataset { data: (0..8).collect() };
+    let dataset = VecDataset {
+        data: (0..8).collect(),
+    };
     let order_a = collect_order(DataLoader::new(dataset, VecBatcher, 2).shuffle_seed(123));
-    let dataset = VecDataset { data: (0..8).collect() };
+    let dataset = VecDataset {
+        data: (0..8).collect(),
+    };
     let order_b = collect_order(DataLoader::new(dataset, VecBatcher, 2).shuffle_seed(123));
     assert_eq!(order_a, order_b);
 }
 
 #[test]
 fn shuffle_epoch_changes_order() {
-    let dataset = VecDataset { data: (0..8).collect() };
+    let dataset = VecDataset {
+        data: (0..8).collect(),
+    };
     let order_a = collect_order(DataLoader::new(dataset, VecBatcher, 2).shuffle_seed_epoch(123, 0));
-    let dataset = VecDataset { data: (0..8).collect() };
+    let dataset = VecDataset {
+        data: (0..8).collect(),
+    };
     let order_b = collect_order(DataLoader::new(dataset, VecBatcher, 2).shuffle_seed_epoch(123, 1));
     let mut sorted = order_b.clone();
     sorted.sort();
@@ -46,7 +58,9 @@ fn shuffle_epoch_changes_order() {
 
 #[test]
 fn repeat_keeps_streaming() {
-    let dataset = VecDataset { data: (0..4).collect() };
+    let dataset = VecDataset {
+        data: (0..4).collect(),
+    };
     let loader = DataLoader::new(dataset, VecBatcher, 2).repeat(true);
     let mut iter = loader.iter();
     let first = iter.next();
@@ -71,9 +85,15 @@ fn split_dataset_sizes_and_elements() {
     assert_eq!(test.len(), 2);
 
     let mut merged = Vec::new();
-    for i in 0..train.len() { merged.push(train.get(i)); }
-    for i in 0..val.len() { merged.push(val.get(i)); }
-    for i in 0..test.len() { merged.push(test.get(i)); }
+    for i in 0..train.len() {
+        merged.push(train.get(i));
+    }
+    for i in 0..val.len() {
+        merged.push(val.get(i));
+    }
+    for i in 0..test.len() {
+        merged.push(test.get(i));
+    }
     merged.sort();
     assert_eq!(merged, data);
 }
@@ -84,9 +104,12 @@ fn cpu_allreduce_mean() {
     let a = mat![[1.0_f64, 3.0, 5.0]];
     let b = mat![[3.0_f64, 5.0, 7.0]];
     let handle = std::thread::spawn(move || {
-        r1.allreduce_mean(&b).unwrap_or_else(|_| Tensor::zeros(1, 3))
+        r1.allreduce_mean(&b)
+            .unwrap_or_else(|_| Tensor::zeros(1, 3))
     });
-    let t0 = r0.allreduce_mean(&a).unwrap_or_else(|_| Tensor::zeros(1, 3));
+    let t0 = r0
+        .allreduce_mean(&a)
+        .unwrap_or_else(|_| Tensor::zeros(1, 3));
     let t1 = handle.join().unwrap_or_else(|_| Tensor::zeros(1, 3));
     for j in 0..3 {
         let v0 = t0.get(0, j);

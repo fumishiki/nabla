@@ -1,4 +1,3 @@
-
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use std::collections::{HashMap, HashSet};
@@ -6,7 +5,6 @@ use syn::{
     Error, Ident, Result,
     parse::{Parse, ParseStream},
 };
-
 
 struct IndexedTensor {
     name: Ident,
@@ -50,7 +48,6 @@ enum ContractionKind {
     /// General loop-based contraction (fallback)
     Fallback,
 }
-
 
 impl Parse for EinsumInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
@@ -112,7 +109,6 @@ fn name_set(indices: &[Ident]) -> HashSet<String> {
 fn name_list(indices: &[Ident]) -> Vec<String> {
     indices.iter().map(Ident::to_string).collect()
 }
-
 
 fn validate(input: &EinsumInput) -> Result<()> {
     if input.rhs_terms.is_empty() {
@@ -185,7 +181,6 @@ fn is_trace_index(input: &EinsumInput, name: &str) -> bool {
         .any(|t| t.indices.iter().filter(|i| *i == name).count() >= 2)
 }
 
-
 fn canonicalize(input: &mut EinsumInput) {
     // Sort 2-term RHS alphabetically by tensor name BEFORE renaming.
     if input.rhs_terms.len() == 2 && input.rhs_terms[0].name > input.rhs_terms[1].name {
@@ -239,7 +234,6 @@ fn canonicalize(input: &mut EinsumInput) {
     }
 }
 
-
 fn classify(input: &EinsumInput) -> ContractionKind {
     let free = &input.output_indices;
     let rhs = &input.rhs_terms;
@@ -269,10 +263,7 @@ fn classify(input: &EinsumInput) -> ContractionKind {
         let (a, b) = (&rhs[0], &rhs[1]);
 
         // GEMM / GemmTransposed: 2x2D, 2 free, 1 contraction.
-        if a.indices.len() == 2
-            && b.indices.len() == 2
-            && free.len() == 2
-            && contraction.len() == 1
+        if a.indices.len() == 2 && b.indices.len() == 2 && free.len() == 2 && contraction.len() == 1
         {
             let k = &contraction[0];
             let (a0, a1) = (a.indices[0].to_string(), a.indices[1].to_string());
@@ -301,10 +292,7 @@ fn classify(input: &EinsumInput) -> ContractionKind {
         }
 
         // Outer product: 2 vectors, no contraction, 2 free.
-        if contraction.is_empty()
-            && free.len() == 2
-            && a.indices.len() == 1
-            && b.indices.len() == 1
+        if contraction.is_empty() && free.len() == 2 && a.indices.len() == 1 && b.indices.len() == 1
         {
             return ContractionKind::Outer;
         }
@@ -315,9 +303,11 @@ fn classify(input: &EinsumInput) -> ContractionKind {
             && a.indices.len() == b.indices.len()
             && a.indices.len() == free.len()
         {
-            let all_free = rhs
-                .iter()
-                .all(|t| t.indices.iter().all(|i| free_names.contains(&i.to_string())));
+            let all_free = rhs.iter().all(|t| {
+                t.indices
+                    .iter()
+                    .all(|i| free_names.contains(&i.to_string()))
+            });
             if all_free {
                 return ContractionKind::Hadamard;
             }
@@ -333,8 +323,7 @@ fn classify(input: &EinsumInput) -> ContractionKind {
                 let a_inner1 = a.indices[bc + 1].to_string();
                 let b_inner0 = b.indices[bc].to_string();
                 if batch_ok && a_inner1 == *k && b_inner0 == *k {
-                    let out_ok =
-                        (0..bc).all(|d| free[d] == a.indices[d]) && free.len() == bc + 2;
+                    let out_ok = (0..bc).all(|d| free[d] == a.indices[d]) && free.len() == bc + 2;
                     if out_ok {
                         return ContractionKind::BatchGemm { batch_count: bc };
                     }
@@ -345,7 +334,6 @@ fn classify(input: &EinsumInput) -> ContractionKind {
 
     ContractionKind::Fallback
 }
-
 
 pub(crate) fn einsum_impl(input: TokenStream2) -> Result<TokenStream2> {
     let mut parsed: EinsumInput = syn::parse2(input)?;
@@ -369,7 +357,6 @@ fn codegen_einsum(input: &EinsumInput) -> Result<TokenStream2> {
         ContractionKind::Fallback => codegen_fallback(input),
     }
 }
-
 
 fn element_access(binding: &Ident, indices: &[Ident], is_original: bool) -> TokenStream2 {
     match (indices.len(), is_original) {
@@ -578,7 +565,6 @@ where
     }
 }
 
-
 fn bind_ref(name: &Ident) -> (Ident, TokenStream2) {
     let bind = Ident::new(&format!("__{name}"), name.span());
     (bind.clone(), quote! { let #bind = &#name; })
@@ -587,10 +573,7 @@ fn bind_ref(name: &Ident) -> (Ident, TokenStream2) {
 fn transpose_ref(bind: &Ident, label: &str, transpose: bool) -> (TokenStream2, TokenStream2) {
     if transpose {
         let t_bind = Ident::new(&format!("__{label}_t"), bind.span());
-        (
-            quote! { let #t_bind = #bind.t(); },
-            quote! { (&#t_bind) },
-        )
+        (quote! { let #t_bind = #bind.t(); }, quote! { (&#t_bind) })
     } else {
         (quote! {}, quote! { #bind })
     }
@@ -756,7 +739,6 @@ fn codegen_batch_gemm(input: &EinsumInput, batch_count: usize) -> Result<TokenSt
     })
 }
 
-
 fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
     if input.rhs_terms.len() >= 3 {
         return codegen_sequential_contraction(input);
@@ -787,12 +769,9 @@ fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
         })
         .collect();
 
-    let product_expr = accesses
-        .iter()
-        .skip(1)
-        .fold(accesses[0].clone(), |acc, a| {
-            quote! { nabla::scalar::math_utils::mul(&#acc, &#a) }
-        });
+    let product_expr = accesses.iter().skip(1).fold(accesses[0].clone(), |acc, a| {
+        quote! { nabla::scalar::math_utils::mul(&#acc, &#a) }
+    });
 
     // Build accumulator with tiled loops.
     let step = quote! {
@@ -803,10 +782,19 @@ fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
     let descs = rhs_descriptors(rhs);
     let desc_refs: Vec<(&Ident, &[Ident], bool)> =
         descs.iter().map(|(b, i, o)| (b, *i, *o)).collect();
-    let loops = build_tiled_loops(&contraction_indices, |ci| find_dim_expr(ci, &desc_refs, None), step)?;
+    let loops = build_tiled_loops(
+        &contraction_indices,
+        |ci| find_dim_expr(ci, &desc_refs, None),
+        step,
+    )?;
 
     // Emit output tensor, wrapping bindings.
-    let output = emit_output_tensor(&input.output_indices, |fi| find_dim_expr(fi, &desc_refs, Some(0)), &loops, false)?;
+    let output = emit_output_tensor(
+        &input.output_indices,
+        |fi| find_dim_expr(fi, &desc_refs, Some(0)),
+        &loops,
+        false,
+    )?;
 
     Ok(quote! {
         {
@@ -831,7 +819,6 @@ fn dedup_bindings(terms: &[IndexedTensor]) -> Vec<TokenStream2> {
         })
         .collect()
 }
-
 
 fn greedy_contraction_order(
     terms: &[IndexedTensor],
@@ -909,7 +896,6 @@ fn greedy_contraction_order(
     order
 }
 
-
 struct IntermediateTensor {
     binding: Ident,
     indices: Vec<Ident>,
@@ -927,8 +913,16 @@ fn codegen_sequential_contraction(input: &EinsumInput) -> Result<TokenStream2> {
         .iter()
         .enumerate()
         .map(|(step, &(li, ri))| {
-            let ln = if li < n_terms { input.rhs_terms[li].name.to_string() } else { format!("tmp_{}", li - n_terms) };
-            let rn = if ri < n_terms { input.rhs_terms[ri].name.to_string() } else { format!("tmp_{}", ri - n_terms) };
+            let ln = if li < n_terms {
+                input.rhs_terms[li].name.to_string()
+            } else {
+                format!("tmp_{}", li - n_terms)
+            };
+            let rn = if ri < n_terms {
+                input.rhs_terms[ri].name.to_string()
+            } else {
+                format!("tmp_{}", ri - n_terms)
+            };
             format!("step {step}: {ln} x {rn}")
         })
         .collect::<Vec<_>>()
@@ -1026,7 +1020,8 @@ fn codegen_sequential_contraction(input: &EinsumInput) -> Result<TokenStream2> {
             (r_bind, r_indices.as_slice(), r_orig),
         ];
 
-        let loops = build_tiled_loops(&contr_dedup, |ci| find_dim_expr(ci, &pair, None), step_stmt)?;
+        let loops =
+            build_tiled_loops(&contr_dedup, |ci| find_dim_expr(ci, &pair, None), step_stmt)?;
 
         let is_final = step_idx == n_steps - 1;
 

@@ -1,4 +1,3 @@
-
 use crate::scalar::Scalar;
 
 /// Error types for nabla backend operations.
@@ -100,16 +99,26 @@ pub trait BackendCore: private::Sealed + Send + Sync + 'static {
 
     /// Allocate a matrix and fill it by calling `f(row, col)`.
     fn from_fn<T: Scalar>(
-        nrows: usize, ncols: usize, f: impl FnMut(usize, usize) -> T,
+        nrows: usize,
+        ncols: usize,
+        f: impl FnMut(usize, usize) -> T,
     ) -> Self::Storage<T>;
 
     /// Build storage from a pre-allocated row-major `Vec<T>` (zero-copy when possible).
     #[must_use]
     fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> Self::Storage<T> {
         let expected = nrows * ncols;
-        assert_eq!(data.len(), expected, "from_vec: data length must equal nrows * ncols");
+        assert_eq!(
+            data.len(),
+            expected,
+            "from_vec: data length must equal nrows * ncols"
+        );
         let mut i = 0usize;
-        Self::from_fn(nrows, ncols, move |_, _| { let v = data[i]; i += 1; v })
+        Self::from_fn(nrows, ncols, move |_, _| {
+            let v = data[i];
+            i += 1;
+            v
+        })
     }
 
     /// Non-blocking H2D upload: data transfer on a separate copy stream overlaps with compute.
@@ -126,7 +135,9 @@ pub trait BackendCore: private::Sealed + Send + Sync + 'static {
         let n = rows * cols;
         let mut out = Vec::with_capacity(n);
         for r in 0..rows {
-            for c in 0..cols { out.push(Self::get(a, r, c)); }
+            for c in 0..cols {
+                out.push(Self::get(a, r, c));
+            }
         }
         out
     }
@@ -165,10 +176,19 @@ pub trait BackendCore: private::Sealed + Send + Sync + 'static {
     fn axpy_inplace<T: Scalar>(y: &mut Self::Storage<T>, alpha: T, x: &Self::Storage<T>);
 
     /// GPU-native broadcast expand: write `src` (src_rows x src_cols) into `out` (dst_rows x dst_cols).
-    fn expand_into<T: Scalar>(out: &mut Self::Storage<T>, src: &Self::Storage<T>, src_rows: usize, src_cols: usize) {
+    fn expand_into<T: Scalar>(
+        out: &mut Self::Storage<T>,
+        src: &Self::Storage<T>,
+        src_rows: usize,
+        src_cols: usize,
+    ) {
         let (dst_rows, dst_cols) = (Self::nrows(out), Self::ncols(out));
         *out = Self::from_fn(dst_rows, dst_cols, |r, c| {
-            Self::get(src, if src_rows == 1 { 0 } else { r }, if src_cols == 1 { 0 } else { c })
+            Self::get(
+                src,
+                if src_rows == 1 { 0 } else { r },
+                if src_cols == 1 { 0 } else { c },
+            )
         });
     }
 }
@@ -258,7 +278,11 @@ pub trait BackendReduce: BackendCore {
     fn prod_all<T: Scalar>(a: &Self::Storage<T>) -> T {
         let (rows, cols) = (Self::nrows(a), Self::ncols(a));
         let mut acc = T::one();
-        for r in 0..rows { for c in 0..cols { acc = acc * Self::get(a, r, c); } }
+        for r in 0..rows {
+            for c in 0..cols {
+                acc = acc * Self::get(a, r, c);
+            }
+        }
         acc
     }
 
@@ -268,7 +292,9 @@ pub trait BackendReduce: BackendCore {
         let mut cnt = 0usize;
         for r in 0..rows {
             for c in 0..cols {
-                if Self::get(a, r, c).to_f64() != 0.0 { cnt += 1; }
+                if Self::get(a, r, c).to_f64() != 0.0 {
+                    cnt += 1;
+                }
             }
         }
         cnt
@@ -285,7 +311,10 @@ pub trait BackendReduce: BackendCore {
         let mut data = vec![T::zero(); rows * cols];
         for r in 0..rows {
             let mut acc = T::zero();
-            for c in 0..cols { acc = acc + Self::get(a, r, c); data[r * cols + c] = acc; }
+            for c in 0..cols {
+                acc = acc + Self::get(a, r, c);
+                data[r * cols + c] = acc;
+            }
         }
         Self::from_vec(rows, cols, data)
     }
@@ -296,13 +325,19 @@ pub trait BackendReduce: BackendCore {
         let mut data = vec![T::zero(); rows * cols];
         for r in 0..rows {
             let mut acc = T::one();
-            for c in 0..cols { acc = acc * Self::get(a, r, c); data[r * cols + c] = acc; }
+            for c in 0..cols {
+                acc = acc * Self::get(a, r, c);
+                data[r * cols + c] = acc;
+            }
         }
         Self::from_vec(rows, cols, data)
     }
 
     /// Fused MSE sum forward: `sum((pred-target)^2)` → (1,1) storage.
-    fn mse_sum_fwd<T: Scalar>(pred: &Self::Storage<T>, target: &Self::Storage<T>) -> Self::Storage<T> {
+    fn mse_sum_fwd<T: Scalar>(
+        pred: &Self::Storage<T>,
+        target: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
         let (rows, cols) = (Self::nrows(pred), Self::ncols(pred));
         let mut sum = T::zero();
         for r in 0..rows {
@@ -315,10 +350,16 @@ pub trait BackendReduce: BackendCore {
     }
 
     /// Fused MSE sum backward: `out[i] = 2*(pred[i]-target[i])*grad`.
-    fn mse_sum_bwd<T: Scalar>(pred: &Self::Storage<T>, target: &Self::Storage<T>, grad: &Self::Storage<T>) -> Self::Storage<T> {
+    fn mse_sum_bwd<T: Scalar>(
+        pred: &Self::Storage<T>,
+        target: &Self::Storage<T>,
+        grad: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
         let (rows, cols) = (Self::nrows(pred), Self::ncols(pred));
         let two_g = T::from_f64(2.0) * Self::get(grad, 0, 0);
-        Self::from_fn(rows, cols, |r, c| (Self::get(pred, r, c) - Self::get(target, r, c)) * two_g)
+        Self::from_fn(rows, cols, |r, c| {
+            (Self::get(pred, r, c) - Self::get(target, r, c)) * two_g
+        })
     }
 
     /// Lp norm: `(sum |x_i|^p)^(1/p)`, or `max|x_i|` for p=inf.
@@ -330,7 +371,9 @@ pub trait BackendReduce: BackendCore {
             for r in 0..rows {
                 for c in 0..cols {
                     let v = Self::get(a, r, c).math_abs();
-                    if crate::scalar::ReductionOps::reduction_gt(v, max_val) { max_val = v; }
+                    if crate::scalar::ReductionOps::reduction_gt(v, max_val) {
+                        max_val = v;
+                    }
                 }
             }
             return max_val;
@@ -338,7 +381,9 @@ pub trait BackendReduce: BackendCore {
         let (rows, cols) = (Self::nrows(a), Self::ncols(a));
         let mut sum = T::zero();
         for r in 0..rows {
-            for c in 0..cols { sum = sum + Self::get(a, r, c).math_abs().math_powf(p); }
+            for c in 0..cols {
+                sum = sum + Self::get(a, r, c).math_abs().math_powf(p);
+            }
         }
         sum.math_powf(T::one() / p)
     }
@@ -352,12 +397,16 @@ pub trait BackendReduce: BackendCore {
 pub trait BackendBlas: BackendCore {
     /// Compute `out = a * b`, overwriting `out`.
     fn matmul_into<T: Scalar>(
-        out: &mut Self::Storage<T>, a: &Self::Storage<T>, b: &Self::Storage<T>,
+        out: &mut Self::Storage<T>,
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
     );
 
     /// Compute `out = a^T * b` (transpose first operand). Default: transpose + matmul.
     fn matmul_tn_into<T: Scalar>(
-        out: &mut Self::Storage<T>, a: &Self::Storage<T>, b: &Self::Storage<T>,
+        out: &mut Self::Storage<T>,
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
     ) {
         let a_t = Self::transpose(a);
         Self::matmul_into(out, &a_t, b);
@@ -365,7 +414,9 @@ pub trait BackendBlas: BackendCore {
 
     /// Compute `out = a * b^T` (transpose second operand). Default: transpose + matmul.
     fn matmul_nt_into<T: Scalar>(
-        out: &mut Self::Storage<T>, a: &Self::Storage<T>, b: &Self::Storage<T>,
+        out: &mut Self::Storage<T>,
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
     ) {
         let b_t = Self::transpose(b);
         Self::matmul_into(out, a, &b_t);
@@ -373,7 +424,9 @@ pub trait BackendBlas: BackendCore {
 
     /// Fused GEMM + epilogue activation in a single dispatch.
     fn matmul_epilogue<T: Scalar>(
-        a: &Self::Storage<T>, b: &Self::Storage<T>, epilogue_id: u8,
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
+        epilogue_id: u8,
     ) -> Self::Storage<T>
     where
         Self: BackendMath + BackendNN,
@@ -406,8 +459,12 @@ pub trait BackendBlas: BackendCore {
 
     /// Batched matrix multiply: `C[b] = A[b] @ B[b]`.
     fn bmm<T: Scalar>(
-        a: &Self::Storage<T>, b: &Self::Storage<T>,
-        batch: usize, m: usize, k: usize, n: usize,
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
     ) -> Self::Storage<T> {
         Self::from_fn(batch * m, n, |r, c| {
             let bi = r / m;
@@ -420,8 +477,11 @@ pub trait BackendBlas: BackendCore {
 
     /// `C = beta * self + alpha * (A @ B)`.
     fn addmm<T: Scalar>(
-        c: &Self::Storage<T>, a: &Self::Storage<T>, b: &Self::Storage<T>,
-        beta: T, alpha: T,
+        c: &Self::Storage<T>,
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
+        beta: T,
+        alpha: T,
     ) -> Self::Storage<T> {
         let (m, n) = (Self::nrows(c), Self::ncols(c));
         let k = Self::ncols(a);
@@ -436,8 +496,15 @@ pub trait BackendBlas: BackendCore {
     /// Batched addmm: `C = beta * C + alpha * (A[b] @ B[b])`.
     #[allow(clippy::too_many_arguments)]
     fn baddbmm<T: Scalar>(
-        c: &Self::Storage<T>, a: &Self::Storage<T>, b: &Self::Storage<T>,
-        batch: usize, m: usize, k: usize, n: usize, beta: T, alpha: T,
+        c: &Self::Storage<T>,
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+        beta: T,
+        alpha: T,
     ) -> Self::Storage<T> {
         Self::from_fn(batch * m, n, |r, col| {
             let bi = r / m;
@@ -473,20 +540,30 @@ pub trait BackendNN: BackendCore {
     fn softmax<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
     /// Fused layer normalization.
     fn layer_norm<T: Scalar>(
-        a: &Self::Storage<T>, gamma: &Self::Storage<T>, beta: &Self::Storage<T>, eps: T,
+        a: &Self::Storage<T>,
+        gamma: &Self::Storage<T>,
+        beta: &Self::Storage<T>,
+        eps: T,
     ) -> Self::Storage<T>;
     /// Fused RMS normalization.
     fn rms_norm<T: Scalar>(
-        a: &Self::Storage<T>, gamma: &Self::Storage<T>, eps: T,
+        a: &Self::Storage<T>,
+        gamma: &Self::Storage<T>,
+        eps: T,
     ) -> Self::Storage<T>;
 
     // --- Training ---
     /// Batch normalization (training mode).
     #[allow(clippy::too_many_arguments)]
     fn batch_norm_train<T: Scalar>(
-        a: &Self::Storage<T>, gamma: &Self::Storage<T>, beta: &Self::Storage<T>,
-        running_mean: &mut Self::Storage<T>, running_var: &mut Self::Storage<T>,
-        eps: T, momentum: T, training: bool,
+        a: &Self::Storage<T>,
+        gamma: &Self::Storage<T>,
+        beta: &Self::Storage<T>,
+        running_mean: &mut Self::Storage<T>,
+        running_var: &mut Self::Storage<T>,
+        eps: T,
+        momentum: T,
+        training: bool,
     ) -> Self::Storage<T> {
         let rows = Self::nrows(a);
         let cols = Self::ncols(a);
@@ -527,7 +604,10 @@ pub trait BackendNN: BackendCore {
 
     /// Cross-entropy loss: fused softmax + NLL.
     fn cross_entropy_fused<T: Scalar>(
-        input: &Self::Storage<T>, target: &Self::Storage<T>, n: usize, c: usize,
+        input: &Self::Storage<T>,
+        target: &Self::Storage<T>,
+        n: usize,
+        c: usize,
     ) -> Self::Storage<T> {
         let mut total = T::zero();
         for i in 0..n {
@@ -548,7 +628,8 @@ pub trait BackendNN: BackendCore {
     // --- Embedding ---
     /// Embedding gather: indices (n_tokens, 1) float-encoded, weight (vocab, embed_dim).
     fn embedding<T: Scalar>(
-        indices: &Self::Storage<T>, weight: &Self::Storage<T>,
+        indices: &Self::Storage<T>,
+        weight: &Self::Storage<T>,
     ) -> Self::Storage<T>;
 
     // --- Pooling ---
@@ -556,8 +637,14 @@ pub trait BackendNN: BackendCore {
     #[allow(clippy::too_many_arguments)]
     fn max_pool2d<T: Scalar>(
         a: &Self::Storage<T>,
-        h: usize, w: usize, kh: usize, kw: usize,
-        sh: usize, sw: usize, ph: usize, pw: usize,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
     ) -> Self::Storage<T> {
         let nc = Self::nrows(a);
         let out_h = (h + 2 * ph - kh) / sh + 1;
@@ -575,7 +662,9 @@ pub trait BackendNN: BackendCore {
                         let v = Self::get(a, n, (ih - ph) * w + (iw - pw));
                         best = if found {
                             crate::scalar::ReductionOps::reduction_max(best, v)
-                        } else { v };
+                        } else {
+                            v
+                        };
                         found = true;
                     }
                 }
@@ -588,8 +677,14 @@ pub trait BackendNN: BackendCore {
     #[allow(clippy::too_many_arguments)]
     fn max_pool2d_with_indices<T: Scalar>(
         a: &Self::Storage<T>,
-        h: usize, w: usize, kh: usize, kw: usize,
-        sh: usize, sw: usize, ph: usize, pw: usize,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
     ) -> (Self::Storage<T>, Self::Storage<T>) {
         let nc = Self::nrows(a);
         let out_h = (h + 2 * ph - kh) / sh + 1;
@@ -632,8 +727,14 @@ pub trait BackendNN: BackendCore {
     #[allow(clippy::too_many_arguments)]
     fn avg_pool2d<T: Scalar>(
         a: &Self::Storage<T>,
-        h: usize, w: usize, kh: usize, kw: usize,
-        sh: usize, sw: usize, ph: usize, pw: usize,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        sh: usize,
+        sw: usize,
+        ph: usize,
+        pw: usize,
     ) -> Self::Storage<T> {
         let nc = Self::nrows(a);
         let out_h = (h + 2 * ph - kh) / sh + 1;
@@ -653,13 +754,21 @@ pub trait BackendNN: BackendCore {
                     }
                 }
             }
-            if cnt == 0 { T::zero() } else { sum / T::from_f64(cnt as f64) }
+            if cnt == 0 {
+                T::zero()
+            } else {
+                sum / T::from_f64(cnt as f64)
+            }
         })
     }
 
     /// Adaptive average pooling: pools to fixed (out_h, out_w).
     fn adaptive_avg_pool2d<T: Scalar>(
-        a: &Self::Storage<T>, in_h: usize, in_w: usize, out_h: usize, out_w: usize,
+        a: &Self::Storage<T>,
+        in_h: usize,
+        in_w: usize,
+        out_h: usize,
+        out_w: usize,
     ) -> Self::Storage<T> {
         let nc = Self::nrows(a);
         Self::from_fn(nc, out_h * out_w, |n, op| {
@@ -677,7 +786,11 @@ pub trait BackendNN: BackendCore {
                     cnt += 1;
                 }
             }
-            if cnt == 0 { T::zero() } else { sum / T::from_f64(cnt as f64) }
+            if cnt == 0 {
+                T::zero()
+            } else {
+                sum / T::from_f64(cnt as f64)
+            }
         })
     }
 
@@ -685,10 +798,19 @@ pub trait BackendNN: BackendCore {
     /// 2-D convolution (without bias).
     #[allow(clippy::too_many_arguments)]
     fn conv2d<T: Scalar>(
-        input: &Self::Storage<T>, weight: &Self::Storage<T>,
-        n: usize, c_in: usize, h: usize, w: usize, c_out: usize,
-        kh: usize, kw: usize, stride: (usize, usize), padding: (usize, usize),
-        dilation: (usize, usize), groups: usize,
+        input: &Self::Storage<T>,
+        weight: &Self::Storage<T>,
+        n: usize,
+        c_in: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
     ) -> Self::Storage<T> {
         let c_in_g = c_in / groups;
         let c_out_g = c_out / groups;
@@ -707,11 +829,14 @@ pub trait BackendNN: BackendCore {
                     for kwc in 0..kw {
                         let ih = oh * stride.0 + khr * dilation.0;
                         let iw = ow * stride.1 + kwc * dilation.1;
-                        if ih >= padding.0 && ih < h + padding.0
-                            && iw >= padding.1 && iw < w + padding.1
+                        if ih >= padding.0
+                            && ih < h + padding.0
+                            && iw >= padding.1
+                            && iw < w + padding.1
                         {
                             let x = Self::get(
-                                input, b * c_in + g * c_in_g + ic,
+                                input,
+                                b * c_in + g * c_in_g + ic,
                                 (ih - padding.0) * w + (iw - padding.1),
                             );
                             let wt = Self::get(weight, oc, ic * kh * kw + khr * kw + kwc);
@@ -727,9 +852,17 @@ pub trait BackendNN: BackendCore {
     /// 1-D convolution (im1col-based default).
     #[allow(clippy::too_many_arguments)]
     fn conv1d<T: Scalar>(
-        input: &Self::Storage<T>, weight: &Self::Storage<T>,
-        n_batch: usize, c_in: usize, length: usize, c_out: usize,
-        kernel_size: usize, stride: usize, padding: usize, dilation: usize, groups: usize,
+        input: &Self::Storage<T>,
+        weight: &Self::Storage<T>,
+        n_batch: usize,
+        c_in: usize,
+        length: usize,
+        c_out: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+        dilation: usize,
+        groups: usize,
     ) -> Self::Storage<T> {
         assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
         let c_in_g = c_in / groups;
@@ -756,11 +889,21 @@ pub trait BackendNN: BackendCore {
     /// 3-D convolution (default loop implementation).
     #[allow(clippy::too_many_arguments)]
     fn conv3d<T: Scalar>(
-        input: &Self::Storage<T>, weight: &Self::Storage<T>,
-        n_batch: usize, c_in: usize, d: usize, h: usize, w: usize,
-        c_out: usize, kd: usize, kh: usize, kw: usize,
-        stride: (usize, usize, usize), padding: (usize, usize, usize),
-        dilation: (usize, usize, usize), groups: usize,
+        input: &Self::Storage<T>,
+        weight: &Self::Storage<T>,
+        n_batch: usize,
+        c_in: usize,
+        d: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kd: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        dilation: (usize, usize, usize),
+        groups: usize,
     ) -> Self::Storage<T> {
         assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
         let c_in_g = c_in / groups;
@@ -784,16 +927,23 @@ pub trait BackendNN: BackendCore {
                             let id = od * stride.0 + kdr * dilation.0;
                             let ih = oh * stride.1 + khr * dilation.1;
                             let iw = ow * stride.2 + kwc * dilation.2;
-                            if id >= padding.0 && id < d + padding.0
-                                && ih >= padding.1 && ih < h + padding.1
-                                && iw >= padding.2 && iw < w + padding.2
+                            if id >= padding.0
+                                && id < d + padding.0
+                                && ih >= padding.1
+                                && ih < h + padding.1
+                                && iw >= padding.2
+                                && iw < w + padding.2
                             {
                                 let x_val = Self::get(
-                                    input, b * c_in + g * c_in_g + ic,
-                                    (id - padding.0) * h * w + (ih - padding.1) * w + (iw - padding.2),
+                                    input,
+                                    b * c_in + g * c_in_g + ic,
+                                    (id - padding.0) * h * w
+                                        + (ih - padding.1) * w
+                                        + (iw - padding.2),
                                 );
                                 let w_val = Self::get(
-                                    weight, oc,
+                                    weight,
+                                    oc,
                                     ic * kd * kh * kw + kdr * kh * kw + khr * kw + kwc,
                                 );
                                 acc = acc + x_val * w_val;
@@ -809,10 +959,18 @@ pub trait BackendNN: BackendCore {
     /// Transposed 2-D convolution (default loop implementation).
     #[allow(clippy::too_many_arguments)]
     fn conv_transpose2d<T: Scalar>(
-        input: &Self::Storage<T>, weight: &Self::Storage<T>,
-        n_batch: usize, c_in: usize, h: usize, w: usize,
-        c_out: usize, kh: usize, kw: usize,
-        stride: (usize, usize), padding: (usize, usize), output_padding: (usize, usize),
+        input: &Self::Storage<T>,
+        weight: &Self::Storage<T>,
+        n_batch: usize,
+        c_in: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        output_padding: (usize, usize),
     ) -> Self::Storage<T> {
         let out_h = (h - 1) * stride.0 - 2 * padding.0 + kh + output_padding.0;
         let out_w = (w - 1) * stride.1 - 2 * padding.1 + kw + output_padding.1;
@@ -827,7 +985,8 @@ pub trait BackendNN: BackendCore {
                     for kwc in 0..kw {
                         let ih_pad = oh + padding.0;
                         let iw_pad = ow + padding.1;
-                        if ih_pad >= khr && iw_pad >= kwc
+                        if ih_pad >= khr
+                            && iw_pad >= kwc
                             && (ih_pad - khr).is_multiple_of(stride.0)
                             && (iw_pad - kwc).is_multiple_of(stride.1)
                         {
@@ -848,31 +1007,57 @@ pub trait BackendNN: BackendCore {
 
     // --- Backward activations (GPU-native, no D2H during CUDA Graph capture) ---
     /// ReLU backward: `grad * (input > 0 ? 1 : 0)`.
-    fn relu_backward<T: Scalar>(grad: &Self::Storage<T>, input: &Self::Storage<T>) -> Self::Storage<T> {
+    fn relu_backward<T: Scalar>(
+        grad: &Self::Storage<T>,
+        input: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
         let (m, n) = (Self::nrows(grad), Self::ncols(grad));
         Self::from_fn(m, n, |r, c| {
-            if Self::get(input, r, c).to_f64() > 0.0 { Self::get(grad, r, c) } else { T::zero() }
+            if Self::get(input, r, c).to_f64() > 0.0 {
+                Self::get(grad, r, c)
+            } else {
+                T::zero()
+            }
         })
     }
     /// Leaky ReLU backward: `grad * (input > 0 ? 1 : alpha)`.
-    fn leaky_relu_backward<T: Scalar>(grad: &Self::Storage<T>, input: &Self::Storage<T>, alpha: T) -> Self::Storage<T> {
+    fn leaky_relu_backward<T: Scalar>(
+        grad: &Self::Storage<T>,
+        input: &Self::Storage<T>,
+        alpha: T,
+    ) -> Self::Storage<T> {
         let (m, n) = (Self::nrows(grad), Self::ncols(grad));
         Self::from_fn(m, n, |r, c| {
             let g = Self::get(grad, r, c);
-            if Self::get(input, r, c).to_f64() > 0.0 { g } else { alpha * g }
+            if Self::get(input, r, c).to_f64() > 0.0 {
+                g
+            } else {
+                alpha * g
+            }
         })
     }
     /// ELU backward: `grad * (input > 0 ? 1 : alpha * exp(input))`.
-    fn elu_backward<T: Scalar>(grad: &Self::Storage<T>, input: &Self::Storage<T>, alpha: T) -> Self::Storage<T> {
+    fn elu_backward<T: Scalar>(
+        grad: &Self::Storage<T>,
+        input: &Self::Storage<T>,
+        alpha: T,
+    ) -> Self::Storage<T> {
         let (m, n) = (Self::nrows(grad), Self::ncols(grad));
         Self::from_fn(m, n, |r, c| {
             let g = Self::get(grad, r, c);
             let x = Self::get(input, r, c);
-            if x.to_f64() > 0.0 { g } else { g * alpha * x.math_exp() }
+            if x.to_f64() > 0.0 {
+                g
+            } else {
+                g * alpha * x.math_exp()
+            }
         })
     }
     /// GELU backward: `grad * (cdf + x * pdf)` where cdf = 0.5*(1+erf(x/sqrt(2))), pdf = exp(-x^2/2)/sqrt(2*pi).
-    fn gelu_backward<T: Scalar>(grad: &Self::Storage<T>, input: &Self::Storage<T>) -> Self::Storage<T> {
+    fn gelu_backward<T: Scalar>(
+        grad: &Self::Storage<T>,
+        input: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
         let (m, n) = (Self::nrows(grad), Self::ncols(grad));
         let inv_sqrt2 = T::from_f64(std::f64::consts::FRAC_1_SQRT_2);
         let inv_sqrt_2pi = T::from_f64(1.0 / (2.0 * std::f64::consts::PI).sqrt());
@@ -887,12 +1072,21 @@ pub trait BackendNN: BackendCore {
         })
     }
     /// Abs backward: `grad * sign(input)`.
-    fn abs_backward<T: Scalar>(grad: &Self::Storage<T>, input: &Self::Storage<T>) -> Self::Storage<T> {
+    fn abs_backward<T: Scalar>(
+        grad: &Self::Storage<T>,
+        input: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
         let (m, n) = (Self::nrows(grad), Self::ncols(grad));
         Self::from_fn(m, n, |r, c| {
             let g = Self::get(grad, r, c);
             let x = Self::get(input, r, c).to_f64();
-            if x > 0.0 { g } else if x < 0.0 { T::zero() - g } else { T::zero() }
+            if x > 0.0 {
+                g
+            } else if x < 0.0 {
+                T::zero() - g
+            } else {
+                T::zero()
+            }
         })
     }
 
@@ -900,9 +1094,14 @@ pub trait BackendNN: BackendCore {
     /// Scaled dot-product attention.
     #[allow(clippy::too_many_arguments)]
     fn sdpa<T: Scalar>(
-        q: &Self::Storage<T>, k: &Self::Storage<T>, v: &Self::Storage<T>,
+        q: &Self::Storage<T>,
+        k: &Self::Storage<T>,
+        v: &Self::Storage<T>,
         _mask: Option<&Self::Storage<T>>,
-        seq_q: usize, seq_k: usize, head_dim: usize, batch_heads: usize,
+        seq_q: usize,
+        seq_k: usize,
+        head_dim: usize,
+        batch_heads: usize,
     ) -> Self::Storage<T> {
         let scale = T::from_f64(1.0 / (head_dim as f64).sqrt());
         let mut out = Self::from_fn(batch_heads * seq_q, head_dim, |_, _| T::zero());
@@ -912,16 +1111,24 @@ pub trait BackendNN: BackendCore {
                 for (j, score_slot) in scores.iter_mut().enumerate() {
                     let mut dot = T::zero();
                     for d in 0..head_dim {
-                        dot = dot + Self::get(q, bh * seq_q + i, d) * Self::get(k, bh * seq_k + j, d);
+                        dot =
+                            dot + Self::get(q, bh * seq_q + i, d) * Self::get(k, bh * seq_k + j, d);
                     }
                     *score_slot = dot * scale;
                 }
-                let max_s = scores.iter().fold(T::from_f64(f64::NEG_INFINITY), |acc, &x| {
-                    if x.to_f64() > acc.to_f64() { x } else { acc }
-                });
-                let sum_exp = scores.iter().fold(T::zero(), |acc, &x| acc + (x - max_s).math_exp());
+                let max_s = scores
+                    .iter()
+                    .fold(T::from_f64(f64::NEG_INFINITY), |acc, &x| {
+                        if x.to_f64() > acc.to_f64() { x } else { acc }
+                    });
+                let sum_exp = scores
+                    .iter()
+                    .fold(T::zero(), |acc, &x| acc + (x - max_s).math_exp());
                 let inv = T::one() / sum_exp;
-                let weights: Vec<T> = scores.iter().map(|&x| (x - max_s).math_exp() * inv).collect();
+                let weights: Vec<T> = scores
+                    .iter()
+                    .map(|&x| (x - max_s).math_exp() * inv)
+                    .collect();
                 for d in 0..head_dim {
                     let val = weights.iter().enumerate().fold(T::zero(), |acc, (j, &w)| {
                         acc + w * Self::get(v, bh * seq_k + j, d)
@@ -943,15 +1150,21 @@ pub trait BackendFusion: BackendCore {
     /// Launch a fused element-wise kernel.
     #[allow(clippy::too_many_arguments)]
     fn fuse_launch<T: Scalar>(
-        inputs: &[*const u8], nrows: usize, ncols: usize,
+        inputs: &[*const u8],
+        nrows: usize,
+        ncols: usize,
         cpu_fn: impl FnMut(usize, usize) -> T,
-        gpu_expr: &str, kernel_hash: &str, n_inputs: usize, reg_estimate: usize,
+        gpu_expr: &str,
+        kernel_hash: &str,
+        n_inputs: usize,
+        reg_estimate: usize,
     ) -> Self::Storage<T>;
 
     /// Launch a mega-fused kernel.
     fn mega_fuse_launch<'a, T: Scalar>(
         ops: &[(Vec<*const u8>, String, usize, bool)],
-        nrows: usize, ncols: usize,
+        nrows: usize,
+        ncols: usize,
         cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
         kernel_hash: &str,
     ) -> Vec<Self::Storage<T>>;
@@ -959,16 +1172,28 @@ pub trait BackendFusion: BackendCore {
     /// Fused map-reduce: element-wise expression + axis reduction in a single pass.
     #[allow(clippy::too_many_arguments)]
     fn fuse_reduce_launch<T: Scalar>(
-        inputs: &[*const u8], nrows: usize, ncols: usize,
+        inputs: &[*const u8],
+        nrows: usize,
+        ncols: usize,
         cpu_fn: impl FnMut(usize, usize) -> T,
-        gpu_expr: &str, kernel_hash: &str, n_inputs: usize,
-        reduce_op: u8, axis: u8,
+        gpu_expr: &str,
+        kernel_hash: &str,
+        n_inputs: usize,
+        reduce_op: u8,
+        axis: u8,
     ) -> Self::Storage<T>
     where
         Self: BackendReduce,
     {
         let intermediate = Self::fuse_launch::<T>(
-            inputs, nrows, ncols, cpu_fn, gpu_expr, kernel_hash, n_inputs, 0,
+            inputs,
+            nrows,
+            ncols,
+            cpu_fn,
+            gpu_expr,
+            kernel_hash,
+            n_inputs,
+            0,
         );
         let summed = match axis {
             0 => {
@@ -980,7 +1205,10 @@ pub trait BackendFusion: BackendCore {
         };
         match reduce_op {
             3 => {
-                let count = match axis { 0 => nrows, _ => ncols };
+                let count = match axis {
+                    0 => nrows,
+                    _ => ncols,
+                };
                 let inv_n = T::from_f64(1.0 / count as f64);
                 Self::scale(&summed, inv_n)
             }
@@ -994,9 +1222,15 @@ pub trait BackendFusion: BackendCore {
 // ---------------------------------------------------------------------------
 
 /// Unified backend supertrait combining all six sub-traits.
-pub trait Backend: BackendCore + BackendMath + BackendReduce + BackendBlas + BackendNN + BackendFusion {}
+pub trait Backend:
+    BackendCore + BackendMath + BackendReduce + BackendBlas + BackendNN + BackendFusion
+{
+}
 
-impl<B: BackendCore + BackendMath + BackendReduce + BackendBlas + BackendNN + BackendFusion> Backend for B {}
+impl<B: BackendCore + BackendMath + BackendReduce + BackendBlas + BackendNN + BackendFusion> Backend
+    for B
+{
+}
 
 // ---------------------------------------------------------------------------
 // Struct definitions + Sealed impls (unchanged)

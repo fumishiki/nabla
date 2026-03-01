@@ -1,11 +1,9 @@
-
 use nabla_core::backend::Cpu;
 use nabla_core::error::{Error, Result};
 use nabla_core::tensor::Tensor;
 
-use super::{from_f64_buf, householder_vec, require_square, to_f64_buf};
 use super::LinalgExt as _;
-
+use super::{from_f64_buf, householder_vec, require_square, to_f64_buf};
 
 const PADE7: [f64; 8] = [
     1.0,
@@ -75,7 +73,6 @@ pub fn expm(a: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
     Ok(r)
 }
 
-
 pub(crate) fn schur_hessenberg(a_buf: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     let mut h = a_buf.to_vec();
     // Q starts as identity
@@ -136,8 +133,7 @@ fn schur_francis_step(h: &mut [f64], q: &mut [f64], n: usize, lo: usize, hi: usi
     let p = a22 * a11 - a12 * a21;
 
     // First column of (H^2 - s*H + p*I)
-    let mut x = h[lo * n + lo] * h[lo * n + lo]
-        - s * h[lo * n + lo]
+    let mut x = h[lo * n + lo] * h[lo * n + lo] - s * h[lo * n + lo]
         + p
         + h[lo * n + lo + 1] * h[(lo + 1) * n + lo];
     let mut y = h[(lo + 1) * n + lo] * (h[lo * n + lo] + h[(lo + 1) * n + lo + 1] - s);
@@ -252,7 +248,6 @@ pub fn schur(a: &Tensor<f64, Cpu>) -> Result<(Tensor<f64, Cpu>, Tensor<f64, Cpu>
 
     Ok((from_f64_buf(h, n, n), from_f64_buf(q, n, n)))
 }
-
 
 fn parlett_recurrence(
     t: &[f64],
@@ -406,12 +401,16 @@ fn solve_small_system(a: &mut [f64], b: &[f64], dim: usize) -> Vec<f64> {
             s -= a[piv[col] * dim + k] * result[k];
         }
         let pivot = a[piv[col] * dim + col];
-        result[col] = if pivot.abs() < f64::EPSILON * 1e4 { 0.0 } else { s / pivot };
+        result[col] = if pivot.abs() < f64::EPSILON * 1e4 {
+            0.0
+        } else {
+            s / pivot
+        };
     }
     result
 }
 
-
+#[allow(clippy::too_many_lines)]
 pub fn logm(a: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
     let n = a.nrows();
     require_square(a.shape(), "logm")?;
@@ -438,7 +437,10 @@ pub fn logm(a: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
     let mut block_sizes = Vec::new();
     let mut i = 0;
     while i < n {
-        if i + 1 < n && t[(i + 1) * n + i].abs() > eps * (t[i * n + i].abs() + t[(i + 1) * n + i + 1].abs()).max(eps) {
+        if i + 1 < n
+            && t[(i + 1) * n + i].abs()
+                > eps * (t[i * n + i].abs() + t[(i + 1) * n + i + 1].abs()).max(eps)
+        {
             block_sizes.push(2);
             i += 2;
         } else {
@@ -482,8 +484,10 @@ pub fn logm(a: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
                 // log(M) = ln|mu|*I + (theta/beta)*(M - alpha*I)
                 let s = theta / beta;
                 f_blocks.push(vec![
-                    ln_mod + s * (a00 - alpha), s * a01,
-                    s * a10,                    ln_mod + s * (a11 - alpha),
+                    ln_mod + s * (a00 - alpha),
+                    s * a01,
+                    s * a10,
+                    ln_mod + s * (a11 - alpha),
                 ]);
             } else {
                 // Real distinct eigenvalues
@@ -501,8 +505,10 @@ pub fn logm(a: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
                     // Nearly equal: log(M) ~ ln(alpha)*I + (1/alpha)*(M - alpha*I)
                     let inv_a = 1.0 / alpha;
                     f_blocks.push(vec![
-                        alpha.ln() + inv_a * (a00 - alpha), inv_a * a01,
-                        inv_a * a10,                        alpha.ln() + inv_a * (a11 - alpha),
+                        alpha.ln() + inv_a * (a00 - alpha),
+                        inv_a * a01,
+                        inv_a * a10,
+                        alpha.ln() + inv_a * (a11 - alpha),
                     ]);
                 } else {
                     // Sylvester formula: f(M) = ((M - lam2*I)*f(lam1) - (M - lam1*I)*f(lam2)) / (lam1 - lam2)
@@ -526,7 +532,6 @@ pub fn logm(a: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
     // Reconstruct: Q · log(T) · Q^T
     Ok(&(&q_tensor * &log_t) * &q_tensor.t())
 }
-
 
 pub fn sqrtm(a: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
     let n = a.nrows();
@@ -554,12 +559,12 @@ pub fn sqrtm(a: &Tensor<f64, Cpu>) -> Result<Tensor<f64, Cpu>> {
     let max_iter = 50usize;
 
     for _ in 0..max_iter {
-        let z_inv = z.solve(&eye).map_err(|e| {
-            Error::invalid(format!("sqrtm: Z inversion failed — {e}"))
-        })?;
-        let y_inv = y.solve(&eye).map_err(|e| {
-            Error::invalid(format!("sqrtm: Y inversion failed — {e}"))
-        })?;
+        let z_inv = z
+            .solve(&eye)
+            .map_err(|e| Error::invalid(format!("sqrtm: Z inversion failed — {e}")))?;
+        let y_inv = y
+            .solve(&eye)
+            .map_err(|e| Error::invalid(format!("sqrtm: Y inversion failed — {e}")))?;
 
         let y_new = &(&y + &z_inv) * 0.5_f64;
         let z_new = &(&z + &y_inv) * 0.5_f64;
