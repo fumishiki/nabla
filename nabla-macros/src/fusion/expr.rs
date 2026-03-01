@@ -1,0 +1,206 @@
+//! Shared expression analysis utilities for fuse!/mega_fuse!.
+//!
+//! Provides expression analysis (fusibility, tensor detection, ident collection)
+//! and method name mapping. Codegen lives in `codegen.rs`.
+
+use proc_macro2::Ident;
+use syn::{Expr, ExprBinary, ExprMethodCall, ExprPath, ExprUnary};
+
+// ── Constants ───────────────────────────────────────────────────────────────
+
+/// Element-wise unary methods that operate per-element (no args).
+const ELEMENTWISE_UNARY: &[&str] = &[
+    "exp", "ln", "log1p", "sin", "cos", "tanh", "sqrt", "abs", "recip", "erf", "ceil", "floor",
+    "round", "neg",
+];
+
+/// Element-wise unary methods that take one scalar arg.
+const ELEMENTWISE_UNARY_ARG: &[&str] = &["powf"];
+
+fn single_ident(expr: &Expr) -> Option<&Ident> {
+    match expr {
+        Expr::Path(ExprPath { path, .. }) if path.segments.len() == 1 => {
+            Some(&path.segments[0].ident)
+        }
+        _ => None,
+    }
+}
+
+fn expr_any(expr: &Expr, pred: &mut impl FnMut(&Expr) -> bool) -> bool {
+    if pred(expr) {
+        return true;
+    }
+    match expr {
+        Expr::Binary(ExprBinary { left, right, .. }) => {
+            expr_any(left, pred) || expr_any(right, pred)
+        }
+        Expr::Unary(ExprUnary { expr: inner, .. }) => expr_any(inner, pred),
+        Expr::MethodCall(ExprMethodCall { receiver, args, .. }) => {
+            expr_any(receiver, pred) || args.iter().any(|a| expr_any(a, pred))
+        }
+        Expr::Call(ec) => ec.args.iter().any(|a| expr_any(a, pred)),
+        Expr::Paren(ep) => expr_any(&ep.expr, pred),
+        Expr::Reference(er) => expr_any(&er.expr, pred),
+        Expr::Cast(ec) => expr_any(&ec.expr, pred),
+        _ => false,
+    }
+}
+
+// ── Fusibility analysis ─────────────────────────────────────────────────────
+
+/// Check if the entire expression tree can be fused into a single from_fn pass.
+/// Returns true only when all ops are element-wise.
+pub(crate) fn is_elementwise_fusible(expr: &Expr) -> bool {
+    match expr {
+        Expr::Path(ExprPath { path, .. }) if path.segments.len() == 1 => true,
+        Expr::Lit(_) => true,
+        Expr::Binary(ExprBinary {
+            left, op, right, ..
+        }) => {
+            matches!(
+                op,
+                syn::BinOp::Add(_) | syn::BinOp::Sub(_) | syn::BinOp::Mul(_) | syn::BinOp::Div(_)
+            ) && is_elementwise_fusible(left)
+                && is_elementwise_fusible(right)
+        }
+        Expr::Unary(ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr: inner,
+            ..
+        }) => is_elementwise_fusible(inner),
+        Expr::MethodCall(ExprMethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        }) => {
+            let name = method.to_string();
+            let recv_ok = is_elementwise_fusible(receiver);
+            is_elementwise_method(&name, args.len())
+                && recv_ok
+                && args.first().is_none_or(is_elementwise_fusible)
+        }
+        Expr::Call(ec) => {
+            if let Expr::Path(ExprPath { path, .. }) = &*ec.func
+                && path.segments.len() == 1
+                && ec.args.len() == 1
+            {
+                let fname = path.segments[0].ident.to_string();
+                is_elementwise_free_fn(&fname, ec.args.len()) && is_elementwise_fusible(&ec.args[0])
+            } else {
+                false
+            }
+        }
+        Expr::Paren(ep) => is_elementwise_fusible(&ep.expr),
+        Expr::Cast(ec) => is_elementwise_fusible(&ec.expr),
+        _ => false,
+    }
+}
+
+/// Check if an expression references any tensor variable.
+pub(crate) fn contains_tensor(expr: &Expr, tensor_names: &[String]) -> bool {
+    let mut pred = |e: &Expr| {
+        single_ident(e)
+            .map(|ident| tensor_names.contains(&ident.to_string()))
+            .unwrap_or(false)
+    };
+    expr_any(expr, &mut pred)
+}
+
+// ── Ident collection ────────────────────────────────────────────────────────
+
+fn collect_idents(
+    expr: &Expr,
+    out: &mut Vec<Ident>,
+    accept: &mut impl FnMut(&Ident) -> bool,
+    dedup_by_name: bool,
+) {
+    if let Some(ident) = single_ident(expr) {
+        let is_dup = if dedup_by_name {
+            let name = ident.to_string();
+            out.iter().any(|i| *i == name)
+        } else {
+            out.iter().any(|i| i == ident)
+        };
+        if accept(ident) && !is_dup {
+            out.push(ident.clone());
+        }
+        return;
+    }
+    match expr {
+        Expr::Binary(ExprBinary { left, right, .. }) => {
+            collect_idents(left, out, accept, dedup_by_name);
+            collect_idents(right, out, accept, dedup_by_name);
+        }
+        Expr::Unary(ExprUnary { expr: inner, .. }) => {
+            collect_idents(inner, out, accept, dedup_by_name);
+        }
+        Expr::MethodCall(ExprMethodCall { receiver, args, .. }) => {
+            collect_idents(receiver, out, accept, dedup_by_name);
+            for a in args {
+                collect_idents(a, out, accept, dedup_by_name);
+            }
+        }
+        Expr::Call(ec) => {
+            for a in &ec.args {
+                collect_idents(a, out, accept, dedup_by_name);
+            }
+        }
+        Expr::Paren(ep) => collect_idents(&ep.expr, out, accept, dedup_by_name),
+        Expr::Reference(er) => collect_idents(&er.expr, out, accept, dedup_by_name),
+        _ => {}
+    }
+}
+
+/// Walk `expr` and push every tensor-variable `Ident` into `out` (no duplicates).
+pub(crate) fn collect_tensor_idents(expr: &Expr, tensor_names: &[String], out: &mut Vec<Ident>) {
+    let mut accept = |ident: &Ident| tensor_names.contains(&ident.to_string());
+    collect_idents(expr, out, &mut accept, true);
+}
+
+/// Walk `expr` and push every single-segment `Path` ident into `out` (deduplicated).
+/// Used for auto-capture mode when the user omits the explicit tensor list.
+pub(crate) fn collect_all_path_idents(expr: &Expr, out: &mut Vec<Ident>) {
+    let mut accept = |_: &Ident| true;
+    collect_idents(expr, out, &mut accept, false);
+}
+
+// ── Method name mapping ─────────────────────────────────────────────────────
+
+/// Map Rust method names to their MathOps scalar trait equivalents.
+pub(crate) fn scalar_method_name(method: &str) -> Option<&'static str> {
+    match method {
+        "exp" => Some("math_exp"),
+        "ln" => Some("math_ln"),
+        "log1p" => Some("math_log1p"),
+        "sin" => Some("math_sin"),
+        "cos" => Some("math_cos"),
+        "tanh" => Some("math_tanh"),
+        "sqrt" => Some("math_sqrt"),
+        "abs" => Some("math_abs"),
+        "recip" => Some("math_recip"),
+        "erf" => Some("math_erf"),
+        "ceil" => Some("math_ceil"),
+        "floor" => Some("math_floor"),
+        "round" => Some("math_round"),
+        "powf" => Some("math_powf"),
+        _ => None,
+    }
+}
+
+// ── Prev detection ──────────────────────────────────────────────────────────
+
+/// Return `true` if `expr` references the special identifier `prev`.
+pub(crate) fn expr_references_prev(expr: &Expr) -> bool {
+    let mut pred = |e: &Expr| single_ident(e).map(|ident| ident == "prev").unwrap_or(false);
+    expr_any(expr, &mut pred)
+}
+
+fn is_elementwise_method(name: &str, arg_count: usize) -> bool {
+    (arg_count == 0 && ELEMENTWISE_UNARY.contains(&name))
+        || (arg_count == 1 && ELEMENTWISE_UNARY_ARG.contains(&name))
+}
+
+fn is_elementwise_free_fn(name: &str, arg_count: usize) -> bool {
+    arg_count == 1 && ELEMENTWISE_UNARY.contains(&name)
+}

@@ -255,14 +255,14 @@ let (ts, ys) = rk4(f, y0, 0.0, 5.0, 0.01);
 let (ts, ys) = dormand_prince(f, y0, 0.0, 5.0, 1e-6);
 
 // Stiff — implicit BDF-1
-let cfg = Bdf1Config { tol: 1e-8, max_iter: 50 };
+let cfg = Bdf1Config { tol: 1e-8, max_iter: 50, ..Default::default() };
 let (ts, ys) = bdf1(f, y0, 0.0, 5.0, 0.01, cfg);
 
 // Stiff — IF-Euler (explicit, no Newton)
 let (ts, ys) = if_euler_scalar(l, n, y0, 0.0, 5.0, 0.01, cfg);
 
 // Parallel-in-time (rayon)
-let cfg = PararealConfig { n_intervals: 8, max_iter: 5, tol: 1e-6 };
+let cfg = PararealConfig { n_intervals: 8, max_iter: 5, tol: 1e-6, ..Default::default() };
 let ys = parareal_solve(0.0, 5.0, y0, cfg, coarse_fn, fine_fn);
 ```
 

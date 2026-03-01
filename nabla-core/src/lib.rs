@@ -51,18 +51,32 @@ pub mod gpu_common;
 pub mod cuda_backend;
 
 #[cfg(feature = "cuda")]
-pub use cuda_backend::{CuBuffer, NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached, cuda_synchronize};
+pub use cuda_backend::{
+    CuBuffer, NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached, cuda_synchronize,
+    CudaError, CudaResult, DoubleBuffer, KernelNodeState, PyGraph, TrainingGraph,
+    cuda_copy_from_host, cuda_to_vec_async,
+};
 
-// ConditionalGraph/ConditionalKind require CUDA 12.4+; they compile only when
-// cudarc emits the cuda-12040+ cfg feature from its build.rs.
+// ConditionalGraph/ConditionalKind/CondCmp require CUDA 12.4+ at runtime; the
+// types compile with any CUDA toolchain since cudarc exposes the driver handle
+// types unconditionally.
 #[cfg(feature = "cuda")]
 pub use cuda_backend::{ConditionalGraph, ConditionalKind};
+
+// Conditional-set helper API: set a ConditionalGraph handle from a scalar tensor.
+#[cfg(feature = "cuda")]
+pub use cuda_backend::{
+    CondCmp, cuda_conditional_set_from_scalar, cuda_if_positive,
+};
 
 #[cfg(any(feature = "cuda", feature = "hip"))]
 pub use gpu_common::RtcStorage;
 
 #[cfg(feature = "hip")]
 pub(crate) mod hip_backend;
+
+/// Common read-only matrix interface (Julia `AbstractMatrix` equivalent).
+pub mod matrix_like;
 
 /// 2-D dense tensor type with operator overloads.
 pub mod tensor;
@@ -76,4 +90,5 @@ pub mod wgsl;
 pub use backend::{Backend, DefaultBackend};
 pub use layout::{LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64};
 pub use scalar::Scalar;
-pub use tensor::Tensor;
+pub use matrix_like::MatrixLike;
+pub use tensor::{Tensor, TensorView};

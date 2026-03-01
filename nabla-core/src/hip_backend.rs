@@ -12,8 +12,9 @@ use std::sync::{Mutex, OnceLock};
 use hip_runtime_sys as hip;
 
 use crate::gpu_common::{
-    self, EnsureCache, LARGE_ALLOC_SIZE, MemoryPool, RtcStorage, SMALL_ALLOC_SIZE,
-    SMALL_LARGE_BOUNDARY, grid_1d, lock_or_recover, round_size, type_suffix,
+    self, EnsureCache, KERNEL_COUNT, KernelId, LARGE_ALLOC_SIZE, MemoryPool, RtcStorage,
+    SMALL_ALLOC_SIZE, SMALL_LARGE_BOUNDARY, grid_1d, kernel_id, lock_or_recover, round_size,
+    type_suffix,
 };
 use crate::kernels_cu::{self, BLOCK_SIZE};
 use crate::scalar::Scalar;
@@ -49,6 +50,14 @@ fn check(err: hip::hipError_t) -> HipResult<()> {
     }
 }
 
+#[inline]
+fn hip_or_panic<T>(result: HipResult<T>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => panic!("{context}: {error}"),
+    }
+}
+
 // ── GPU buffer (RAII) ────────────────────────────────────────────────────────
 
 type HipPool = MemoryPool<*mut c_void>;
@@ -74,49 +83,57 @@ unsafe impl Send for HipBuffer {}
 unsafe impl Sync for HipBuffer {}
 
 impl HipBuffer {
-    fn alloc_zeros(size_bytes: usize) -> HipResult<Self> {
+    #[inline]
+    fn empty(size_bytes: usize) -> Option<Self> {
+        (size_bytes == 0).then(|| Self {
+            ptr: core::ptr::null_mut(),
+            size: 0,
+            alloc_size: 0,
+            pooled: false,
+        })
+    }
+
+    fn alloc_from_pool(size_bytes: usize) -> HipResult<(*mut c_void, usize)> {
         if size_bytes == 0 {
-            return Ok(Self {
-                ptr: core::ptr::null_mut(),
-                size: 0,
-                alloc_size: 0,
-                pooled: false,
-            });
+            return Ok((core::ptr::null_mut(), 0));
         }
         let ctx = get_ctx();
         let mut pool = ctx
             .pool
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (ptr, alloc_size) = if let Some((p, sc)) = pool.try_alloc(size_bytes) {
-            (p, sc)
+        if let Some((ptr, size_class)) = pool.try_alloc(size_bytes) {
+            pool.allocated_bytes += size_class;
+            return Ok((ptr, size_class));
+        }
+        let rounded = round_size(size_bytes);
+        let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
+            rounded.max(SMALL_ALLOC_SIZE)
         } else {
-            let rounded = round_size(size_bytes);
-            let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
-                rounded.max(SMALL_ALLOC_SIZE)
-            } else {
-                rounded.max(LARGE_ALLOC_SIZE)
-            };
-            drop(pool);
-            let mut ptr: *mut c_void = core::ptr::null_mut();
-            check(unsafe { hip::hipMalloc(&mut ptr, alloc_sz) })?;
-            if alloc_sz > rounded {
-                let split_ptr = unsafe { ptr.byte_add(rounded) };
-                let mut pool = ctx
-                    .pool
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pool.release(split_ptr, alloc_sz - rounded);
-                pool.allocated_bytes += rounded;
-            } else {
-                let mut pool = ctx
-                    .pool
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pool.allocated_bytes += alloc_sz;
-            }
-            (ptr, rounded)
+            rounded.max(LARGE_ALLOC_SIZE)
         };
+        drop(pool);
+        let mut ptr: *mut c_void = core::ptr::null_mut();
+        check(unsafe { hip::hipMalloc(&mut ptr, alloc_sz) })?;
+        let mut pool = ctx
+            .pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if alloc_sz > rounded {
+            let split_ptr = unsafe { ptr.byte_add(rounded) };
+            pool.release(split_ptr, alloc_sz - rounded);
+            pool.allocated_bytes += rounded;
+            return Ok((ptr, rounded));
+        }
+        pool.allocated_bytes += alloc_sz;
+        Ok((ptr, alloc_sz))
+    }
+
+    fn alloc_zeros(size_bytes: usize) -> HipResult<Self> {
+        if let Some(buf) = Self::empty(size_bytes) {
+            return Ok(buf);
+        }
+        let (ptr, alloc_size) = Self::alloc_from_pool(size_bytes)?;
         check(unsafe { hip::hipMemset(ptr, 0, alloc_size) })?;
         Ok(Self {
             ptr,
@@ -128,48 +145,10 @@ impl HipBuffer {
 
     fn from_host<T: Scalar>(data: &[T]) -> HipResult<Self> {
         let bytes = core::mem::size_of_val(data);
-        if bytes == 0 {
-            return Ok(Self {
-                ptr: core::ptr::null_mut(),
-                size: 0,
-                alloc_size: 0,
-                pooled: false,
-            });
+        if let Some(buf) = Self::empty(bytes) {
+            return Ok(buf);
         }
-        let ctx = get_ctx();
-        let mut pool = ctx
-            .pool
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (ptr, alloc_size) = if let Some((p, sc)) = pool.try_alloc(bytes) {
-            (p, sc)
-        } else {
-            let rounded = round_size(bytes);
-            let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
-                rounded.max(SMALL_ALLOC_SIZE)
-            } else {
-                rounded.max(LARGE_ALLOC_SIZE)
-            };
-            drop(pool);
-            let mut ptr: *mut c_void = core::ptr::null_mut();
-            check(unsafe { hip::hipMalloc(&mut ptr, alloc_sz) })?;
-            if alloc_sz > rounded {
-                let split_ptr = unsafe { ptr.byte_add(rounded) };
-                let mut pool = ctx
-                    .pool
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pool.release(split_ptr, alloc_sz - rounded);
-                pool.allocated_bytes += rounded;
-            } else {
-                let mut pool = ctx
-                    .pool
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pool.allocated_bytes += alloc_sz;
-            }
-            (ptr, rounded)
-        };
+        let (ptr, alloc_size) = Self::alloc_from_pool(bytes)?;
         check(unsafe {
             hip::hipMemcpy(
                 ptr,
@@ -249,41 +228,7 @@ impl HipBuffer {
                 pooled: false,
             });
         }
-        // Allocate buffer from pool (same as from_host)
-        let ctx = get_ctx();
-        let mut pool = ctx
-            .pool
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (ptr, alloc_size) = if let Some((p, sc)) = pool.try_alloc(bytes) {
-            (p, sc)
-        } else {
-            let rounded = round_size(bytes);
-            let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
-                rounded.max(SMALL_ALLOC_SIZE)
-            } else {
-                rounded.max(LARGE_ALLOC_SIZE)
-            };
-            drop(pool);
-            let mut ptr: *mut c_void = core::ptr::null_mut();
-            check(unsafe { hip::hipMalloc(&mut ptr, alloc_sz) })?;
-            if alloc_sz > rounded {
-                let split_ptr = unsafe { ptr.byte_add(rounded) };
-                let mut pool = ctx
-                    .pool
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pool.release(split_ptr, alloc_sz - rounded);
-                pool.allocated_bytes += rounded;
-            } else {
-                let mut pool = ctx
-                    .pool
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pool.allocated_bytes += alloc_sz;
-            }
-            (ptr, rounded)
-        };
+        let (ptr, alloc_size) = Self::alloc_from_pool(bytes)?;
         // Copy on the copy stream (non-blocking w.r.t. default stream)
         check(unsafe {
             hip::hipMemcpyAsync(
@@ -373,10 +318,20 @@ struct KernelEntry {
 unsafe impl Send for KernelEntry {}
 unsafe impl Sync for KernelEntry {}
 
+// Wrapper to make hipFunction_t Send+Sync (HIP function handles are thread-safe)
+#[derive(Clone, Copy)]
+struct SyncFn(hip::hipFunction_t);
+// SAFETY: hipFunction_t is an opaque handle — thread-safe to store/use.
+unsafe impl Send for SyncFn {}
+unsafe impl Sync for SyncFn {}
+
 // ── HipCtx singleton ─────────────────────────────────────────────────────────
 
 struct HipCtx {
-    kernels: Mutex<HashMap<String, KernelEntry>>,
+    /// Pre-compiled kernel functions indexed by `KernelId`. Lock-free O(1) access.
+    kernel_funcs: [SyncFn; KERNEL_COUNT],
+    /// Dynamic kernels (fuse/mega) still use HashMap for JIT-compiled kernels.
+    dyn_kernels: Mutex<HashMap<String, KernelEntry>>,
     pool: Mutex<HipPool>,
     /// Separate stream for H2D/D2H transfers (multi-stream pipeline).
     copy_stream: hip::hipStream_t,
@@ -401,7 +356,8 @@ fn get_ctx() -> &'static HipCtx {
             panic!("HIP copy stream creation failed: {err:?}");
         }
         let hip_ctx = HipCtx {
-            kernels: Mutex::new(HashMap::new()),
+            kernel_funcs: [SyncFn(core::ptr::null_mut()); KERNEL_COUNT],
+            dyn_kernels: Mutex::new(HashMap::new()),
             pool: Mutex::new(HipPool::new()),
             copy_stream,
         };
@@ -427,6 +383,17 @@ const KERNEL_NAMES: &[&str] = &[
     "k_floor_f32",
     "k_round_f32",
     "k_erf_f32",
+    "k_asin_f32",
+    "k_acos_f32",
+    "k_atan_f32",
+    "k_atan2_f32",
+    "k_sinh_f32",
+    "k_cosh_f32",
+    "k_asinh_f32",
+    "k_acosh_f32",
+    "k_atanh_f32",
+    "k_log2_f32",
+    "k_log10_f32",
     // activations f32
     "k_sigmoid_f32",
     "k_silu_f32",
@@ -470,6 +437,17 @@ const KERNEL_NAMES: &[&str] = &[
     "k_floor_f64",
     "k_round_f64",
     "k_erf_f64",
+    "k_asin_f64",
+    "k_acos_f64",
+    "k_atan_f64",
+    "k_atan2_f64",
+    "k_sinh_f64",
+    "k_cosh_f64",
+    "k_asinh_f64",
+    "k_acosh_f64",
+    "k_atanh_f64",
+    "k_log2_f64",
+    "k_log10_f64",
     // activations f64
     "k_sigmoid_f64",
     "k_silu_f64",
@@ -581,14 +559,22 @@ fn compile_all_kernels(ctx: &HipCtx) -> HipResult<()> {
     check(unsafe { hip::hipModuleLoadData(&mut module, code.as_ptr().cast()) })?;
 
     let mut map = ctx
-        .kernels
+        .dyn_kernels
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: we are inside OnceLock init — single-threaded, so mutating kernel_funcs is safe.
+    let ctx_ptr = ctx as *const HipCtx as *mut HipCtx;
     for &kname in KERNEL_NAMES {
         let c_fn = CString::new(kname).map_err(|_| HipError::NullPtr)?;
         let mut func: hip::hipFunction_t = core::ptr::null_mut();
         // SAFETY: getting function handle from loaded module.
         check(unsafe { hip::hipModuleGetFunction(&mut func, module, c_fn.as_ptr()) })?;
+        // Populate flat array for O(1) hot-path lookup
+        if let Some(kid) = KernelId::from_name(kname) {
+            // SAFETY: ctx_ptr is valid and we are the only writer during init.
+            unsafe { (*ctx_ptr).kernel_funcs[kid as usize] = SyncFn(func); }
+        }
+        // Also store in dyn_kernels HashMap for fuse/mega dynamic kernel lookup
         map.insert(
             kname.to_owned(),
             KernelEntry {
@@ -600,9 +586,16 @@ fn compile_all_kernels(ctx: &HipCtx) -> HipResult<()> {
     Ok(())
 }
 
+/// O(1) kernel lookup — no Mutex, no HashMap, no allocation.
+#[inline(always)]
+fn get_kernel_by_id(ctx: &HipCtx, id: KernelId) -> hip::hipFunction_t {
+    ctx.kernel_funcs[id as usize].0
+}
+
+/// HashMap-based kernel lookup — used only for fuse/mega dynamic JIT kernels.
 fn get_kernel(ctx: &HipCtx, name: &str) -> HipResult<hip::hipFunction_t> {
     let map = ctx
-        .kernels
+        .dyn_kernels
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     map.get(name)
@@ -669,10 +662,8 @@ fn hip_launch_smem(
 
 fn hip_prepare_launch<T: Scalar>(n: usize, op: &str) -> (hip::hipFunction_t, HipBuffer, u32) {
     let ctx = get_ctx();
-    let name = format!("k_{op}_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
-    let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
-        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>(op));
+    let out_buf = hip_or_panic(HipBuffer::alloc_zeros(n * core::mem::size_of::<T>()), "HIP alloc");
     (func, out_buf, n as u32)
 }
 
@@ -712,15 +703,17 @@ fn launch_binary<T: Scalar>(a: &HipStorage<T>, b: &HipStorage<T>, op: &str) -> H
 // ── Public operations ────────────────────────────────────────────────────────
 
 pub(crate) fn hip_zeros<T: Scalar>(nrows: usize, ncols: usize) -> HipStorage<T> {
-    let buf = HipBuffer::alloc_zeros(nrows * ncols * core::mem::size_of::<T>())
-        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let buf = hip_or_panic(
+        HipBuffer::alloc_zeros(nrows * ncols * core::mem::size_of::<T>()),
+        "HIP alloc",
+    );
     HipStorage::new(nrows, ncols, buf)
 }
 
 pub(crate) fn hip_fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> HipStorage<T> {
     let n = nrows * ncols;
     let data = vec![val; n];
-    let buf = HipBuffer::from_host(&data).unwrap_or_else(|e| panic!("HIP upload: {e}"));
+    let buf = hip_or_panic(HipBuffer::from_host(&data), "HIP upload");
     HipStorage::new_cached(nrows, ncols, buf, data)
 }
 
@@ -736,7 +729,7 @@ pub(crate) fn hip_from_fn<T: Scalar>(
             data.push(f(r, c));
         }
     }
-    let buf = HipBuffer::from_host(&data).unwrap_or_else(|e| panic!("HIP upload: {e}"));
+    let buf = hip_or_panic(HipBuffer::from_host(&data), "HIP upload");
     HipStorage::new_cached(nrows, ncols, buf, data)
 }
 
@@ -747,8 +740,10 @@ pub(crate) fn hip_from_vec_async<T: Scalar>(
     data: Vec<T>,
 ) -> HipStorage<T> {
     let ctx = get_ctx();
-    let buf = HipBuffer::from_host_nonblocking(ctx.copy_stream, &data)
-        .unwrap_or_else(|e| panic!("HIP async upload: {e}"));
+    let buf = hip_or_panic(
+        HipBuffer::from_host_nonblocking(ctx.copy_stream, &data),
+        "HIP async upload",
+    );
     HipStorage::new_cached(nrows, ncols, buf, data)
 }
 
@@ -762,9 +757,10 @@ pub(crate) fn hip_get<T: Scalar>(s: &HipStorage<T>, r: usize, c: usize) -> T {
     }
     // Slow path: single-element D2H (avoid copying entire tensor).
     let byte_offset = (r * s.ncols + c) * core::mem::size_of::<T>();
-    s.buf
-        .copy_element::<T>(byte_offset)
-        .unwrap_or_else(|e| panic!("HIP single-element readback: {e}"))
+    hip_or_panic(
+        s.buf.copy_element::<T>(byte_offset),
+        "HIP single-element readback",
+    )
 }
 
 pub(crate) fn hip_set<T: Scalar>(s: &mut HipStorage<T>, r: usize, c: usize, v: T) {
@@ -788,7 +784,7 @@ pub(crate) fn hip_set<T: Scalar>(s: &mut HipStorage<T>, r: usize, c: usize, v: T
 
 pub(crate) fn hip_clone<T: Scalar>(s: &HipStorage<T>) -> HipStorage<T> {
     let bytes = s.n() * core::mem::size_of::<T>();
-    let new_buf = HipBuffer::alloc_zeros(bytes).unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let new_buf = hip_or_panic(HipBuffer::alloc_zeros(bytes), "HIP alloc");
     if bytes > 0 {
         // SAFETY: device-to-device copy of same-sized buffers.
         let err = unsafe {
@@ -816,10 +812,8 @@ pub(crate) fn hip_clone<T: Scalar>(s: &HipStorage<T>) -> HipStorage<T> {
 pub(crate) fn hip_transpose<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
-    let name = format!("k_transpose_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
-    let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
-        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("transpose"));
+    let out_buf = hip_or_panic(HipBuffer::alloc_zeros(n * core::mem::size_of::<T>()), "HIP alloc");
     let rows = a.nrows as u32;
     let cols = a.ncols as u32;
     hip_launch(
@@ -839,10 +833,8 @@ pub(crate) fn hip_transpose<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
 pub(crate) fn hip_scale<T: Scalar>(a: &HipStorage<T>, s: T) -> HipStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
-    let name = format!("k_scale_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
-    let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
-        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("scale"));
+    let out_buf = hip_or_panic(HipBuffer::alloc_zeros(n * core::mem::size_of::<T>()), "HIP alloc");
     let n_u32 = n as u32;
     hip_launch(
         func,
@@ -861,10 +853,8 @@ pub(crate) fn hip_scale<T: Scalar>(a: &HipStorage<T>, s: T) -> HipStorage<T> {
 pub(crate) fn hip_powf<T: Scalar>(a: &HipStorage<T>, p: T) -> HipStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
-    let name = format!("k_powf_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
-    let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
-        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("powf"));
+    let out_buf = hip_or_panic(HipBuffer::alloc_zeros(n * core::mem::size_of::<T>()), "HIP alloc");
     let n_u32 = n as u32;
     hip_launch(
         func,
@@ -883,8 +873,7 @@ pub(crate) fn hip_powf<T: Scalar>(a: &HipStorage<T>, p: T) -> HipStorage<T> {
 pub(crate) fn hip_matmul<T: Scalar>(out: &mut HipStorage<T>, a: &HipStorage<T>, b: &HipStorage<T>) {
     let ctx = get_ctx();
     out.invalidate_cache();
-    let name = format!("k_matmul_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("matmul"));
     let m = a.nrows as u32;
     let k = a.ncols as u32;
     let n = b.ncols as u32;
@@ -948,8 +937,7 @@ fn hip_max_pool2d<T: Scalar>(
     let out_h = (h + 2 * ph - kh) / sh + 1;
     let out_w = (w + 2 * pw - kw) / sw + 1;
     let total = nc * out_h * out_w;
-    let name = format!("k_max_pool2d_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("max_pool2d"));
     let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (
@@ -1004,8 +992,7 @@ fn hip_avg_pool2d<T: Scalar>(
     let out_h = (h + 2 * ph - kh) / sh + 1;
     let out_w = (w + 2 * pw - kw) / sw + 1;
     let total = nc * out_h * out_w;
-    let name = format!("k_avg_pool2d_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("avg_pool2d"));
     let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let (h_u, w_u, kh_u, kw_u, sh_u, sw_u, ph_u, pw_u, out_h_u, out_w_u, nc_u) = (
@@ -1054,8 +1041,7 @@ fn hip_adaptive_avg_pool2d<T: Scalar>(
     let ctx = get_ctx();
     let nc = a.nrows;
     let total = nc * out_h * out_w;
-    let name = format!("k_adaptive_avg_pool2d_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("adaptive_avg_pool2d"));
     let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let (in_h_u, in_w_u, out_h_u, out_w_u, nc_u) = (
@@ -1103,8 +1089,7 @@ fn hip_im2col<T: Scalar>(
     let k_cols = c_in * kh * kw;
     let out_spatial = out_h * out_w;
     let ctx = get_ctx();
-    let name = format!("k_im2col_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("im2col"));
     let col_buf = HipBuffer::alloc_zeros(n * k_cols * out_spatial * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc im2col: {e}"));
     let col_elem = k_cols * out_spatial;
@@ -1163,8 +1148,7 @@ fn hip_im1col<T: Scalar>(
 ) -> HipStorage<T> {
     let k_cols = c_in * kl;
     let ctx = get_ctx();
-    let name = format!("k_im1col_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("im1col"));
     let col_buf = HipBuffer::alloc_zeros(n * k_cols * out_l * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc im1col: {e}"));
     let col_elem = k_cols * out_l;
@@ -1224,8 +1208,7 @@ fn hip_im3col<T: Scalar>(
     let k_vol = c_in * kd * kh * kw;
     let out_vol = out_d * out_h * out_w;
     let ctx = get_ctx();
-    let name = format!("k_im3col_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("im3col"));
     let col_buf = HipBuffer::alloc_zeros(n * k_vol * out_vol * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc im3col: {e}"));
     let col_elem = k_vol * out_vol;
@@ -1455,8 +1438,7 @@ fn hip_conv_transpose2d<T: Scalar>(
     let out_w = (w - 1) * sw + kw - 2 * pw + opw;
     let total = n_batch * c_out * out_h * out_w;
     let ctx = get_ctx();
-    let name = format!("k_conv_transpose2d_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("conv_transpose2d"));
     let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc conv_transpose2d: {e}"));
     let (n_u, c_in_u, h_u, w_u, c_out_u, kh_u, kw_u, out_h_u, out_w_u, sh_u, sw_u, ph_u, pw_u) = (
@@ -1504,8 +1486,7 @@ fn hip_softmax<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
     let ctx = get_ctx();
     let rows = a.nrows;
     let cols = a.ncols;
-    let name = format!("k_softmax_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("softmax"));
     let out_buf = HipBuffer::alloc_zeros(rows * cols * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let rows_u32 = rows as u32;
@@ -1533,8 +1514,7 @@ fn hip_layer_norm<T: Scalar>(
     let ctx = get_ctx();
     let rows = a.nrows;
     let cols = a.ncols;
-    let name = format!("k_layer_norm_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("layer_norm"));
     let out_buf = HipBuffer::alloc_zeros(rows * cols * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let rows_u32 = rows as u32;
@@ -1579,8 +1559,7 @@ fn hip_rms_norm<T: Scalar>(a: &HipStorage<T>, gamma: &HipStorage<T>, eps: T) -> 
     let ctx = get_ctx();
     let rows = a.nrows;
     let cols = a.ncols;
-    let name = format!("k_rms_norm_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("rms_norm"));
     let out_buf = HipBuffer::alloc_zeros(rows * cols * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let rows_u32 = rows as u32;
@@ -1637,15 +1616,13 @@ fn hip_batch_norm_train<T: Scalar>(
     let eps_f = eps.to_f64();
     let total_u32 = total as u32;
     let c_u32 = c as u32;
-    let fwd_name = format!("k_batch_norm_fwd_{}", type_suffix::<T>());
-    let fwd_func = get_kernel(ctx, &fwd_name).unwrap_or_else(|e| panic!("{e}"));
+    let fwd_func = get_kernel_by_id(ctx, kernel_id::<T>("batch_norm_fwd"));
     let out_buf = HipBuffer::alloc_zeros(total * sz)
         .unwrap_or_else(|e| panic!("HIP alloc batch_norm out: {e}"));
     let fwd_grid = (total_u32 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
     if training {
-        let stats_name = format!("k_batch_norm_stats_{}", type_suffix::<T>());
-        let stats_func = get_kernel(ctx, &stats_name).unwrap_or_else(|e| panic!("{e}"));
+        let stats_func = get_kernel_by_id(ctx, kernel_id::<T>("batch_norm_stats"));
         let mean_buf = HipBuffer::alloc_zeros(c * sz)
             .unwrap_or_else(|e| panic!("HIP alloc batch_norm mean: {e}"));
         let var_buf = HipBuffer::alloc_zeros(c * sz)
@@ -1769,8 +1746,7 @@ fn hip_cross_entropy_fused<T: Scalar>(
     let n = input.nrows;
     let c = input.ncols;
     let sz = core::mem::size_of::<T>();
-    let name = format!("k_cross_entropy_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("cross_entropy"));
     let loss_buf = HipBuffer::alloc_zeros(n * sz)
         .unwrap_or_else(|e| panic!("HIP alloc cross_entropy loss: {e}"));
     let n_u32 = n as u32;
@@ -1814,9 +1790,8 @@ fn hip_sdpa<T: Scalar>(
     let sz = core::mem::size_of::<T>();
     let out_buf = HipBuffer::alloc_zeros(batch_heads * seq_q * head_dim * sz)
         .unwrap_or_else(|e| panic!("HIP alloc sdpa: {e}"));
-    let name = format!("k_sdpa_{}", type_suffix::<T>());
     let ctx = get_ctx();
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("sdpa"));
     let num_q_tiles = seq_q.div_ceil(FA_BLOCK_M as usize) as u32;
     let grid = batch_heads as u32 * num_q_tiles;
     let smem = 2 * FA_BLOCK_N as usize * head_dim * sz;
@@ -1870,8 +1845,7 @@ fn hip_axis_reduce<T: Scalar>(a: &HipStorage<T>, op: &str) -> HipStorage<T> {
     let ctx = get_ctx();
     let rows = a.nrows;
     let cols = a.ncols;
-    let name = format!("k_{op}_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>(op));
     let out_buf = HipBuffer::alloc_zeros(rows * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let rows_u32 = rows as u32;
@@ -1895,8 +1869,7 @@ fn hip_embedding<T: Scalar>(indices: &HipStorage<T>, weight: &HipStorage<T>) -> 
     let n_tokens = indices.nrows * indices.ncols;
     let embed_dim = weight.ncols;
     let total = n_tokens * embed_dim;
-    let name = format!("k_embedding_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("embedding"));
     let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let n_tokens_u32 = n_tokens as u32;
@@ -1921,8 +1894,7 @@ fn hip_axis_same_shape<T: Scalar>(a: &HipStorage<T>, op: &str) -> HipStorage<T> 
     let rows = a.nrows;
     let cols = a.ncols;
     let n = rows * cols;
-    let name = format!("k_{op}_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>(op));
     let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let rows_u32 = rows as u32;
@@ -1947,8 +1919,7 @@ fn hip_cumsum_cumprod<T: Scalar>(a: &HipStorage<T>, op: &str) -> HipStorage<T> {
     let rows = a.nrows;
     let cols = a.ncols;
     let n = rows * cols;
-    let name = format!("k_{op}_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>(op));
     let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let rows_u32 = rows as u32;
@@ -1991,8 +1962,7 @@ fn hip_max_pool2d_with_idx<T: Scalar>(
     let out_h = (h + 2 * ph - kh) / sh + 1;
     let out_w = (w + 2 * pw - kw) / sw + 1;
     let total = nc * out_h * out_w;
-    let name = format!("k_max_pool2d_with_idx_{}", type_suffix::<T>());
-    let func = get_kernel(ctx, &name).unwrap_or_else(|e| panic!("{e}"));
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("max_pool2d_with_idx"));
     let out_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
         .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
     let idx_buf = HipBuffer::alloc_zeros(total * core::mem::size_of::<T>())
@@ -2054,7 +2024,7 @@ fn hip_fuse_launch<T: Scalar>(
     // Check cache, compile if missing
     {
         let map = ctx
-            .kernels
+            .dyn_kernels
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !map.contains_key(&kernel_name) {
@@ -2110,7 +2080,7 @@ fn hip_fuse_launch<T: Scalar>(
                 .unwrap_or_else(|e| panic!("HIP get_function: {e}"));
 
             let mut map = ctx
-                .kernels
+                .dyn_kernels
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             map.insert(
@@ -2159,10 +2129,13 @@ fn hip_fuse_launch<T: Scalar>(
 pub(crate) struct MegaFuseOp {
     /// Raw pointers to input HipStorage buffers (as `*const u8`).
     pub inputs: Vec<*const u8>,
-    /// GPU C expression, using `inN[i]` placeholders.
+    /// GPU C expression, using `opK_inN[i]` or `__NABLA_PREV__` placeholders.
     pub gpu_expr: String,
-    /// Number of inputs for this operation.
+    /// Number of logical inputs for this operation (includes the `prev` slot when `uses_prev`).
     pub n_inputs: usize,
+    /// When `true`, the first logical input (`in0`) is the previous op's output register.
+    /// No global-memory pointer is passed for that slot; the kernel reads `op{k-1}_r` directly.
+    pub uses_prev: bool,
 }
 
 /// Launch a mega-kernel that executes multiple fused element-wise operations
@@ -2181,7 +2154,7 @@ pub(crate) fn hip_mega_fuse_launch<T: Scalar>(
     // Compile mega-kernel (JIT + cache)
     {
         let map = ctx
-            .kernels
+            .dyn_kernels
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !map.contains_key(&kernel_name) {
@@ -2191,8 +2164,14 @@ pub(crate) fn hip_mega_fuse_launch<T: Scalar>(
                 .iter()
                 .map(|op| (op.gpu_expr.clone(), op.n_inputs))
                 .collect();
-            let src_str =
-                gpu_common::mega_fuse_kernel_source(&op_descs, type_name, &kernel_name, false);
+            let op_uses_prev: Vec<bool> = ops.iter().map(|op| op.uses_prev).collect();
+            let src_str = gpu_common::mega_fuse_kernel_source(
+                &op_descs,
+                &op_uses_prev,
+                type_name,
+                &kernel_name,
+                false,
+            );
             let c_src = CString::new(src_str).unwrap_or_else(|_| panic!("null in source"));
             let prog_name = CString::new("nabla_mega_fuse").unwrap_or_else(|_| panic!("null"));
 
@@ -2235,7 +2214,7 @@ pub(crate) fn hip_mega_fuse_launch<T: Scalar>(
                 .unwrap_or_else(|e| panic!("HIP get_function: {e}"));
 
             let mut map = ctx
-                .kernels
+                .dyn_kernels
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             map.insert(
@@ -2279,7 +2258,9 @@ pub(crate) fn hip_mega_fuse_launch<T: Scalar>(
         })
         .collect();
 
-    // Build kernel argument array
+    // Build kernel argument array.  All input pointers are passed for every op;
+    // uses_prev ops receive the same n_inputs pointers as non-prev ops since the
+    // __NABLA_PREV__ sentinel resolves to a register, not an inN pointer.
     let total_args = ops.iter().map(|op| op.n_inputs + 1).sum::<usize>() + 1;
     let mut args: Vec<*mut c_void> = Vec::with_capacity(total_args);
     for (op_idx, op) in ops.iter().enumerate() {
@@ -2310,51 +2291,46 @@ impl crate::backend::Backend for crate::backend::Hip {
         hip_zeros(nrows, ncols)
     }
 
-    #[inline]
-    fn fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> HipStorage<T> {
-        hip_fill(nrows, ncols, val)
-    }
-
-    #[inline]
-    fn identity<T: Scalar>(n: usize) -> HipStorage<T> {
-        hip_from_fn(n, n, |r, c| if r == c { T::one() } else { T::zero() })
-    }
-
-    #[inline]
-    fn from_fn<T: Scalar>(
-        nrows: usize,
-        ncols: usize,
-        f: impl FnMut(usize, usize) -> T,
-    ) -> HipStorage<T> {
-        hip_from_fn(nrows, ncols, f)
+    gpu_common::rtc_backend_impl! {
+        HipStorage;
+        fill = hip_fill,
+        from_fn = hip_from_fn,
+        from_vec_async = hip_from_vec_async,
+        get = hip_get,
+        set = hip_set,
+        transpose = hip_transpose,
+        scale = hip_scale,
+        clone_storage = hip_clone,
+        powf = hip_powf,
+        sum_all = hip_sum_all,
+        max_all = hip_max_all,
+        min_all = hip_min_all,
+        argmax_all = hip_argmax_all,
+        argmin_all = hip_argmin_all,
+        softmax = hip_softmax,
+        layer_norm = hip_layer_norm,
+        rms_norm = hip_rms_norm,
+        batch_norm_train = hip_batch_norm_train,
+        cross_entropy_fused = hip_cross_entropy_fused,
+        sdpa = hip_sdpa,
+        axis_reduce = hip_axis_reduce,
+        embedding = hip_embedding,
+        cumsum_cumprod = hip_cumsum_cumprod,
+        prod_all = hip_prod_all,
+        max_pool2d = hip_max_pool2d,
+        max_pool2d_with_idx = hip_max_pool2d_with_idx,
+        avg_pool2d = hip_avg_pool2d,
+        adaptive_avg_pool2d = hip_adaptive_avg_pool2d,
+        conv2d = hip_conv2d,
+        conv1d = hip_conv1d,
+        conv3d = hip_conv3d,
+        conv_transpose2d = hip_conv_transpose2d,
     }
 
     #[inline]
     fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> HipStorage<T> {
-        let buf = HipBuffer::from_host(&data).unwrap_or_else(|e| panic!("HIP upload: {e}"));
+        let buf = hip_or_panic(HipBuffer::from_host(&data), "HIP upload");
         HipStorage::new_cached(nrows, ncols, buf, data)
-    }
-
-    #[inline]
-    fn from_vec_async<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> HipStorage<T> {
-        hip_from_vec_async(nrows, ncols, data)
-    }
-
-    #[inline]
-    fn nrows<T: Scalar>(s: &HipStorage<T>) -> usize {
-        s.nrows
-    }
-    #[inline]
-    fn ncols<T: Scalar>(s: &HipStorage<T>) -> usize {
-        s.ncols
-    }
-    #[inline]
-    fn get<T: Scalar>(s: &HipStorage<T>, r: usize, c: usize) -> T {
-        hip_get(s, r, c)
-    }
-    #[inline]
-    fn set<T: Scalar>(s: &mut HipStorage<T>, r: usize, c: usize, v: T) {
-        hip_set(s, r, c, v)
     }
 
     #[inline]
@@ -2362,51 +2338,9 @@ impl crate::backend::Backend for crate::backend::Hip {
         hip_matmul(out, a, b);
     }
 
-    #[inline]
-    fn neg<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
-        launch_unary(a, "neg")
-    }
-    #[inline]
-    fn transpose<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
-        hip_transpose(a)
-    }
-    #[inline]
-    fn scale<T: Scalar>(a: &HipStorage<T>, s: T) -> HipStorage<T> {
-        hip_scale(a, s)
-    }
-    #[inline]
-    fn clone_storage<T: Scalar>(s: &HipStorage<T>) -> HipStorage<T> {
-        hip_clone(s)
-    }
+    gpu_common::gpu_unary_ops!(HipStorage; exp, ln, log1p, sin, cos, tanh, sqrt, abs, recip, erf, ceil, floor, round, asin, acos, atan, sinh, cosh, asinh, acosh, atanh, log2, log10);
+    gpu_common::gpu_binary_ops!(HipStorage; add, sub, emul, ediv, atan2);
 
-    gpu_common::gpu_unary_ops!(HipStorage; exp, ln, log1p, sin, cos, tanh, sqrt, abs, recip, erf, ceil, floor, round);
-    gpu_common::gpu_binary_ops!(HipStorage; add, sub, emul, ediv);
-
-    #[inline]
-    fn powf<T: Scalar>(a: &HipStorage<T>, p: T) -> HipStorage<T> {
-        hip_powf(a, p)
-    }
-
-    #[inline]
-    fn sum_all<T: Scalar>(a: &HipStorage<T>) -> T {
-        hip_sum_all(a)
-    }
-    #[inline]
-    fn max_all<T: Scalar>(a: &HipStorage<T>) -> T {
-        hip_max_all(a)
-    }
-    #[inline]
-    fn min_all<T: Scalar>(a: &HipStorage<T>) -> T {
-        hip_min_all(a)
-    }
-    #[inline]
-    fn argmax_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) {
-        hip_argmax_all(a)
-    }
-    #[inline]
-    fn argmin_all<T: Scalar>(a: &HipStorage<T>) -> (usize, usize) {
-        hip_argmin_all(a)
-    }
 
     fn fuse_launch<T: Scalar>(
         inputs: &[*const u8],
@@ -2430,7 +2364,7 @@ impl crate::backend::Backend for crate::backend::Hip {
     }
 
     fn mega_fuse_launch<'a, T: Scalar>(
-        ops: &[(Vec<*const u8>, String, usize)],
+        ops: &[(Vec<*const u8>, String, usize, bool)],
         nrows: usize,
         ncols: usize,
         _cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
@@ -2438,271 +2372,15 @@ impl crate::backend::Backend for crate::backend::Hip {
     ) -> Vec<HipStorage<T>> {
         let mega_ops: Vec<MegaFuseOp> = ops
             .iter()
-            .map(|(inputs, expr, n_in)| MegaFuseOp {
+            .map(|(inputs, expr, n_in, up)| MegaFuseOp {
                 inputs: inputs.clone(),
                 gpu_expr: expr.clone(),
                 n_inputs: *n_in,
+                uses_prev: *up,
             })
             .collect();
         hip_mega_fuse_launch::<T>(&mega_ops, nrows, ncols, kernel_hash)
     }
 
-    fn silu<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
-        launch_unary(a, "silu")
-    }
-    fn mish<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
-        launch_unary(a, "mish")
-    }
-    fn leaky_relu<T: Scalar>(a: &HipStorage<T>, _s: T) -> HipStorage<T> {
-        launch_unary(a, "leaky_relu")
-    }
-    fn elu<T: Scalar>(a: &HipStorage<T>, _alpha: T) -> HipStorage<T> {
-        launch_unary(a, "elu")
-    }
-    fn hardswish<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
-        launch_unary(a, "hardswish")
-    }
-    fn softmax<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
-        hip_softmax(a)
-    }
-    fn layer_norm<T: Scalar>(
-        a: &HipStorage<T>,
-        g: &HipStorage<T>,
-        b: &HipStorage<T>,
-        eps: T,
-    ) -> HipStorage<T> {
-        hip_layer_norm(a, g, b, eps)
-    }
-    fn rms_norm<T: Scalar>(a: &HipStorage<T>, g: &HipStorage<T>, eps: T) -> HipStorage<T> {
-        hip_rms_norm(a, g, eps)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn batch_norm_train<T: Scalar>(
-        a: &HipStorage<T>,
-        gamma: &HipStorage<T>,
-        beta: &HipStorage<T>,
-        running_mean: &mut HipStorage<T>,
-        running_var: &mut HipStorage<T>,
-        eps: T,
-        momentum: T,
-        training: bool,
-    ) -> HipStorage<T> {
-        hip_batch_norm_train(
-            a,
-            gamma,
-            beta,
-            running_mean,
-            running_var,
-            eps,
-            momentum,
-            training,
-        )
-    }
-
-    fn cross_entropy_fused<T: Scalar>(
-        input: &HipStorage<T>,
-        target: &HipStorage<T>,
-        _n: usize,
-        _c: usize,
-    ) -> HipStorage<T> {
-        hip_cross_entropy_fused(input, target)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn sdpa<T: Scalar>(
-        q: &HipStorage<T>,
-        k: &HipStorage<T>,
-        v: &HipStorage<T>,
-        _mask: Option<&HipStorage<T>>,
-        seq_q: usize,
-        seq_k: usize,
-        head_dim: usize,
-        batch_heads: usize,
-    ) -> HipStorage<T> {
-        hip_sdpa(q, k, v, seq_q, seq_k, head_dim, batch_heads)
-    }
-
-    fn sum_axis1<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
-        hip_axis_reduce(a, "sum_axis1")
-    }
-    fn max_axis1<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
-        hip_axis_reduce(a, "max_axis1")
-    }
-    fn embedding<T: Scalar>(i: &HipStorage<T>, w: &HipStorage<T>) -> HipStorage<T> {
-        hip_embedding(i, w)
-    }
-
-    fn cumsum_axis1<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
-        hip_cumsum_cumprod(a, "cumsum_axis1")
-    }
-
-    fn cumprod_axis1<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
-        hip_cumsum_cumprod(a, "cumprod_axis1")
-    }
-
-    #[inline]
-    fn prod_all<T: Scalar>(a: &HipStorage<T>) -> T {
-        hip_prod_all(a)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn max_pool2d<T: Scalar>(
-        a: &HipStorage<T>,
-        h: usize,
-        w: usize,
-        kh: usize,
-        kw: usize,
-        sh: usize,
-        sw: usize,
-        ph: usize,
-        pw: usize,
-    ) -> HipStorage<T> {
-        hip_max_pool2d(a, h, w, kh, kw, sh, sw, ph, pw)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn max_pool2d_with_indices<T: Scalar>(
-        a: &HipStorage<T>,
-        h: usize,
-        w: usize,
-        kh: usize,
-        kw: usize,
-        sh: usize,
-        sw: usize,
-        ph: usize,
-        pw: usize,
-    ) -> (HipStorage<T>, HipStorage<T>) {
-        hip_max_pool2d_with_idx(a, h, w, kh, kw, sh, sw, ph, pw)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn avg_pool2d<T: Scalar>(
-        a: &HipStorage<T>,
-        h: usize,
-        w: usize,
-        kh: usize,
-        kw: usize,
-        sh: usize,
-        sw: usize,
-        ph: usize,
-        pw: usize,
-    ) -> HipStorage<T> {
-        hip_avg_pool2d(a, h, w, kh, kw, sh, sw, ph, pw)
-    }
-
-    fn adaptive_avg_pool2d<T: Scalar>(
-        a: &HipStorage<T>,
-        in_h: usize,
-        in_w: usize,
-        out_h: usize,
-        out_w: usize,
-    ) -> HipStorage<T> {
-        hip_adaptive_avg_pool2d(a, in_h, in_w, out_h, out_w)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn conv2d<T: Scalar>(
-        input: &HipStorage<T>,
-        weight: &HipStorage<T>,
-        n: usize,
-        c_in: usize,
-        h: usize,
-        w: usize,
-        c_out: usize,
-        kh: usize,
-        kw: usize,
-        stride: (usize, usize),
-        padding: (usize, usize),
-        dilation: (usize, usize),
-        groups: usize,
-    ) -> HipStorage<T> {
-        hip_conv2d(
-            input, weight, n, c_in, h, w, c_out, kh, kw, stride, padding, dilation, groups,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn conv1d<T: Scalar>(
-        input: &HipStorage<T>,
-        weight: &HipStorage<T>,
-        n_batch: usize,
-        c_in: usize,
-        length: usize,
-        c_out: usize,
-        kernel_size: usize,
-        stride: usize,
-        padding: usize,
-        dilation: usize,
-        groups: usize,
-    ) -> HipStorage<T> {
-        hip_conv1d(
-            input,
-            weight,
-            n_batch,
-            c_in,
-            length,
-            c_out,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn conv3d<T: Scalar>(
-        input: &HipStorage<T>,
-        weight: &HipStorage<T>,
-        n_batch: usize,
-        c_in: usize,
-        d: usize,
-        h: usize,
-        w: usize,
-        c_out: usize,
-        kd: usize,
-        kh: usize,
-        kw: usize,
-        stride: (usize, usize, usize),
-        padding: (usize, usize, usize),
-        dilation: (usize, usize, usize),
-        groups: usize,
-    ) -> HipStorage<T> {
-        hip_conv3d(
-            input, weight, n_batch, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation,
-            groups,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn conv_transpose2d<T: Scalar>(
-        input: &HipStorage<T>,
-        weight: &HipStorage<T>,
-        n_batch: usize,
-        c_in: usize,
-        h: usize,
-        w: usize,
-        c_out: usize,
-        kh: usize,
-        kw: usize,
-        stride: (usize, usize),
-        padding: (usize, usize),
-        output_padding: (usize, usize),
-    ) -> HipStorage<T> {
-        hip_conv_transpose2d(
-            input,
-            weight,
-            n_batch,
-            c_in,
-            h,
-            w,
-            c_out,
-            kh,
-            kw,
-            stride,
-            padding,
-            output_padding,
-        )
-    }
+    gpu_common::gpu_unary_ops!(HipStorage; silu, mish, hardswish);
 }

@@ -11,6 +11,7 @@ use nabla::prelude::*;
 
 #[cfg(feature = "cpu")]
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let tol = 1e-10;
     // Create matrices
     let a = mat![[2.0_f64, 1.0], [5.0, 3.0]];
     let b = mat![[1.0_f64, 0.0], [0.0, 1.0]];
@@ -36,11 +37,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let recon = lu.reconstruct();
     println!(
         "LU reconstruct matches: {}",
-        (&recon - &a).abs().sum_all() < 1e-10
+        (&recon - &a).abs().sum_all() < tol
     );
 
     // Identity check
-    println!("eye = I: {}", (&eye - &b).abs().sum_all() < 1e-10);
+    println!("eye = I: {}", (&eye - &b).abs().sum_all() < tol);
 
     Ok(())
 }

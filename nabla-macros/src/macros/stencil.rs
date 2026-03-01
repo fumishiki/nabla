@@ -6,7 +6,7 @@
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{Error, Expr, Ident, Result, Token, parse::ParseStream};
+use syn::{Error, Expr, Ident, Result, Token, parse::{Parse, ParseStream}};
 
 // ── AST types ────────────────────────────────────────────────────────────────
 
@@ -30,6 +30,12 @@ impl IdxExpr {
             IdxExpr::Plain(_) => 0,
             IdxExpr::Offset(_, o) => *o,
         }
+    }
+}
+
+impl Parse for IdxExpr {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        parse_idx_expr(input)
     }
 }
 
@@ -57,32 +63,35 @@ pub(crate) struct StencilInput {
 
 fn parse_idx_expr(input: ParseStream<'_>) -> Result<IdxExpr> {
     let var: Ident = input.parse()?;
-    if input.peek(Token![+]) {
-        input.parse::<Token![+]>()?;
-        let lit: syn::LitInt = input.parse()?;
-        Ok(IdxExpr::Offset(var.to_string(), lit.base10_parse()?))
+    let offset = if input.peek(Token![+]) {
+        let _: Token![+] = input.parse()?;
+        parse_offset(input)?
     } else if input.peek(Token![-]) {
-        input.parse::<Token![-]>()?;
-        let lit: syn::LitInt = input.parse()?;
-        let v: i64 = lit.base10_parse()?;
-        Ok(IdxExpr::Offset(var.to_string(), -v))
+        let _: Token![-] = input.parse()?;
+        -parse_offset(input)?
     } else {
+        0
+    };
+    if offset == 0 {
         Ok(IdxExpr::Plain(var.to_string()))
+    } else {
+        Ok(IdxExpr::Offset(var.to_string(), offset))
     }
+}
+
+fn parse_offset(input: ParseStream<'_>) -> Result<i64> {
+    let lit: syn::LitInt = input.parse()?;
+    lit.base10_parse()
 }
 
 fn parse_tensor_access(input: ParseStream<'_>) -> Result<TensorAccess> {
     let name: Ident = input.parse()?;
     let inner;
     syn::bracketed!(inner in input);
-    let mut indices = Vec::new();
-    loop {
-        indices.push(parse_idx_expr(&inner)?);
-        if inner.is_empty() {
-            break;
-        }
-        inner.parse::<Token![,]>()?;
-    }
+    let indices = inner
+        .parse_terminated(IdxExpr::parse, Token![,])?
+        .into_iter()
+        .collect();
     Ok(TensorAccess { name, indices })
 }
 
@@ -101,29 +110,15 @@ impl syn::parse::Parse for StencilInput {
 
         // Parse RHS terms: optional coeff * access, separated by + or -
         let mut terms = Vec::new();
-        let mut leading_negate = false;
-
-        // Check for leading minus
+        let mut negate = false;
         if input.peek(Token![-]) {
             input.parse::<Token![-]>()?;
-            leading_negate = true;
+            negate = true;
         }
-
-        // First term
-        let first_term = parse_rhs_term(input, leading_negate)?;
-        terms.push(first_term);
+        terms.push(parse_rhs_term(input, negate)?);
 
         // Subsequent terms
-        while !input.is_empty() {
-            let negate = if input.peek(Token![+]) {
-                input.parse::<Token![+]>()?;
-                false
-            } else if input.peek(Token![-]) {
-                input.parse::<Token![-]>()?;
-                true
-            } else {
-                break;
-            };
+        while let Some(negate) = parse_term_sign(input)? {
             terms.push(parse_rhs_term(input, negate)?);
         }
 
@@ -138,23 +133,19 @@ impl syn::parse::Parse for StencilInput {
 fn parse_rhs_term(input: ParseStream<'_>, negate: bool) -> Result<RhsTerm> {
     // Try: literal_coeff * tensor_access
     let fork = input.fork();
-    if let Ok(lit) = fork.parse::<syn::Lit>() {
-        if fork.peek(Token![*]) {
-            // coeff * access — parse the literal and the `*`
-            let coeff_lit: syn::Lit = input.parse()?;
-            let coeff_expr: Expr = Expr::Lit(syn::ExprLit {
-                attrs: vec![],
-                lit: coeff_lit,
-            });
-            input.parse::<Token![*]>()?;
-            let access = parse_tensor_access(input)?;
-            return Ok(RhsTerm {
-                coeff: Some(coeff_expr),
-                negate,
-                access,
-            });
-        }
-        let _ = lit;
+    if fork.parse::<syn::Lit>().is_ok() && fork.peek(Token![*]) {
+        let coeff_lit: syn::Lit = input.parse()?;
+        let coeff_expr: Expr = Expr::Lit(syn::ExprLit {
+            attrs: vec![],
+            lit: coeff_lit,
+        });
+        input.parse::<Token![*]>()?;
+        let access = parse_tensor_access(input)?;
+        return Ok(RhsTerm {
+            coeff: Some(coeff_expr),
+            negate,
+            access,
+        });
     }
     // Just tensor_access
     let access = parse_tensor_access(input)?;
@@ -165,7 +156,32 @@ fn parse_rhs_term(input: ParseStream<'_>, negate: bool) -> Result<RhsTerm> {
     })
 }
 
+fn parse_term_sign(input: ParseStream<'_>) -> Result<Option<bool>> {
+    if input.peek(Token![+]) {
+        input.parse::<Token![+]>()?;
+        Ok(Some(false))
+    } else if input.peek(Token![-]) {
+        input.parse::<Token![-]>()?;
+        Ok(Some(true))
+    } else {
+        Ok(None)
+    }
+}
+
 // ── Codegen ──────────────────────────────────────────────────────────────────
+
+fn idx_expr_token(idx: &IdxExpr, loop_var: &Ident) -> TokenStream2 {
+    let off = idx.offset();
+    if off == 0 {
+        quote! { #loop_var }
+    } else if off > 0 {
+        let off_u = off as usize;
+        quote! { (#loop_var + #off_u) }
+    } else {
+        let off_u = (-off) as usize;
+        quote! { (#loop_var - #off_u) }
+    }
+}
 
 pub(crate) fn stencil_impl(input: TokenStream2) -> Result<TokenStream2> {
     let stencil: StencilInput = syn::parse2(input)?;
@@ -182,33 +198,28 @@ pub(crate) fn stencil_impl(input: TokenStream2) -> Result<TokenStream2> {
     let idx_j = &stencil.out_indices[1];
 
     // Compute min/max offsets for each dimension
-    let mut min_off_i: i64 = 0;
-    let mut max_off_i: i64 = 0;
-    let mut min_off_j: i64 = 0;
-    let mut max_off_j: i64 = 0;
+    let mut min_off = [0i64; 2];
+    let mut max_off = [0i64; 2];
 
     let idx_i_str = idx_i.to_string();
     let idx_j_str = idx_j.to_string();
 
     for term in &stencil.terms {
         for idx in &term.access.indices {
-            let var = idx.var_name();
+            let Some(slot) = idx_slot(idx, &idx_i_str, &idx_j_str) else {
+                continue;
+            };
             let off = idx.offset();
-            if var == idx_i_str {
-                min_off_i = min_off_i.min(off);
-                max_off_i = max_off_i.max(off);
-            } else if var == idx_j_str {
-                min_off_j = min_off_j.min(off);
-                max_off_j = max_off_j.max(off);
-            }
+            min_off[slot] = min_off[slot].min(off);
+            max_off[slot] = max_off[slot].max(off);
         }
     }
 
     // Interior bounds: iterate from -min_off_i to nrows-max_off_i
-    let start_i = (-min_off_i) as usize;
-    let start_j = (-min_off_j) as usize;
-    let end_off_i = max_off_i as usize;
-    let end_off_j = max_off_j as usize;
+    let start_i = (-min_off[0]) as usize;
+    let start_j = (-min_off[1]) as usize;
+    let end_off_i = max_off[0] as usize;
+    let end_off_j = max_off[1] as usize;
 
     // First input tensor for shape reference
     let first_tensor = &stencil.terms[0].access.name;
@@ -226,18 +237,7 @@ pub(crate) fn stencil_impl(input: TokenStream2) -> Result<TokenStream2> {
                 .indices
                 .iter()
                 .zip([idx_i, idx_j].iter())
-                .map(|(idx, loop_var)| {
-                    let off = idx.offset();
-                    if off == 0 {
-                        quote! { #loop_var }
-                    } else if off > 0 {
-                        let off_u = off as usize;
-                        quote! { (#loop_var + #off_u) }
-                    } else {
-                        let off_u = (-off) as usize;
-                        quote! { (#loop_var - #off_u) }
-                    }
-                })
+                .map(|(idx, loop_var)| idx_expr_token(idx, loop_var))
                 .collect();
 
             let get_expr = quote! { #access_name.get(#(#idx_exprs),*) };
@@ -268,4 +268,14 @@ pub(crate) fn stencil_impl(input: TokenStream2) -> Result<TokenStream2> {
         }
         #out_name
     }})
+}
+
+fn idx_slot(idx: &IdxExpr, idx_i: &str, idx_j: &str) -> Option<usize> {
+    if idx.var_name() == idx_i {
+        Some(0)
+    } else if idx.var_name() == idx_j {
+        Some(1)
+    } else {
+        None
+    }
 }

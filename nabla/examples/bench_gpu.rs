@@ -117,7 +117,10 @@ fn main() {
             b.tanh();
             inputs: a, b
         );
-        _r.into_iter().last().unwrap()
+        match _r.into_iter().last() {
+            Some(last) => last,
+            None => panic!("mega_fuse returned no outputs"),
+        }
     });
     bench("4x fuse! (baseline)", || {
         let _ = fuse!(a.exp(); a) as Tensor<f32>;
@@ -133,7 +136,10 @@ fn main() {
             b.tanh();
             inputs: a, b
         );
-        _r.into_iter().last().unwrap()
+        match _r.into_iter().last() {
+            Some(last) => last,
+            None => panic!("mega_fuse returned no outputs"),
+        }
     });
 
     // --- Reductions ---

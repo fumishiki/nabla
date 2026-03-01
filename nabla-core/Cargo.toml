@@ -19,5 +19,5 @@ rayon = "1"
 half = { version = "2", features = ["num-traits"], optional = true }
 wgpu = { version = "24", optional = true }
 pollster = { version = "0.4", optional = true }
-cudarc = { version = "0.19", optional = true, features = ["driver", "nvrtc", "cublas", "cuda-version-from-build-system"] }
+cudarc = { version = "0.19", optional = true, features = ["driver", "nvrtc", "cublas", "cublaslt", "cuda-version-from-build-system"] }
 hip-runtime-sys = { version = "0.1", optional = true }

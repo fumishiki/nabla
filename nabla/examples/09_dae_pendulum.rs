@@ -40,10 +40,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         x0,
         z0,
         (0.0, 0.5),
-        DaeConfig {
+        &DaeConfig {
             dt: 0.001,
             tol: 1e-10,
             max_iter: 100,
+            saveat: None,
         },
     )?;
 

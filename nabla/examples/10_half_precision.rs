@@ -13,7 +13,7 @@ use nabla::prelude::*;
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // f16 tensor creation
     let a = Tensor::<f16>::from_fn(3, 3, |i, j| f16::from_f32((i * 3 + j + 1) as f32));
-    let b = Tensor::<f16>::from_fn(3, 3, |i, j| f16::from_f32(if i == j { 1.0 } else { 0.0 }));
+    let b = Tensor::<f16>::identity(3);
 
     // Element-wise ops work on f16
     let c = &a * &b; // matmul

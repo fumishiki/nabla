@@ -11,14 +11,20 @@ pub struct LinearLayout<const N: usize> {
 }
 
 impl<const N: usize> LinearLayout<N> {
-    /// Identity matrix: `rows[i] = 1 << i`.
-    #[must_use]
-    pub fn identity() -> Self {
+    fn identity_rows() -> [u64; N] {
         let mut rows = [0u64; N];
         for (i, row) in rows.iter_mut().enumerate() {
             *row = 1 << i;
         }
-        Self { rows }
+        rows
+    }
+
+    /// Identity matrix: `rows[i] = 1 << i`.
+    #[must_use]
+    pub fn identity() -> Self {
+        Self {
+            rows: Self::identity_rows(),
+        }
     }
 
     /// Matrix product over F₂: C = self * other.
@@ -77,10 +83,7 @@ impl<const N: usize> LinearLayout<N> {
         debug_assert!(total_bits <= N, "tile address exceeds layout dimension");
 
         // Start from identity, then XOR col bits with shifted row bits
-        let mut rows = [0u64; N];
-        for (i, row) in rows.iter_mut().enumerate() {
-            *row = 1 << i;
-        }
+        let mut rows = Self::identity_rows();
 
         // Column bits [0, col_bits) get XOR'd with row bits shifted by `shift`
         for (c, row) in rows.iter_mut().enumerate().take(bank_bits.min(col_bits)) {

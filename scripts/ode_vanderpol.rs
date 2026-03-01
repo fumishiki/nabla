@@ -11,7 +11,7 @@ fn main() -> nabla::error::Result<()> {
     let mu = 1000.0_f64;
 
     let y0: Tensor<f64> = mat![[2.0_f64], [0.0]];
-    let config = IfEulerScalarConfig { dt: 0.01, stiffness: mu };
+    let config = IfEulerScalarConfig { dt: 0.01, stiffness: mu, ..Default::default() };
 
     let sol = if_euler_scalar(
         |_t, y| {

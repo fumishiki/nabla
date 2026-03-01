@@ -65,6 +65,22 @@ pub enum ExprKind {
     Sqrt(Expr),
     /// Absolute value.
     Abs(Expr),
+    /// Inverse sine (arcsin).
+    Asin(Expr),
+    /// Inverse cosine (arccos).
+    Acos(Expr),
+    /// Inverse tangent (arctan).
+    Atan(Expr),
+    /// Hyperbolic sine.
+    Sinh(Expr),
+    /// Hyperbolic cosine.
+    Cosh(Expr),
+    /// Inverse hyperbolic sine.
+    Asinh(Expr),
+    /// Inverse hyperbolic cosine.
+    Acosh(Expr),
+    /// Inverse hyperbolic tangent.
+    Atanh(Expr),
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +141,81 @@ macro_rules! cas_unary {
         }
     };
 }
-cas_unary!(sin => Sin, cos => Cos, exp => Exp, ln => Ln, tanh => Tanh, sqrt => Sqrt, abs => Abs);
+cas_unary!(
+    sin => Sin, cos => Cos, exp => Exp, ln => Ln, tanh => Tanh, sqrt => Sqrt, abs => Abs,
+    asin => Asin, acos => Acos, atan => Atan,
+    sinh => Sinh, cosh => Cosh,
+    asinh => Asinh, acosh => Acosh, atanh => Atanh,
+);
+
+// ---------------------------------------------------------------------------
+// Method-chaining convenience wrappers
+// ---------------------------------------------------------------------------
+
+/// Generate method-chaining wrappers: `e.sin_()` → `Expr::sin(&e)`.
+macro_rules! cas_method {
+    ($($method:ident => $assoc:ident),+ $(,)?) => {
+        impl Expr {
+            $(
+                #[doc = concat!("Method form of [`Expr::", stringify!($assoc), "`].")]
+                #[inline]
+                #[must_use]
+                pub fn $method(&self) -> Self { Self::$assoc(self) }
+            )+
+        }
+    };
+}
+cas_method!(
+    sin_ => sin, cos_ => cos, exp_ => exp, ln_ => ln, tanh_ => tanh, sqrt_ => sqrt, abs_ => abs,
+    asin_ => asin, acos_ => acos, atan_ => atan,
+    sinh_ => sinh, cosh_ => cosh,
+    asinh_ => asinh, acosh_ => acosh, atanh_ => atanh,
+);
+
+impl Expr {
+    /// `self ^ n` where `n` is an `f64` literal.
+    #[inline]
+    #[must_use]
+    pub fn powf(&self, n: f64) -> Self {
+        Self::pow(self, &Self::lit(n))
+    }
+
+    /// `self ^ n` where `n` is an `i32` literal.
+    #[inline]
+    #[must_use]
+    pub fn powi(&self, n: i32) -> Self {
+        Self::pow(self, &Self::lit(f64::from(n)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// From conversions
+// ---------------------------------------------------------------------------
+
+impl From<f64> for Expr {
+    #[inline]
+    fn from(v: f64) -> Self {
+        Self::lit(v)
+    }
+}
+
+impl From<i32> for Expr {
+    #[inline]
+    fn from(v: i32) -> Self {
+        Self::lit(f64::from(v))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Free function constructor
+// ---------------------------------------------------------------------------
+
+/// Shorthand for [`Expr::var`].
+#[inline]
+#[must_use]
+pub fn var(name: &str) -> Expr {
+    Expr::var(name)
+}
 
 // ---------------------------------------------------------------------------
 // Operator overloads
@@ -208,6 +298,14 @@ impl fmt::Display for ExprKind {
             Self::Tanh(a) => write!(f, "tanh({a})"),
             Self::Sqrt(a) => write!(f, "sqrt({a})"),
             Self::Abs(a) => write!(f, "abs({a})"),
+            Self::Asin(a) => write!(f, "asin({a})"),
+            Self::Acos(a) => write!(f, "acos({a})"),
+            Self::Atan(a) => write!(f, "atan({a})"),
+            Self::Sinh(a) => write!(f, "sinh({a})"),
+            Self::Cosh(a) => write!(f, "cosh({a})"),
+            Self::Asinh(a) => write!(f, "asinh({a})"),
+            Self::Acosh(a) => write!(f, "acosh({a})"),
+            Self::Atanh(a) => write!(f, "atanh({a})"),
         }
     }
 }
@@ -270,6 +368,34 @@ pub fn diff(expr: &Expr, var: &str) -> Expr {
         }
         ExprKind::Sqrt(a) => &diff(a, var) / &(2.0 * &Expr::sqrt(a)),
         ExprKind::Abs(a) => &(a / &Expr::abs(a)) * &diff(a, var),
+        // d/dx asin(a) = a' / sqrt(1 - a^2)
+        ExprKind::Asin(a) => {
+            &diff(a, var) / &Expr::sqrt(&(&Expr::lit(1.0) - &Expr::pow(a, &Expr::lit(2.0))))
+        }
+        // d/dx acos(a) = -a' / sqrt(1 - a^2)
+        ExprKind::Acos(a) => {
+            -&(&diff(a, var) / &Expr::sqrt(&(&Expr::lit(1.0) - &Expr::pow(a, &Expr::lit(2.0)))))
+        }
+        // d/dx atan(a) = a' / (1 + a^2)
+        ExprKind::Atan(a) => {
+            &diff(a, var) / &(&Expr::lit(1.0) + &Expr::pow(a, &Expr::lit(2.0)))
+        }
+        // d/dx sinh(a) = a' * cosh(a)
+        ExprKind::Sinh(a) => &Expr::cosh(a) * &diff(a, var),
+        // d/dx cosh(a) = a' * sinh(a)
+        ExprKind::Cosh(a) => &Expr::sinh(a) * &diff(a, var),
+        // d/dx asinh(a) = a' / sqrt(a^2 + 1)
+        ExprKind::Asinh(a) => {
+            &diff(a, var) / &Expr::sqrt(&(&Expr::pow(a, &Expr::lit(2.0)) + &Expr::lit(1.0)))
+        }
+        // d/dx acosh(a) = a' / sqrt(a^2 - 1)
+        ExprKind::Acosh(a) => {
+            &diff(a, var) / &Expr::sqrt(&(&Expr::pow(a, &Expr::lit(2.0)) - &Expr::lit(1.0)))
+        }
+        // d/dx atanh(a) = a' / (1 - a^2)
+        ExprKind::Atanh(a) => {
+            &diff(a, var) / &(&Expr::lit(1.0) - &Expr::pow(a, &Expr::lit(2.0)))
+        }
     }
 }
 
@@ -292,6 +418,14 @@ define_language! {
         "tanh" = CTanh([Id; 1]),
         "sqrt" = CSqrt([Id; 1]),
         "abs"  = CAbs([Id; 1]),
+        "asin" = CAsin([Id; 1]),
+        "acos" = CAcos([Id; 1]),
+        "atan" = CAtan([Id; 1]),
+        "sinh" = CSinh([Id; 1]),
+        "cosh" = CCosh([Id; 1]),
+        "asinh" = CAsinh([Id; 1]),
+        "acosh" = CAcosh([Id; 1]),
+        "atanh" = CAtanh([Id; 1]),
         "diff" = CDiff([Id; 2]),
         Symbol(Symbol),
     }
@@ -336,6 +470,28 @@ impl Analysis<CasLang> for ConstFold {
                 }
             }
             CasLang::CAbs([a]) => NotNan::new(x(a)?.abs()).ok(),
+            CasLang::CAsin([a]) => NotNan::new(x(a)?.asin()).ok(),
+            CasLang::CAcos([a]) => NotNan::new(x(a)?.acos()).ok(),
+            CasLang::CAtan([a]) => NotNan::new(x(a)?.atan()).ok(),
+            CasLang::CSinh([a]) => NotNan::new(x(a)?.sinh()).ok(),
+            CasLang::CCosh([a]) => NotNan::new(x(a)?.cosh()).ok(),
+            CasLang::CAsinh([a]) => NotNan::new(x(a)?.asinh()).ok(),
+            CasLang::CAcosh([a]) => {
+                let av = x(a)?;
+                if *av >= 1.0 {
+                    NotNan::new(av.acosh()).ok()
+                } else {
+                    None
+                }
+            }
+            CasLang::CAtanh([a]) => {
+                let av = x(a)?;
+                if av.abs() < 1.0 {
+                    NotNan::new(av.atanh()).ok()
+                } else {
+                    None
+                }
+            }
             CasLang::CDiff(_) | CasLang::Symbol(_) => None,
         }
     }
@@ -477,7 +633,47 @@ fn cas_rules() -> Vec<Rewrite<CasLang, ConstFold>> {
         // d[abs(a)]/dx = (a / abs(a)) * a'
         rewrite!("diff-abs"; "(diff (abs ?a) ?x)" =>
             "(* (/ ?a (abs ?a)) (diff ?a ?x))"),
+        // d[asin(a)]/dx = a' / sqrt(1 - a^2)
+        rewrite!("diff-asin"; "(diff (asin ?a) ?x)" =>
+            "(/ (diff ?a ?x) (sqrt (+ 1 (neg (^ ?a 2)))))"),
+        // d[acos(a)]/dx = -a' / sqrt(1 - a^2)
+        rewrite!("diff-acos"; "(diff (acos ?a) ?x)" =>
+            "(neg (/ (diff ?a ?x) (sqrt (+ 1 (neg (^ ?a 2))))))"),
+        // d[atan(a)]/dx = a' / (1 + a^2)
+        rewrite!("diff-atan"; "(diff (atan ?a) ?x)" =>
+            "(/ (diff ?a ?x) (+ 1 (^ ?a 2)))"),
+        // d[sinh(a)]/dx = cosh(a) * a'
+        rewrite!("diff-sinh"; "(diff (sinh ?a) ?x)" =>
+            "(* (cosh ?a) (diff ?a ?x))"),
+        // d[cosh(a)]/dx = sinh(a) * a'
+        rewrite!("diff-cosh"; "(diff (cosh ?a) ?x)" =>
+            "(* (sinh ?a) (diff ?a ?x))"),
+        // d[asinh(a)]/dx = a' / sqrt(a^2 + 1)
+        rewrite!("diff-asinh"; "(diff (asinh ?a) ?x)" =>
+            "(/ (diff ?a ?x) (sqrt (+ (^ ?a 2) 1)))"),
+        // d[acosh(a)]/dx = a' / sqrt(a^2 - 1)
+        rewrite!("diff-acosh"; "(diff (acosh ?a) ?x)" =>
+            "(/ (diff ?a ?x) (sqrt (+ (^ ?a 2) -1)))"),
+        // d[atanh(a)]/dx = a' / (1 - a^2)
+        rewrite!("diff-atanh"; "(diff (atanh ?a) ?x)" =>
+            "(/ (diff ?a ?x) (+ 1 (neg (^ ?a 2))))"),
     ]
+}
+
+fn recexpr_unary(rec: &mut RecExpr<CasLang>, a: &Expr, ctor: fn([Id; 1]) -> CasLang) -> Id {
+    let i = to_recexpr(a, rec);
+    rec.add(ctor([i]))
+}
+
+fn recexpr_binary(
+    rec: &mut RecExpr<CasLang>,
+    a: &Expr,
+    b: &Expr,
+    ctor: fn([Id; 2]) -> CasLang,
+) -> Id {
+    let i = to_recexpr(a, rec);
+    let j = to_recexpr(b, rec);
+    rec.add(ctor([i, j]))
 }
 
 fn to_recexpr(e: &Expr, rec: &mut RecExpr<CasLang>) -> Id {
@@ -487,58 +683,26 @@ fn to_recexpr(e: &Expr, rec: &mut RecExpr<CasLang>) -> Id {
             rec.add(CasLang::Num(n))
         }
         ExprKind::Var(s) => rec.add(CasLang::Symbol(s.as_str().into())),
-        ExprKind::Neg(a) => {
-            let i = to_recexpr(a, rec);
-            rec.add(CasLang::CNeg([i]))
-        }
-        ExprKind::Add(a, b) => {
-            let i = to_recexpr(a, rec);
-            let j = to_recexpr(b, rec);
-            rec.add(CasLang::CAdd([i, j]))
-        }
-        ExprKind::Mul(a, b) => {
-            let i = to_recexpr(a, rec);
-            let j = to_recexpr(b, rec);
-            rec.add(CasLang::CMul([i, j]))
-        }
-        ExprKind::Div(a, b) => {
-            let i = to_recexpr(a, rec);
-            let j = to_recexpr(b, rec);
-            rec.add(CasLang::CDiv([i, j]))
-        }
-        ExprKind::Pow(a, b) => {
-            let i = to_recexpr(a, rec);
-            let j = to_recexpr(b, rec);
-            rec.add(CasLang::CPow([i, j]))
-        }
-        ExprKind::Sin(a) => {
-            let i = to_recexpr(a, rec);
-            rec.add(CasLang::CSin([i]))
-        }
-        ExprKind::Cos(a) => {
-            let i = to_recexpr(a, rec);
-            rec.add(CasLang::CCos([i]))
-        }
-        ExprKind::Exp(a) => {
-            let i = to_recexpr(a, rec);
-            rec.add(CasLang::CExp([i]))
-        }
-        ExprKind::Ln(a) => {
-            let i = to_recexpr(a, rec);
-            rec.add(CasLang::CLn([i]))
-        }
-        ExprKind::Tanh(a) => {
-            let i = to_recexpr(a, rec);
-            rec.add(CasLang::CTanh([i]))
-        }
-        ExprKind::Sqrt(a) => {
-            let i = to_recexpr(a, rec);
-            rec.add(CasLang::CSqrt([i]))
-        }
-        ExprKind::Abs(a) => {
-            let i = to_recexpr(a, rec);
-            rec.add(CasLang::CAbs([i]))
-        }
+        ExprKind::Neg(a) => recexpr_unary(rec, a, CasLang::CNeg),
+        ExprKind::Add(a, b) => recexpr_binary(rec, a, b, CasLang::CAdd),
+        ExprKind::Mul(a, b) => recexpr_binary(rec, a, b, CasLang::CMul),
+        ExprKind::Div(a, b) => recexpr_binary(rec, a, b, CasLang::CDiv),
+        ExprKind::Pow(a, b) => recexpr_binary(rec, a, b, CasLang::CPow),
+        ExprKind::Sin(a) => recexpr_unary(rec, a, CasLang::CSin),
+        ExprKind::Cos(a) => recexpr_unary(rec, a, CasLang::CCos),
+        ExprKind::Exp(a) => recexpr_unary(rec, a, CasLang::CExp),
+        ExprKind::Ln(a) => recexpr_unary(rec, a, CasLang::CLn),
+        ExprKind::Tanh(a) => recexpr_unary(rec, a, CasLang::CTanh),
+        ExprKind::Sqrt(a) => recexpr_unary(rec, a, CasLang::CSqrt),
+        ExprKind::Abs(a) => recexpr_unary(rec, a, CasLang::CAbs),
+        ExprKind::Asin(a) => recexpr_unary(rec, a, CasLang::CAsin),
+        ExprKind::Acos(a) => recexpr_unary(rec, a, CasLang::CAcos),
+        ExprKind::Atan(a) => recexpr_unary(rec, a, CasLang::CAtan),
+        ExprKind::Sinh(a) => recexpr_unary(rec, a, CasLang::CSinh),
+        ExprKind::Cosh(a) => recexpr_unary(rec, a, CasLang::CCosh),
+        ExprKind::Asinh(a) => recexpr_unary(rec, a, CasLang::CAsinh),
+        ExprKind::Acosh(a) => recexpr_unary(rec, a, CasLang::CAcosh),
+        ExprKind::Atanh(a) => recexpr_unary(rec, a, CasLang::CAtanh),
     }
 }
 
@@ -558,6 +722,14 @@ fn from_recexpr(rec: &RecExpr<CasLang>, id: Id) -> Expr {
         CasLang::CTanh([a]) => Expr::tanh(&from_recexpr(rec, *a)),
         CasLang::CSqrt([a]) => Expr::sqrt(&from_recexpr(rec, *a)),
         CasLang::CAbs([a]) => Expr::abs(&from_recexpr(rec, *a)),
+        CasLang::CAsin([a]) => Expr::asin(&from_recexpr(rec, *a)),
+        CasLang::CAcos([a]) => Expr::acos(&from_recexpr(rec, *a)),
+        CasLang::CAtan([a]) => Expr::atan(&from_recexpr(rec, *a)),
+        CasLang::CSinh([a]) => Expr::sinh(&from_recexpr(rec, *a)),
+        CasLang::CCosh([a]) => Expr::cosh(&from_recexpr(rec, *a)),
+        CasLang::CAsinh([a]) => Expr::asinh(&from_recexpr(rec, *a)),
+        CasLang::CAcosh([a]) => Expr::acosh(&from_recexpr(rec, *a)),
+        CasLang::CAtanh([a]) => Expr::atanh(&from_recexpr(rec, *a)),
         // Residual diff node: fall back to tree-based differentiation
         CasLang::CDiff([a, x]) => {
             let inner = from_recexpr(rec, *a);
@@ -568,6 +740,15 @@ fn from_recexpr(rec: &RecExpr<CasLang>, id: Id) -> Expr {
             diff(&inner, &var_name)
         }
     }
+}
+
+fn saturate(rec: &RecExpr<CasLang>) -> Expr {
+    let runner = Runner::<CasLang, ConstFold, ()>::default()
+        .with_expr(rec)
+        .run(&cas_rules());
+    let extractor = egg::Extractor::new(&runner.egraph, egg::AstSize);
+    let (_cost, best) = extractor.find_best(runner.roots[0]);
+    from_recexpr(&best, Id::from(best.as_ref().len() - 1))
 }
 
 // ---------------------------------------------------------------------------
@@ -584,12 +765,7 @@ pub fn diff_simplify(expr: &Expr, var: &str) -> Expr {
     let expr_id = to_recexpr(expr, &mut rec);
     let var_id = rec.add(CasLang::Symbol(var.into()));
     rec.add(CasLang::CDiff([expr_id, var_id]));
-    let runner = Runner::<CasLang, ConstFold, ()>::default()
-        .with_expr(&rec)
-        .run(&cas_rules());
-    let extractor = egg::Extractor::new(&runner.egraph, egg::AstSize);
-    let (_cost, best) = extractor.find_best(runner.roots[0]);
-    from_recexpr(&best, Id::from(best.as_ref().len() - 1))
+    saturate(&rec)
 }
 
 /// Simplify an expression via equality saturation (e-graph rewriting).
@@ -597,12 +773,7 @@ pub fn diff_simplify(expr: &Expr, var: &str) -> Expr {
 pub fn simplify(expr: &Expr) -> Expr {
     let mut rec = RecExpr::default();
     to_recexpr(expr, &mut rec);
-    let runner = Runner::<CasLang, ConstFold, ()>::default()
-        .with_expr(&rec)
-        .run(&cas_rules());
-    let extractor = egg::Extractor::new(&runner.egraph, egg::AstSize);
-    let (_cost, best) = extractor.find_best(runner.roots[0]);
-    from_recexpr(&best, Id::from(best.as_ref().len() - 1))
+    saturate(&rec)
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +800,14 @@ pub fn eval(expr: &Expr, vars: &HashMap<&str, f64>) -> Result<f64> {
         ExprKind::Tanh(a) => Ok(eval(a, vars)?.tanh()),
         ExprKind::Sqrt(a) => Ok(eval(a, vars)?.sqrt()),
         ExprKind::Abs(a) => Ok(eval(a, vars)?.abs()),
+        ExprKind::Asin(a) => Ok(eval(a, vars)?.asin()),
+        ExprKind::Acos(a) => Ok(eval(a, vars)?.acos()),
+        ExprKind::Atan(a) => Ok(eval(a, vars)?.atan()),
+        ExprKind::Sinh(a) => Ok(eval(a, vars)?.sinh()),
+        ExprKind::Cosh(a) => Ok(eval(a, vars)?.cosh()),
+        ExprKind::Asinh(a) => Ok(eval(a, vars)?.asinh()),
+        ExprKind::Acosh(a) => Ok(eval(a, vars)?.acosh()),
+        ExprKind::Atanh(a) => Ok(eval(a, vars)?.atanh()),
     }
 }
 
@@ -646,7 +825,8 @@ pub fn eval_tensor<T: Scalar, B: Backend>(
     match &**expr {
         ExprKind::Var(s) => vars
             .get(s.as_str())
-            .map(|t| (*t).clone())
+            .copied()
+            .cloned()
             .ok_or_else(|| Error::eval(format!("unbound variable: {s}"))),
 
         ExprKind::Lit(v) => {
@@ -688,6 +868,17 @@ pub fn eval_tensor<T: Scalar, B: Backend>(
         ExprKind::Tanh(a) => Ok(eval_tensor(a, vars)?.tanh()),
         ExprKind::Sqrt(a) => Ok(eval_tensor(a, vars)?.sqrt()),
         ExprKind::Abs(a) => Ok(eval_tensor(a, vars)?.abs()),
+        // Inverse trig/hyperbolic: not yet available on Tensor; fall back to element-wise map.
+        ExprKind::Asin(_)
+        | ExprKind::Acos(_)
+        | ExprKind::Atan(_)
+        | ExprKind::Sinh(_)
+        | ExprKind::Cosh(_)
+        | ExprKind::Asinh(_)
+        | ExprKind::Acosh(_)
+        | ExprKind::Atanh(_) => {
+            Err(Error::eval("inverse trig/hyperbolic functions not yet supported in eval_tensor"))
+        }
     }
 }
 
@@ -715,10 +906,95 @@ fn infer_shape<T: Scalar, B: Backend>(
         | ExprKind::Ln(a)
         | ExprKind::Tanh(a)
         | ExprKind::Sqrt(a)
-        | ExprKind::Abs(a) => infer_shape(a, vars),
+        | ExprKind::Abs(a)
+        | ExprKind::Asin(a)
+        | ExprKind::Acos(a)
+        | ExprKind::Atan(a)
+        | ExprKind::Sinh(a)
+        | ExprKind::Cosh(a)
+        | ExprKind::Asinh(a)
+        | ExprKind::Acosh(a)
+        | ExprKind::Atanh(a) => infer_shape(a, vars),
 
         ExprKind::Add(a, b) | ExprKind::Mul(a, b) | ExprKind::Div(a, b) | ExprKind::Pow(a, b) => {
             infer_shape(a, vars).or_else(|_| infer_shape(b, vars))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Substitution
+// ---------------------------------------------------------------------------
+
+/// Substitute all occurrences of variable `var` with `replacement` in `expr`.
+///
+/// Recursively walks the expression tree, replacing `Var(name)` nodes where
+/// `name == var` with a clone of `replacement`. All other nodes are rebuilt.
+#[must_use]
+pub fn substitute(expr: &Expr, var: &str, replacement: &Expr) -> Expr {
+    match &**expr {
+        ExprKind::Var(s) if s == var => replacement.clone(),
+        ExprKind::Var(_) | ExprKind::Lit(_) => expr.clone(),
+        ExprKind::Neg(a) => -&substitute(a, var, replacement),
+        ExprKind::Add(a, b) => {
+            &substitute(a, var, replacement) + &substitute(b, var, replacement)
+        }
+        ExprKind::Mul(a, b) => {
+            &substitute(a, var, replacement) * &substitute(b, var, replacement)
+        }
+        ExprKind::Div(a, b) => {
+            &substitute(a, var, replacement) / &substitute(b, var, replacement)
+        }
+        ExprKind::Pow(a, b) => {
+            Expr::pow(&substitute(a, var, replacement), &substitute(b, var, replacement))
+        }
+        ExprKind::Sin(a) => Expr::sin(&substitute(a, var, replacement)),
+        ExprKind::Cos(a) => Expr::cos(&substitute(a, var, replacement)),
+        ExprKind::Exp(a) => Expr::exp(&substitute(a, var, replacement)),
+        ExprKind::Ln(a) => Expr::ln(&substitute(a, var, replacement)),
+        ExprKind::Tanh(a) => Expr::tanh(&substitute(a, var, replacement)),
+        ExprKind::Sqrt(a) => Expr::sqrt(&substitute(a, var, replacement)),
+        ExprKind::Abs(a) => Expr::abs(&substitute(a, var, replacement)),
+        ExprKind::Asin(a) => Expr::asin(&substitute(a, var, replacement)),
+        ExprKind::Acos(a) => Expr::acos(&substitute(a, var, replacement)),
+        ExprKind::Atan(a) => Expr::atan(&substitute(a, var, replacement)),
+        ExprKind::Sinh(a) => Expr::sinh(&substitute(a, var, replacement)),
+        ExprKind::Cosh(a) => Expr::cosh(&substitute(a, var, replacement)),
+        ExprKind::Asinh(a) => Expr::asinh(&substitute(a, var, replacement)),
+        ExprKind::Acosh(a) => Expr::acosh(&substitute(a, var, replacement)),
+        ExprKind::Atanh(a) => Expr::atanh(&substitute(a, var, replacement)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gradient / Jacobian / Hessian
+// ---------------------------------------------------------------------------
+
+/// Compute the gradient of `expr` with respect to each variable in `vars`.
+///
+/// Returns a vector of partial derivatives: `result[i] = d(expr)/d(vars[i])`.
+#[must_use]
+pub fn gradient(expr: &Expr, vars: &[&str]) -> Vec<Expr> {
+    vars.iter().map(|v| diff(expr, v)).collect()
+}
+
+/// Compute the Jacobian matrix of `exprs` with respect to `vars`.
+///
+/// Returns `result[i][j] = d(exprs[i]) / d(vars[j])`.
+#[must_use]
+pub fn jacobian(exprs: &[Expr], vars: &[&str]) -> Vec<Vec<Expr>> {
+    exprs.iter().map(|e| gradient(e, vars)).collect()
+}
+
+/// Compute the Hessian matrix of `expr` with respect to `vars`.
+///
+/// Returns `result[i][j] = d²(expr) / (d(vars[i]) d(vars[j]))`.
+#[must_use]
+pub fn hessian(expr: &Expr, vars: &[&str]) -> Vec<Vec<Expr>> {
+    vars.iter()
+        .map(|vi| {
+            let di = diff(expr, vi);
+            vars.iter().map(|vj| diff(&di, vj)).collect()
+        })
+        .collect()
 }

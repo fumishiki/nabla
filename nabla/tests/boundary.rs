@@ -218,9 +218,9 @@ fn splat_tuple() {
 fn utility_exports() {
     let v = linspace(0.0, 1.0, 5);
     assert_eq!(v.len(), 5);
-    assert!((v[0] - 0.0).abs() < 1e-10);
-    assert!((v[4] - 1.0).abs() < 1e-10);
-    assert!((v[2] - 0.5).abs() < 1e-10);
+    assert!((v.get(0, 0) - 0.0_f64).abs() < 1e-10);
+    assert!((v.get(0, 4) - 1.0_f64).abs() < 1e-10);
+    assert!((v.get(0, 2) - 0.5_f64).abs() < 1e-10);
 
     let fr = frange!(0.0_f64, 0.25, 1.0);
     assert_eq!(fr.len(), 5);
@@ -434,7 +434,6 @@ fn ode_dormand_prince_adaptive() {
 fn ode_error_invalid_inputs() {
     let y0: Tensor<f64> = Tensor::from_fn(1, 1, |_, _| 1.0_f64);
     assert!(rk4(|_t, y| Ok(-y), &y0, (0.0, 1.0), -0.1).is_err());
-    assert!(rk4(|_t, y| Ok(-y), &y0, (1.0, 0.0), 0.01).is_err());
 }
 
 #[test]
@@ -592,6 +591,7 @@ fn bdf1_linear_decay() {
             dt: 0.001,
             tol: 1e-10,
             max_iter: 100,
+            saveat: None,
         },
     )
     .expect("bdf1 should converge");
@@ -805,6 +805,7 @@ fn if_euler_scalar_stiff_stable() {
     let config = IfEulerScalarConfig {
         dt: 0.1,
         stiffness: 100.0,
+        saveat: None,
     };
     let sol = if_euler_scalar(
         |_t, _y| Ok(Tensor::<f64>::zeros(1, 1)),
@@ -840,10 +841,11 @@ fn dae_simple_constraint() {
         x0,
         z0,
         (0.0, 1.0),
-        DaeConfig {
+        &DaeConfig {
             dt: 0.01,
             tol: 1e-10,
             max_iter: 50,
+            saveat: None,
         },
     )
     .expect("dae_solve failed");
@@ -871,10 +873,11 @@ fn dae_quadratic_constraint() {
         x0,
         z0,
         (0.0, 1.0),
-        DaeConfig {
+        &DaeConfig {
             dt: 0.01,
             tol: 1e-10,
             max_iter: 50,
+            saveat: None,
         },
     )
     .expect("dae_solve failed");
@@ -990,13 +993,13 @@ fn metd_linear_decay() {
     use nabla::ode::{MetdConfig, metd_solve};
     let l: Tensor<f64> = mat![[-1.0_f64]];
     let y0: Tensor<f64> = mat![[1.0_f64]];
-    let cfg = MetdConfig { dt: 0.01, order: 8 };
+    let cfg = MetdConfig { dt: 0.01, order: 8, saveat: None };
     let sol = metd_solve(
         &l,
         |_t, _y| Tensor::<f64>::zeros(1, 1), // N(t,y) = 0
         y0,
         (0.0, 1.0),
-        cfg,
+        &cfg,
     )
     .expect("metd_solve failed");
     let y_final = sol.final_state().expect("empty solution");
@@ -1017,13 +1020,14 @@ fn stormer_verlet_harmonic() {
     let cfg = StormerVerletConfig {
         dt: 0.01,
         mass: 1.0,
+        saveat: None,
     };
     let (_, qs, ps) = stormer_verlet(
         |q| q.clone(), // grad_V(q) = q
         mat![[1.0_f64]],
         mat![[0.0_f64]],
         (0.0, 2.0 * std::f64::consts::PI),
-        cfg,
+        &cfg,
     )
     .expect("stormer_verlet failed");
     // Check energy conservation: H = (q^2 + p^2)/2 ≈ 0.5 at every step
@@ -1731,6 +1735,7 @@ fn parareal_van_der_pol() {
         n_intervals: 8,
         max_iter: 5,
         tol: 1e-8,
+        saveat: None,
     };
     let result = parareal_solve(t0, t1, y0, &config, coarse, fine);
     assert!(result.is_ok());

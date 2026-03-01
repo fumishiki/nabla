@@ -30,8 +30,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("diff_simplify(f, x) = {df2}");
 
     // Evaluate at x = 1.0
-    let mut vars = HashMap::new();
-    vars.insert("x", 1.0);
+    let vars = HashMap::from([("x", 1.0)]);
     let val = eval(&f, &vars)?;
     let dval = eval(&df_simple, &vars)?;
     println!("f(1.0) = {val:.6}");

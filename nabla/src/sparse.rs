@@ -4,7 +4,7 @@
 // a minimal compilable surface so that linalg.rs and other modules can build.
 
 use core::fmt;
-use core::ops::Mul;
+use core::ops::{Add, Mul};
 
 use crate::linalg::{LinalgExt, Side};
 use nabla_core::backend::Cpu;
@@ -15,6 +15,31 @@ use nabla_core::tensor::Tensor;
 #[inline]
 fn sparse_error<T: fmt::Display>(op: &'static str, shape: (usize, usize), err: T) -> Error {
     Error::invalid(format!("{op} failed for sparse matrix {shape:?}: {err}"))
+}
+
+#[inline]
+fn check_triplet_in_bounds(
+    op: &'static str,
+    nrows: usize,
+    ncols: usize,
+    row: usize,
+    col: usize,
+) -> Result<()> {
+    if row >= nrows {
+        return Err(sparse_error(
+            op,
+            (nrows, ncols),
+            format!("row index {row} out of bounds"),
+        ));
+    }
+    if col >= ncols {
+        return Err(sparse_error(
+            op,
+            (nrows, ncols),
+            format!("col index {col} out of bounds"),
+        ));
+    }
+    Ok(())
 }
 
 #[inline]
@@ -101,26 +126,13 @@ impl<T: Scalar> SparseMatrix<T> {
         ncols: usize,
         entries: &[Triplet<T>],
     ) -> Result<Self> {
-        Self::build_csc(nrows, ncols, entries)
+        Self::try_new_from_triplets(nrows, ncols, entries)
     }
 
     fn build_csc(nrows: usize, ncols: usize, entries: &[Triplet<T>]) -> Result<Self> {
         // Note: only accessible through concrete type impls
         for e in entries {
-            if e.row >= nrows {
-                return Err(sparse_error(
-                    "build_csc",
-                    (nrows, ncols),
-                    format!("row index {} out of bounds", e.row),
-                ));
-            }
-            if e.col >= ncols {
-                return Err(sparse_error(
-                    "build_csc",
-                    (nrows, ncols),
-                    format!("col index {} out of bounds", e.col),
-                ));
-            }
+            check_triplet_in_bounds("build_csc", nrows, ncols, e.row, e.col)?;
         }
 
         // Count entries per column
@@ -185,6 +197,15 @@ impl<T: Scalar> SparseMatrix<T> {
         self.values.len()
     }
 
+    /// Visit all stored entries as `(row, col, value)`.
+    fn for_each_entry(&self, mut f: impl FnMut(usize, usize, T)) {
+        for j in 0..self.ncols {
+            for p in self.col_ptr[j]..self.col_ptr[j + 1] {
+                f(self.row_idx[p], j, self.values[p]);
+            }
+        }
+    }
+
     /// Multiply `self × dense_rhs` into a dense tensor.
     ///
     /// # Errors
@@ -196,28 +217,141 @@ impl<T: Scalar> SparseMatrix<T> {
         let m = self.nrows;
         let n = rhs.ncols();
         let mut out = Tensor::zeros(m, n);
-        for j in 0..self.ncols {
-            for p in self.col_ptr[j]..self.col_ptr[j + 1] {
-                let i = self.row_idx[p];
-                let a_ij = self.values[p];
-                for k in 0..n {
-                    let old = out.get(i, k);
-                    out.set(i, k, old + a_ij * rhs.get(j, k));
-                }
+        self.for_each_entry(|i, j, a_ij| {
+            for k in 0..n {
+                let old = out.get(i, k);
+                out.set(i, k, old + a_ij * rhs.get(j, k));
             }
-        }
+        });
         Ok(out)
     }
 
     fn to_dense(&self) -> Tensor<T, Cpu> {
         let mut out = Tensor::zeros(self.nrows, self.ncols);
-        for j in 0..self.ncols {
-            for p in self.col_ptr[j]..self.col_ptr[j + 1] {
-                let i = self.row_idx[p];
-                out.set(i, j, self.values[p]);
-            }
-        }
+        self.for_each_entry(|i, j, val| out.set(i, j, val));
         out
+    }
+
+    /// Transpose: swap row/col indices and rebuild as CSC.
+    ///
+    /// The result has shape `(ncols, nrows)`.
+    #[must_use]
+    pub fn transpose(&self) -> Self {
+        let mut triplets = Vec::with_capacity(self.nnz());
+        self.for_each_entry(|i, j, val| {
+            triplets.push(Triplet::new(j, i, val));
+        });
+        // Transposed dimensions: rows become cols and vice versa.
+        // build_csc cannot fail here because indices are guaranteed in bounds.
+        Self::build_csc(self.ncols, self.nrows, &triplets)
+            .unwrap_or_else(|_| {
+                // Indices originate from a valid matrix, so this is unreachable.
+                Self {
+                    nrows: self.ncols,
+                    ncols: self.nrows,
+                    col_ptr: vec![0; self.nrows + 1],
+                    row_idx: Vec::new(),
+                    values: Vec::new(),
+                }
+            })
+    }
+
+    /// Short alias for [`transpose`](Self::transpose).
+    #[must_use]
+    #[inline]
+    pub fn t(&self) -> Self {
+        self.transpose()
+    }
+}
+
+/// Create a sparse identity matrix of size `n x n`.
+///
+/// # Errors
+/// Returns `Err` if construction fails (should not happen for identity).
+pub fn speye<T: Scalar>(n: usize) -> Result<SparseMatrix<T>> {
+    let entries: Vec<(usize, usize, T)> = (0..n).map(|i| (i, i, T::one())).collect();
+    sparse(n, n, &entries)
+}
+
+impl<T: Scalar> SparseMatrix<T> {
+    /// Sparse-sparse addition via COO merge.
+    ///
+    /// Both matrices must have the same shape.
+    ///
+    /// # Errors
+    /// Returns `Err` when shapes do not match.
+    pub fn add(&self, other: &Self) -> Result<Self> {
+        if self.nrows != other.nrows || self.ncols != other.ncols {
+            return Err(Error::mismatch(self.shape(), other.shape()));
+        }
+        // Collect all triplets from both matrices.
+        let capacity = self.nnz() + other.nnz();
+        let mut triplets = Vec::with_capacity(capacity);
+        self.for_each_entry(|i, j, val| triplets.push(Triplet::new(i, j, val)));
+        other.for_each_entry(|i, j, val| triplets.push(Triplet::new(i, j, val)));
+        // build_csc will place duplicate (i,j) entries adjacent; they accumulate
+        // naturally when iterated by matmul_dense / to_dense. For a clean
+        // representation we merge duplicates here.
+        Self::build_csc_merged(self.nrows, self.ncols, &triplets)
+    }
+
+    /// Build CSC from triplets, summing duplicate (row, col) entries.
+    fn build_csc_merged(nrows: usize, ncols: usize, entries: &[Triplet<T>]) -> Result<Self> {
+        for e in entries {
+            check_triplet_in_bounds("sparse_add", nrows, ncols, e.row, e.col)?;
+        }
+
+        // Sort by (col, row) to group duplicates.
+        let mut sorted: Vec<Triplet<T>> = entries.to_vec();
+        sorted.sort_by(|a, b| a.col.cmp(&b.col).then(a.row.cmp(&b.row)));
+
+        // Merge duplicates.
+        let mut merged_row: Vec<usize> = Vec::with_capacity(sorted.len());
+        let mut merged_col: Vec<usize> = Vec::with_capacity(sorted.len());
+        let mut merged_val: Vec<T> = Vec::with_capacity(sorted.len());
+
+        for e in &sorted {
+            if let (Some(&last_r), Some(&last_c)) = (merged_row.last(), merged_col.last())
+                && last_r == e.row && last_c == e.col
+            {
+                if let Some(v) = merged_val.last_mut() {
+                    *v = *v + e.val;
+                }
+                continue;
+            }
+            merged_row.push(e.row);
+            merged_col.push(e.col);
+            merged_val.push(e.val);
+        }
+
+        // Build col_ptr.
+        let mut col_ptr = vec![0usize; ncols + 1];
+        for &c in &merged_col {
+            col_ptr[c + 1] += 1;
+        }
+        for j in 0..ncols {
+            col_ptr[j + 1] += col_ptr[j];
+        }
+
+        Ok(Self {
+            nrows,
+            ncols,
+            col_ptr,
+            row_idx: merged_row,
+            values: merged_val,
+        })
+    }
+}
+
+/// Sparse + sparse addition (reference + reference).
+impl<T: Scalar> Add for &SparseMatrix<T> {
+    type Output = SparseMatrix<T>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match self.add(rhs) {
+            Ok(out) => out,
+            Err(err) => panic!("nabla: sparse add failed: {err}"),
+        }
     }
 }
 
@@ -309,9 +443,8 @@ fn find_or_insert_block<S: Scalar>(
     bc: usize,
     b2: usize,
 ) -> &mut Vec<S> {
-    if let Some(idx) = map.iter().position(|&((r, c), _)| r == br && c == bc) {
-        &mut map[idx].1
-    } else {
+    let pos = map.iter().position(|((r, c), _)| *r == br && *c == bc);
+    if let Some(i) = pos { &mut map[i].1 } else {
         map.push(((br, bc), vec![S::zero(); b2]));
         let last = map.len() - 1;
         &mut map[last].1
@@ -405,18 +538,16 @@ impl<T: Scalar> BcsrMatrix<T> {
             for p in self.row_ptrs[br]..self.row_ptrs[br + 1] {
                 let bc = self.col_idxs[p];
                 let block_base = p * b * b;
+                let row_base = br * b;
+                let col_base = bc * b;
+                let row_end = (row_base + b).min(self.nrows);
+                let col_end = (col_base + b).min(self.ncols);
+
                 // B×B block at (br, bc) × corresponding rows of x
-                for lr in 0..b {
-                    let row = br * b + lr;
-                    if row >= self.nrows {
-                        break;
-                    }
-                    for lc in 0..b {
-                        let col = bc * b + lc;
-                        if col >= self.ncols {
-                            break;
-                        }
-                        let a_val = self.values[block_base + lr * b + lc];
+                for row in row_base..row_end {
+                    let row_offset = row - row_base;
+                    for col in col_base..col_end {
+                        let a_val = self.values[block_base + row_offset * b + (col - col_base)];
                         if a_val == T::zero() {
                             continue;
                         }

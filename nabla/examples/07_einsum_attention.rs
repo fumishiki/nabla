@@ -25,10 +25,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Row-wise softmax
     let exp_scores = scores.exp();
-    let softmax = Tensor::from_fn(seq, seq, |i, j| {
-        let row_sum: f64 = (0..seq).map(|c| exp_scores.get(i, c)).sum();
-        exp_scores.get(i, j) / row_sum
-    });
+    let row_sums: Vec<f64> = (0..seq)
+        .map(|i| (0..seq).map(|c| exp_scores.get(i, c)).sum())
+        .collect();
+    let softmax = Tensor::from_fn(seq, seq, |i, j| exp_scores.get(i, j) / row_sums[i]);
 
     // Attention output = softmax * V
     let out: Tensor<f64> = einsum!(o[i,j] = softmax[i,k] * v[k,j]);

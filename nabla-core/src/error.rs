@@ -1,5 +1,7 @@
-/// Convenience alias for `Result<T, Error>`.
-pub type Result<T> = core::result::Result<T, Error>;
+use core::{fmt, result};
+
+/// Convenience `Result` alias for nabla operations.
+pub type Result<T> = result::Result<T, Error>;
 
 /// Errors that can occur in nabla operations.
 #[derive(Debug)]
@@ -19,8 +21,8 @@ pub enum Error {
     EvalError(String),
 }
 
-impl core::fmt::Display for Error {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ShapeMismatch { expected, got } => write!(
                 f,

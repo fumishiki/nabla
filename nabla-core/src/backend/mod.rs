@@ -1,122 +1,6 @@
-// backend.rs — Sealed Backend trait + Cpu implementation backed by CpuStorage (row-major Vec<T>).
-//
-// Element storage is a plain Vec<T> with
-// row-major layout: data[r * ncols + c].
-//
-// matmul_into uses a tiled i-k-j loop (TILE=64) for cache-friendly access.
+// backend/ — Sealed Backend trait + backend implementations.
 
 use crate::scalar::Scalar;
-use rayon::prelude::*;
-
-// Tiled matmul tile size — chosen to fit in L1 cache for f64.
-const TILE: usize = 64;
-
-/// Row-major owned storage for a 2-D CPU matrix.
-pub struct CpuStorage<T: Scalar> {
-    data: Vec<T>,
-    nrows: usize,
-    ncols: usize,
-}
-
-// SAFETY: T: Send + Sync (required by Scalar supertrait).
-unsafe impl<T: Scalar> Send for CpuStorage<T> {}
-unsafe impl<T: Scalar> Sync for CpuStorage<T> {}
-
-impl<T: Scalar> CpuStorage<T> {
-    #[inline]
-    fn new_zeroed(nrows: usize, ncols: usize) -> Self {
-        Self {
-            data: vec![T::zero(); nrows * ncols],
-            nrows,
-            ncols,
-        }
-    }
-
-    #[inline]
-    fn idx(&self, row: usize, col: usize) -> usize {
-        row * self.ncols + col
-    }
-
-    #[inline]
-    fn get_unchecked(&self, row: usize, col: usize) -> T {
-        self.data[self.idx(row, col)]
-    }
-
-    #[inline]
-    fn set_unchecked(&mut self, row: usize, col: usize, val: T) {
-        let idx = self.idx(row, col);
-        self.data[idx] = val;
-    }
-
-    #[inline]
-    fn map_elem(&self, f: impl Fn(T) -> T + Send + Sync) -> Self {
-        Self {
-            data: self.data.par_iter().map(|&x| f(x)).collect(),
-            nrows: self.nrows,
-            ncols: self.ncols,
-        }
-    }
-
-    #[inline]
-    fn zip_map(&self, other: &Self, f: impl Fn(T, T) -> T + Send + Sync) -> Self {
-        Self {
-            data: self
-                .data
-                .par_iter()
-                .zip(other.data.par_iter())
-                .map(|(&x, &y)| f(x, y))
-                .collect(),
-            nrows: self.nrows,
-            ncols: self.ncols,
-        }
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn data_slice(&self) -> &[T] {
-        &self.data
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn get_ref(&self, row: usize, col: usize) -> &T {
-        &self.data[self.idx(row, col)]
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn get_mut(&mut self, row: usize, col: usize) -> &mut T {
-        let idx = self.idx(row, col);
-        &mut self.data[idx]
-    }
-}
-
-// Internal macro: generate a Backend unary method that maps over CpuStorage elements.
-macro_rules! cpu_unary_op {
-    ($fn_name:ident, |$x:ident| $body:expr) => {
-        #[inline]
-        fn $fn_name<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-            a.map_elem(|$x| $body)
-        }
-    };
-}
-
-// Batch version: define multiple unary ops via Scalar::math_* methods.
-macro_rules! cpu_unary_ops {
-    ($($fn_name:ident => $method:ident),* $(,)?) => {
-        $(cpu_unary_op!($fn_name, |x| x.$method());)*
-    };
-}
-
-// Internal macro: generate a Backend binary method that zips two CpuStorage.
-macro_rules! cpu_binary_op {
-    ($fn_name:ident, |$x:ident, $y:ident| $body:expr) => {
-        #[inline]
-        fn $fn_name<T: Scalar>(a: &CpuStorage<T>, b: &CpuStorage<T>) -> CpuStorage<T> {
-            a.zip_map(b, |$x, $y| $body)
-        }
-    };
-}
 
 pub(crate) mod private {
     pub trait Sealed {}
@@ -151,10 +35,17 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     /// Build storage from a pre-allocated row-major `Vec<T>` (zero-copy when possible).
     #[must_use]
     fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> Self::Storage<T> {
-        let mut v = data.into_iter();
-        Self::from_fn(nrows, ncols, |_, _| {
-            v.next()
-                .expect("from_vec: data length must equal nrows * ncols")
+        let expected = nrows * ncols;
+        assert_eq!(
+            data.len(),
+            expected,
+            "from_vec: data length must equal nrows * ncols"
+        );
+        let mut i = 0usize;
+        Self::from_fn(nrows, ncols, move |_, _| {
+            let v = data[i];
+            i += 1;
+            v
         })
     }
 
@@ -163,6 +54,27 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     #[must_use]
     fn from_vec_async<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> Self::Storage<T> {
         Self::from_vec(nrows, ncols, data)
+    }
+
+    /// Non-blocking D2H transfer: copies tensor data to a `Vec<T>` using the copy stream.
+    ///
+    /// On GPU backends this records a cross-stream event so the copy stream waits
+    /// for the compute stream to finish producing the data, then performs the D2H
+    /// transfer while the compute stream continues — enabling D2H/compute overlap.
+    ///
+    /// The default implementation falls back to synchronous element-by-element read
+    /// via [`Backend::get`].  GPU backends override this for true async overlap.
+    fn to_vec_async<T: Scalar>(a: &Self::Storage<T>) -> Vec<T> {
+        let rows = Self::nrows(a);
+        let cols = Self::ncols(a);
+        let n = rows * cols;
+        let mut out = Vec::with_capacity(n);
+        for r in 0..rows {
+            for c in 0..cols {
+                out.push(Self::get(a, r, c));
+            }
+        }
+        out
     }
 
     /// Row count of `storage`.
@@ -187,6 +99,51 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
         a: &Self::Storage<T>,
         b: &Self::Storage<T>,
     );
+
+    /// Fused GEMM + epilogue activation in a single dispatch.
+    ///
+    /// `epilogue_id` selects the post-GEMM activation:
+    /// - `0` → ReLU:  `max(A @ B, 0)`
+    /// - `1` → GELU:  `gelu(A @ B)` (tanh approximation)
+    ///
+    /// The default implementation performs two passes: matmul then element-wise
+    /// activation via `from_fn`.  GPU backends (CUDA) override this with a
+    /// fused single-kernel path where available.
+    ///
+    /// Only `f32` inputs are eligible for the fused GPU path; other scalar types
+    /// always fall through to the 2-pass default.
+    fn matmul_epilogue<T: Scalar>(
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
+        epilogue_id: u8,
+    ) -> Self::Storage<T> {
+        let m = Self::nrows(a);
+        let n = Self::ncols(b);
+        let mut out = Self::zeros(m, n);
+        Self::matmul_into(&mut out, a, b);
+        // Apply activation element-wise over the matmul result.
+        let two = T::one() + T::one();
+        match epilogue_id {
+            // ReLU: (x + |x|) / 2 — avoids PartialOrd, works for all Scalar
+            0 => Self::from_fn(m, n, |r, c| {
+                let x = Self::get(&out, r, c);
+                (x + x.math_abs()) / two
+            }),
+            // GELU (tanh approximation): 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+            1 => {
+                let half = T::from_f64(0.5);
+                let k = T::from_f64(0.797_884_560_8);
+                let c = T::from_f64(0.044_715);
+                Self::from_fn(m, n, |r, col| {
+                    let x = Self::get(&out, r, col);
+                    let inner = k * (x + c * x * x * x);
+                    half * x * (T::one() + inner.math_tanh())
+                })
+            }
+            // Unknown epilogue: return plain matmul result
+            _ => out,
+        }
+    }
 
     /// Element-wise addition.
     fn add<T: Scalar>(a: &Self::Storage<T>, b: &Self::Storage<T>) -> Self::Storage<T>;
@@ -246,6 +203,39 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
 
     /// Element-wise `round(x)`.
     fn round<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `asin(x)`.
+    fn asin<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `acos(x)`.
+    fn acos<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `atan(x)`.
+    fn atan<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `atan2(a, b)`.
+    fn atan2<T: Scalar>(a: &Self::Storage<T>, b: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `sinh(x)`.
+    fn sinh<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `cosh(x)`.
+    fn cosh<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `asinh(x)`.
+    fn asinh<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `acosh(x)`.
+    fn acosh<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `atanh(x)`.
+    fn atanh<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `log2(x)`.
+    fn log2<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Element-wise `log10(x)`.
+    fn log10<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T>;
 
     /// Element-wise `x^p` for scalar exponent `p`.
     fn powf<T: Scalar>(a: &Self::Storage<T>, p: T) -> Self::Storage<T>;
@@ -403,6 +393,66 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
         reg_estimate: usize,
     ) -> Self::Storage<T>;
 
+    /// Fused map-reduce: apply an element-wise expression to every element and
+    /// reduce the result along `axis` in a single pass.
+    ///
+    /// `reduce_op`:
+    /// - `0` → sum
+    /// - `3` → mean (sum / count)
+    ///
+    /// `axis`: `0` → reduce rows → output shape `(1, ncols)`;
+    ///         `1` → reduce columns → output shape `(nrows, 1)`.
+    ///
+    /// The default implementation runs `fuse_launch` (element-wise) followed by
+    /// `sum_axis1` / a transpose + `sum_axis1` for axis=0, keeping correctness
+    /// on all backends.  GPU backends override for a true single-kernel path.
+    #[allow(clippy::too_many_arguments)]
+    fn fuse_reduce_launch<T: Scalar>(
+        inputs: &[*const u8],
+        nrows: usize,
+        ncols: usize,
+        cpu_fn: impl FnMut(usize, usize) -> T,
+        gpu_expr: &str,
+        kernel_hash: &str,
+        n_inputs: usize,
+        reduce_op: u8,
+        axis: u8,
+    ) -> Self::Storage<T> {
+        // Default: two-pass fallback (element-wise then reduce).
+        let intermediate = Self::fuse_launch::<T>(
+            inputs,
+            nrows,
+            ncols,
+            cpu_fn,
+            gpu_expr,
+            kernel_hash,
+            n_inputs,
+            0,
+        );
+        let summed = match axis {
+            0 => {
+                // axis=0: reduce rows → (1, ncols). Transpose, sum_axis1, transpose back.
+                let t = Self::transpose(&intermediate);
+                let s = Self::sum_axis1(&t);
+                Self::transpose(&s)
+            }
+            _ => Self::sum_axis1(&intermediate),
+        };
+        match reduce_op {
+            // mean: divide by the count of reduced elements
+            3 => {
+                let count = match axis {
+                    0 => nrows,
+                    _ => ncols,
+                };
+                let inv_n = T::from_f64(1.0 / count as f64);
+                Self::scale(&summed, inv_n)
+            }
+            // sum (0) or unknown
+            _ => summed,
+        }
+    }
+
     /// Launch a mega-fused kernel: multiple element-wise operations in a
     /// single GPU kernel launch, eliminating inter-op launch overhead.
     ///
@@ -412,7 +462,7 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     /// GPU backends emit a single mega-kernel; CPU runs each `cpu_fn`
     /// independently via `from_fn`.
     fn mega_fuse_launch<'a, T: Scalar>(
-        ops: &[(Vec<*const u8>, String, usize)],
+        ops: &[(Vec<*const u8>, String, usize, bool)],
         nrows: usize,
         ncols: usize,
         cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
@@ -1020,436 +1070,8 @@ pub trait Backend: private::Sealed + Send + Sync + 'static {
     }
 }
 
-/// CPU backend — row-major `Vec<T>` storage, no external BLAS dependencies.
-pub struct Cpu;
-
-// Shared helpers for CPU reduction ops.
-#[inline]
-fn cpu_fold_first<T: Scalar>(a: &CpuStorage<T>, f: impl Fn(T, T) -> T) -> T {
-    assert!(!a.data.is_empty(), "reduction on empty matrix");
-    let init = a.data[0];
-    a.data.iter().skip(1).fold(init, |acc, &x| f(acc, x))
-}
-
-#[inline]
-fn cpu_argext<T: Scalar>(a: &CpuStorage<T>, is_better: impl Fn(T, T) -> bool) -> (usize, usize) {
-    assert!(!a.data.is_empty(), "argext on empty matrix");
-    let mut best = 0usize;
-    for i in 1..a.data.len() {
-        if is_better(a.data[i], a.data[best]) {
-            best = i;
-        }
-    }
-    (best / a.ncols, best % a.ncols)
-}
-
-impl private::Sealed for Cpu {}
-
-impl Backend for Cpu {
-    type Storage<T: Scalar> = CpuStorage<T>;
-
-    #[inline]
-    fn zeros<T: Scalar>(nrows: usize, ncols: usize) -> CpuStorage<T> {
-        CpuStorage::new_zeroed(nrows, ncols)
-    }
-
-    #[inline]
-    fn from_fn<T: Scalar>(
-        nrows: usize,
-        ncols: usize,
-        mut f: impl FnMut(usize, usize) -> T,
-    ) -> CpuStorage<T> {
-        let mut data = Vec::with_capacity(nrows * ncols);
-        for r in 0..nrows {
-            for c in 0..ncols {
-                data.push(f(r, c));
-            }
-        }
-        CpuStorage { data, nrows, ncols }
-    }
-
-    #[inline]
-    fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> CpuStorage<T> {
-        CpuStorage { data, nrows, ncols }
-    }
-
-    #[inline]
-    fn nrows<T: Scalar>(storage: &CpuStorage<T>) -> usize {
-        storage.nrows
-    }
-
-    #[inline]
-    fn ncols<T: Scalar>(storage: &CpuStorage<T>) -> usize {
-        storage.ncols
-    }
-
-    #[inline]
-    fn get<T: Scalar>(storage: &CpuStorage<T>, row: usize, col: usize) -> T {
-        storage.get_unchecked(row, col)
-    }
-
-    #[inline]
-    fn set<T: Scalar>(storage: &mut CpuStorage<T>, row: usize, col: usize, val: T) {
-        storage.set_unchecked(row, col, val);
-    }
-
-    #[allow(clippy::many_single_char_names)]
-    fn matmul_into<T: Scalar>(out: &mut CpuStorage<T>, a: &CpuStorage<T>, b: &CpuStorage<T>) {
-        let (m, k, n) = (a.nrows, a.ncols, b.ncols);
-        // Zero + parallel tiled i-k-j loop.
-        out.data.fill(T::zero());
-        let a_data = &a.data;
-        let b_data = &b.data;
-        out.data
-            .par_chunks_mut(TILE * n)
-            .enumerate()
-            .for_each(|(tile_idx, out_chunk)| {
-                let ii = tile_idx * TILE;
-                let i_end = (ii + TILE).min(m);
-                let rows = i_end - ii;
-                let chunk = &mut out_chunk[..rows * n];
-                let mut kk = 0;
-                while kk < k {
-                    let k_end = (kk + TILE).min(k);
-                    let mut jj = 0;
-                    while jj < n {
-                        let j_end = (jj + TILE).min(n);
-                        for i in 0..rows {
-                            let a_row = &a_data[(ii + i) * k..(ii + i + 1) * k];
-                            let out_row = &mut chunk[i * n..(i + 1) * n];
-                            #[allow(clippy::needless_range_loop)]
-                            for p in kk..k_end {
-                                let a_ip = a_row[p];
-                                let b_row = &b_data[p * n..(p + 1) * n];
-                                for j in jj..j_end {
-                                    out_row[j] = out_row[j] + a_ip * b_row[j];
-                                }
-                            }
-                        }
-                        jj += TILE;
-                    }
-                    kk += TILE;
-                }
-            });
-    }
-
-    cpu_binary_op!(add, |x, y| x + y);
-
-    cpu_binary_op!(sub, |x, y| x - y);
-
-    cpu_unary_op!(neg, |x| -x);
-
-    #[inline]
-    fn transpose<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-        const BLK: usize = 64;
-        let (rows, cols) = (a.nrows, a.ncols);
-        let mut out = CpuStorage::new_zeroed(cols, rows);
-        let mut i0 = 0;
-        while i0 < rows {
-            let imax = (i0 + BLK).min(rows);
-            let mut j0 = 0;
-            while j0 < cols {
-                let jmax = (j0 + BLK).min(cols);
-                for i in i0..imax {
-                    for j in j0..jmax {
-                        out.data[j * rows + i] = a.data[i * cols + j];
-                    }
-                }
-                j0 += BLK;
-            }
-            i0 += BLK;
-        }
-        out
-    }
-
-    #[inline]
-    fn scale<T: Scalar>(a: &CpuStorage<T>, s: T) -> CpuStorage<T> {
-        a.map_elem(|x| x * s)
-    }
-
-    #[inline]
-    fn clone_storage<T: Scalar>(storage: &CpuStorage<T>) -> CpuStorage<T> {
-        CpuStorage {
-            data: storage.data.clone(),
-            nrows: storage.nrows,
-            ncols: storage.ncols,
-        }
-    }
-
-    cpu_unary_ops!(
-        exp   => math_exp,
-        ln    => math_ln,
-        log1p => math_log1p,
-        sin   => math_sin,
-        cos   => math_cos,
-        tanh  => math_tanh,
-        sqrt  => math_sqrt,
-        abs   => math_abs,
-        recip => math_recip,
-        erf   => math_erf,
-        ceil  => math_ceil,
-        floor => math_floor,
-        round => math_round,
-    );
-
-    #[inline]
-    fn powf<T: Scalar>(a: &CpuStorage<T>, p: T) -> CpuStorage<T> {
-        a.map_elem(|x| x.math_powf(p))
-    }
-
-    cpu_binary_op!(emul, |x, y| x.math_mul(y));
-
-    cpu_binary_op!(ediv, |x, y| x.math_div(y));
-
-    #[inline]
-    fn sum_all<T: Scalar>(a: &CpuStorage<T>) -> T {
-        a.data
-            .par_iter()
-            .fold(|| T::zero(), |acc, &x| acc.reduction_add(x))
-            .reduce(|| T::zero(), crate::scalar::ReductionOps::reduction_add)
-    }
-
-    #[inline]
-    fn max_all<T: Scalar>(a: &CpuStorage<T>) -> T {
-        cpu_fold_first(a, crate::scalar::ReductionOps::reduction_max)
-    }
-
-    #[inline]
-    fn min_all<T: Scalar>(a: &CpuStorage<T>) -> T {
-        cpu_fold_first(a, crate::scalar::ReductionOps::reduction_min)
-    }
-
-    #[inline]
-    fn argmax_all<T: Scalar>(a: &CpuStorage<T>) -> (usize, usize) {
-        cpu_argext(a, crate::scalar::ReductionOps::reduction_gt)
-    }
-
-    #[inline]
-    fn argmin_all<T: Scalar>(a: &CpuStorage<T>) -> (usize, usize) {
-        cpu_argext(a, |cur, best| best.reduction_gt(cur))
-    }
-
-    // --- CPU activation ops ---
-
-    fn silu<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-        a.map_elem(|x| {
-            let s = T::one() / (T::one() + (T::zero() - x).math_exp());
-            x * s
-        })
-    }
-
-    fn mish<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-        a.map_elem(|x| {
-            let sp = (T::one() + x.math_exp()).math_ln();
-            x * sp.math_tanh()
-        })
-    }
-
-    fn leaky_relu<T: Scalar>(a: &CpuStorage<T>, negative_slope: T) -> CpuStorage<T> {
-        a.map_elem(|x| {
-            let ax = x.math_abs();
-            let half = T::from_f64(0.5);
-            let pos = (x + ax) * half;
-            let neg = (x - ax) * half;
-            pos + neg * negative_slope
-        })
-    }
-
-    fn elu<T: Scalar>(a: &CpuStorage<T>, alpha: T) -> CpuStorage<T> {
-        a.map_elem(|x| {
-            let ax = x.math_abs();
-            let eps = T::from_f64(1e-30);
-            let two = T::from_f64(2.0);
-            let denom = if ax.to_f64() > eps.to_f64() { ax } else { eps };
-            let sp = (x + ax) / (two * denom);
-            let sp = if sp.to_f64() > 1.0 { T::one() } else { sp };
-            sp * x + (T::one() - sp) * alpha * (x.math_exp() - T::one())
-        })
-    }
-
-    fn hardswish<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-        let three = T::from_f64(3.0);
-        let six = T::from_f64(6.0);
-        a.map_elem(|x| {
-            let v = x + three;
-            let v = if v.to_f64() < 0.0 {
-                T::zero()
-            } else if v.to_f64() > 6.0 {
-                six
-            } else {
-                v
-            };
-            x * v / six
-        })
-    }
-
-    // --- CPU softmax ---
-
-    fn softmax<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-        let nrows = a.nrows;
-        let ncols = a.ncols;
-        let mut data = Vec::with_capacity(nrows * ncols);
-        for r in 0..nrows {
-            let mut max = a.data[r * ncols];
-            for j in 1..ncols {
-                let v = a.data[r * ncols + j];
-                if v.to_f64() > max.to_f64() {
-                    max = v;
-                }
-            }
-            let mut sum = T::zero();
-            for j in 0..ncols {
-                sum = sum + (a.data[r * ncols + j] - max).math_exp();
-            }
-            let inv = T::one() / sum;
-            for j in 0..ncols {
-                data.push((a.data[r * ncols + j] - max).math_exp() * inv);
-            }
-        }
-        CpuStorage { data, nrows, ncols }
-    }
-
-    // --- CPU layer_norm / rms_norm ---
-
-    fn layer_norm<T: Scalar>(
-        a: &CpuStorage<T>,
-        gamma: &CpuStorage<T>,
-        beta: &CpuStorage<T>,
-        eps: T,
-    ) -> CpuStorage<T> {
-        let nrows = a.nrows;
-        let ncols = a.ncols;
-        let ncols_f = T::from_f64(ncols as f64);
-        let mut data = Vec::with_capacity(nrows * ncols);
-        for r in 0..nrows {
-            let base = r * ncols;
-            let mut sum = T::zero();
-            for j in 0..ncols {
-                sum = sum + a.data[base + j];
-            }
-            let mean = sum / ncols_f;
-            let mut var_sum = T::zero();
-            for j in 0..ncols {
-                let d = a.data[base + j] - mean;
-                var_sum = var_sum + d * d;
-            }
-            let inv_std = T::one() / (var_sum / ncols_f + eps).math_sqrt();
-            for j in 0..ncols {
-                data.push((a.data[base + j] - mean) * inv_std * gamma.data[j] + beta.data[j]);
-            }
-        }
-        CpuStorage { data, nrows, ncols }
-    }
-
-    fn rms_norm<T: Scalar>(a: &CpuStorage<T>, gamma: &CpuStorage<T>, eps: T) -> CpuStorage<T> {
-        let nrows = a.nrows;
-        let ncols = a.ncols;
-        let ncols_f = T::from_f64(ncols as f64);
-        let mut data = Vec::with_capacity(nrows * ncols);
-        for r in 0..nrows {
-            let base = r * ncols;
-            let mut sq_sum = T::zero();
-            for j in 0..ncols {
-                let v = a.data[base + j];
-                sq_sum = sq_sum + v * v;
-            }
-            let inv_rms = T::one() / (sq_sum / ncols_f + eps).math_sqrt();
-            for j in 0..ncols {
-                data.push(a.data[base + j] * inv_rms * gamma.data[j]);
-            }
-        }
-        CpuStorage { data, nrows, ncols }
-    }
-
-    // --- CPU axis reductions ---
-
-    fn sum_axis1<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-        let nrows = a.nrows;
-        let ncols = a.ncols;
-        let mut data = Vec::with_capacity(nrows);
-        for r in 0..nrows {
-            let base = r * ncols;
-            let mut acc = T::zero();
-            for j in 0..ncols {
-                acc = acc + a.data[base + j];
-            }
-            data.push(acc);
-        }
-        CpuStorage {
-            data,
-            nrows,
-            ncols: 1,
-        }
-    }
-
-    fn max_axis1<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-        let nrows = a.nrows;
-        let ncols = a.ncols;
-        let mut data = Vec::with_capacity(nrows);
-        for r in 0..nrows {
-            let base = r * ncols;
-            let mut acc = a.data[base];
-            for j in 1..ncols {
-                let v = a.data[base + j];
-                if v.to_f64() > acc.to_f64() {
-                    acc = v;
-                }
-            }
-            data.push(acc);
-        }
-        CpuStorage {
-            data,
-            nrows,
-            ncols: 1,
-        }
-    }
-
-    // --- CPU embedding ---
-
-    fn embedding<T: Scalar>(indices: &CpuStorage<T>, weight: &CpuStorage<T>) -> CpuStorage<T> {
-        let n_tokens = indices.nrows * indices.ncols;
-        let embed_dim = weight.ncols;
-        let mut data = Vec::with_capacity(n_tokens * embed_dim);
-        for i in 0..n_tokens {
-            let idx = indices.data[i].to_f64() as usize;
-            let base = idx * embed_dim;
-            for j in 0..embed_dim {
-                data.push(weight.data[base + j]);
-            }
-        }
-        CpuStorage {
-            data,
-            nrows: n_tokens,
-            ncols: embed_dim,
-        }
-    }
-
-    fn fuse_launch<T: Scalar>(
-        _inputs: &[*const u8],
-        nrows: usize,
-        ncols: usize,
-        cpu_fn: impl FnMut(usize, usize) -> T,
-        _gpu_expr: &str,
-        _kernel_hash: &str,
-        _n_inputs: usize,
-        _reg_estimate: usize,
-    ) -> CpuStorage<T> {
-        Self::from_fn(nrows, ncols, cpu_fn)
-    }
-
-    fn mega_fuse_launch<'a, T: Scalar>(
-        _ops: &[(Vec<*const u8>, String, usize)],
-        nrows: usize,
-        ncols: usize,
-        cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T + 'a>>,
-        _kernel_hash: &str,
-    ) -> Vec<CpuStorage<T>> {
-        cpu_fns
-            .into_iter()
-            .map(|mut f| Self::from_fn(nrows, ncols, &mut f))
-            .collect()
-    }
-}
+mod cpu;
+pub use cpu::{Cpu, CpuStorage};
 
 #[cfg(feature = "gpu")]
 /// GPU backend — wgpu + WGSL compute shaders (f32 only).

@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 pub(crate) const BLOCK_SIZE: u32 = 256;
-pub(crate) const REDUCE_BLOCK: u32 = 256;
+pub(crate) const REDUCE_BLOCK: u32 = BLOCK_SIZE;
 // Max blocks for first-pass reduction; last block aggregates.
 pub(crate) const REDUCE_GRID_CAP: u32 = 256;
 
@@ -97,6 +97,16 @@ UNARY_F32(ceil,  ceilf,           ceilf)
 UNARY_F32(floor, floorf,          floorf)
 UNARY_F32(round, roundf,          roundf)
 UNARY_F32(erf,   erf_approx_f32,  erf_approx_f32)
+UNARY_F32(asin,  asinf,           asinf)
+UNARY_F32(acos,  acosf,           acosf)
+UNARY_F32(atan,  atanf,           atanf)
+UNARY_F32(sinh,  sinhf,           sinhf)
+UNARY_F32(cosh,  coshf,           coshf)
+UNARY_F32(asinh, asinhf,          asinhf)
+UNARY_F32(acosh, acoshf,          acoshf)
+UNARY_F32(atanh, atanhf,          atanhf)
+UNARY_F32(log2,  __log2f,         __log2f)
+UNARY_F32(log10, __log10f,        __log10f)
 
 // ── Activation device helpers ────────────────────────────────────────────
 
@@ -145,6 +155,15 @@ BINARY_F32(add,  +)
 BINARY_F32(sub,  -)
 BINARY_F32(emul, *)
 BINARY_F32(ediv, /)
+
+extern "C" __global__ __launch_bounds__(256) void k_atan2_f32(const float* __restrict__ a, const float* __restrict__ b, float* __restrict__ out, unsigned n) {
+    unsigned i4 = VEC4_IDX, i = i4 * 4;
+    if (i + 3 < n) {
+        float4 va = LOAD_F4(a, i4), vb = LOAD_F4(b, i4);
+        float4 vo = make_float4(atan2f(va.x, vb.x), atan2f(va.y, vb.y), atan2f(va.z, vb.z), atan2f(va.w, vb.w));
+        STORE_F4(out, i4, vo);
+    } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = atan2f(__ldg(&a[j]), __ldg(&b[j])); }
+}
 
 // ── Scalar ops f32 (float4 + fast math) ─────────────────────────────────
 
@@ -445,6 +464,16 @@ UNARY_F64(ceil,  ceil)
 UNARY_F64(floor, floor)
 UNARY_F64(round, round)
 UNARY_F64(erf,   erf_approx_f64)
+UNARY_F64(asin,  asin)
+UNARY_F64(acos,  acos)
+UNARY_F64(atan,  atan)
+UNARY_F64(sinh,  sinh)
+UNARY_F64(cosh,  cosh)
+UNARY_F64(asinh, asinh)
+UNARY_F64(acosh, acosh)
+UNARY_F64(atanh, atanh)
+UNARY_F64(log2,  log2)
+UNARY_F64(log10, log10)
 
 // ── Activation kernels f64 ───────────────────────────────────────────────
 
@@ -461,6 +490,10 @@ BINARY_F64(add,  +)
 BINARY_F64(sub,  -)
 BINARY_F64(emul, *)
 BINARY_F64(ediv, /)
+
+extern "C" __global__ __launch_bounds__(256) void k_atan2_f64(const double* __restrict__ a, const double* __restrict__ b, double* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID; if (i < n) out[i] = atan2(__ldg(&a[i]), __ldg(&b[i]));
+}
 
 // ── Scalar ops f64 ─────────────────────────────────────────────────────────
 
@@ -2163,3 +2196,54 @@ extern "C" __global__ void k_matmul_wmma_f16(
 // CPU-only: WMMA kernels not available
 #[cfg(not(any(feature = "cuda", feature = "hip")))]
 pub(crate) const WMMA_KERNELS: &str = "";
+
+// ── Conditional-node helper kernels (CUDA 12.4+) ─────────────────────────────
+//
+// k_cond_set_f32 / k_cond_set_f64:
+//   Read scalar[0] from device, compare against threshold, and write 0 or 1 into
+//   a CUgraphConditionalHandle via cudaGraphSetConditional (device-side API).
+//   cmp: 0 = (val > 0), 1 = (val == 0), 2 = (val < threshold).
+//
+// CUgraphConditionalHandle is an opaque unsigned long long; we accept it as such
+// in device code to avoid pulling in driver API headers that NVRTC does not
+// expose.  The CUDA Device Runtime header supplies cudaGraphSetConditional.
+//
+// Requires CUDA 12.4+ for cudaGraphSetConditional to link at device-link time.
+// Compiles cleanly at NVRTC compile time even on older toolchains — the runtime
+// will fail with CUDA_ERROR_NOT_SUPPORTED on pre-12.4 drivers.
+#[cfg(feature = "cuda")]
+pub(crate) const COND_SET_KERNELS: &str = r#"
+#include <cuda_device_runtime_api.h>
+
+extern "C" __global__ void k_cond_set_f32(
+    unsigned long long handle,
+    const float* __restrict__ val,
+    unsigned cmp,
+    float threshold
+) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        float v = val[0];
+        unsigned cond;
+        if (cmp == 0u) { cond = (v > 0.0f) ? 1u : 0u; }
+        else if (cmp == 1u) { cond = (v == 0.0f) ? 1u : 0u; }
+        else { cond = (v < threshold) ? 1u : 0u; }
+        cudaGraphSetConditional((cudaGraphConditionalHandle)handle, cond);
+    }
+}
+
+extern "C" __global__ void k_cond_set_f64(
+    unsigned long long handle,
+    const double* __restrict__ val,
+    unsigned cmp,
+    float threshold
+) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        double v = val[0];
+        unsigned cond;
+        if (cmp == 0u) { cond = (v > 0.0) ? 1u : 0u; }
+        else if (cmp == 1u) { cond = (v == 0.0) ? 1u : 0u; }
+        else { cond = (v < (double)threshold) ? 1u : 0u; }
+        cudaGraphSetConditional((cudaGraphConditionalHandle)handle, cond);
+    }
+}
+"#;

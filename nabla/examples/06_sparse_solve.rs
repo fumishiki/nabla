@@ -16,16 +16,18 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let n = 5; // interior points
     let h = 1.0 / (n as f64 + 1.0);
     let h2 = h * h;
+    let diag = 2.0 / h2;
+    let off = -1.0 / h2;
 
     // Build tridiagonal sparse matrix
     let mut trips = Vec::new();
     for i in 0..n {
-        trips.push(Triplet::new(i, i, 2.0 / h2));
+        trips.push(Triplet::new(i, i, diag));
         if i > 0 {
-            trips.push(Triplet::new(i, i - 1, -1.0 / h2));
+            trips.push(Triplet::new(i, i - 1, off));
         }
         if i + 1 < n {
-            trips.push(Triplet::new(i, i + 1, -1.0 / h2));
+            trips.push(Triplet::new(i, i + 1, off));
         }
     }
     let a = SparseMatrix::try_new_from_triplets(n, n, &trips)?;

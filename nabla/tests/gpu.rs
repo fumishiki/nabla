@@ -4,8 +4,10 @@
 use nabla::backend::Cpu;
 use nabla::prelude::*;
 
+const TOL_F32: f32 = 1e-5;
+
 fn approx_eq_f32(a: f32, b: f32) -> bool {
-    (a - b).abs() < 1e-5
+    (a - b).abs() < TOL_F32
 }
 
 fn tensors_close_f32(gpu: &Tensor<f32, Gpu>, cpu: &Tensor<f32, Cpu>) {

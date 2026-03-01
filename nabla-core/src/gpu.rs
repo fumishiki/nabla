@@ -109,7 +109,7 @@ async fn init_gpu() -> GpuContext {
             force_fallback_adapter: false,
         })
         .await
-        .expect("no GPU adapter found");
+        .unwrap_or_else(|| panic!("no GPU adapter found"));
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
@@ -121,7 +121,7 @@ async fn init_gpu() -> GpuContext {
             None,
         )
         .await
-        .expect("failed to create wgpu device");
+        .unwrap_or_else(|e| panic!("failed to create wgpu device: {e}"));
     let max_wg = device.limits().max_compute_workgroup_size_x;
     let wg_size = if max_wg >= 512 {
         256
@@ -162,11 +162,11 @@ fn with_pipeline<R>(
     f: impl FnOnce(&wgpu::ComputePipeline) -> R,
 ) -> R {
     let mut cache = lock_or_recover(&ctx.pipelines);
-    cache.entry(key).or_insert_with(|| {
+    let pipeline = cache.entry(key).or_insert_with(|| {
         let src = generate_shader(key);
         compile_pipeline(ctx, &src)
     });
-    f(cache.get(&key).expect("pipeline just inserted"))
+    f(pipeline)
 }
 
 // ── Dispatch helper ───────────────────────────────────────────────────────────
@@ -1054,6 +1054,22 @@ fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[inline]
+fn cache_ref<T>(cache: &Option<Vec<T>>, msg: &str) -> &[T] {
+    match cache {
+        Some(v) => v,
+        None => panic!("{msg}"),
+    }
+}
+
+#[inline]
+fn cache_mut<T>(cache: &mut Option<Vec<T>>, msg: &str) -> &mut [T] {
+    match cache {
+        Some(v) => v,
+        None => panic!("{msg}"),
+    }
+}
+
 impl<T: Scalar> GpuStorage<T> {
     fn from_buffer(nrows: usize, ncols: usize, buffer: wgpu::Buffer) -> Self {
         Self {
@@ -1713,17 +1729,17 @@ pub(crate) fn gpu_from_fn<T: Scalar>(
 pub(crate) fn gpu_get<T: Scalar>(s: &GpuStorage<T>, r: usize, c: usize) -> T {
     assert_is_f32::<T>();
     let guard = s.fill_cache_mut();
-    guard.as_ref().expect("cache populated")[r * s.ncols + c]
+    cache_ref(&guard, "cache populated")[r * s.ncols + c]
 }
 
 pub(crate) fn gpu_set<T: Scalar>(s: &mut GpuStorage<T>, r: usize, c: usize, v: T) {
     assert_is_f32::<T>();
     {
         let mut guard = s.fill_cache_mut();
-        guard.as_mut().expect("cache populated")[r * s.ncols + c] = v;
+        cache_mut(&mut guard, "cache populated")[r * s.ncols + c] = v;
     }
     let guard = lock_or_recover(&s.host_cache);
-    let data = guard.as_ref().expect("cache populated");
+    let data = cache_ref(&guard, "cache populated");
     let ctx = get_context();
     // SAFETY: data is a valid [T] slice; reinterpreted as bytes for upload.
     let bytes = unsafe { scalar_to_bytes(data) };
@@ -2140,7 +2156,7 @@ impl crate::backend::Backend for crate::backend::Gpu {
     }
 
     fn mega_fuse_launch<T: crate::scalar::Scalar>(
-        _ops: &[(Vec<*const u8>, String, usize)],
+        _ops: &[(Vec<*const u8>, String, usize, bool)],
         _nrows: usize,
         _ncols: usize,
         _cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> T>>,

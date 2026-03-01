@@ -36,7 +36,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     )?;
 
     println!("Steps: {}", sol.len());
-    let final_state = sol.final_state().expect("non-empty solution");
+    let final_state = sol.final_state().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "non-empty solution expected")
+    })?;
     println!(
         "Final (x, y, z) = ({:.4}, {:.4}, {:.4})",
         final_state.get(0, 0),

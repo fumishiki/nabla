@@ -97,9 +97,12 @@ fn main(
 /// Select register tile params based on matrix dimensions.
 /// Returns (tr, tc, bm, bn, bk).
 pub fn select_register_tile_params(m: usize, n: usize, _k: usize) -> (u32, u32, u32, u32, u32) {
-    match m.max(n) {
-        0..=64 => (2, 2, 16, 16, 8),
-        65..=128 => (4, 4, 32, 32, 8),
-        _ => (4, 4, 64, 64, 16),
+    let size = m.max(n);
+    if size <= 64 {
+        (2, 2, 16, 16, 8)
+    } else if size <= 128 {
+        (4, 4, 32, 32, 8)
+    } else {
+        (4, 4, 64, 64, 16)
     }
 }

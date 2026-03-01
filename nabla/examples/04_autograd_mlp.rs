@@ -33,8 +33,12 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Backward
     loss.backward()?;
 
-    let g1 = w1.grad().expect("grad for W1");
-    let g2 = w2.grad().expect("grad for W2");
+    let g1 = w1.grad().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "grad for W1 missing")
+    })?;
+    let g2 = w2.grad().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "grad for W2 missing")
+    })?;
     println!("dL/dW1 shape: {:?}", g1.shape());
     println!("dL/dW2 shape: {:?}", g2.shape());
     println!(
