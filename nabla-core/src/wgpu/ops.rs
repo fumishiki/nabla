@@ -933,7 +933,7 @@ impl crate::backend::BackendCore for crate::backend::Gpu {
 
     #[inline]
     fn prefetch<T: crate::scalar::Scalar>(storage: &GpuStorage<T>) {
-        storage.fill_cache_mut();
+        let _cache_guard = storage.fill_cache_mut();
     }
 
     #[inline]
