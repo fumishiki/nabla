@@ -707,3 +707,66 @@ where
 
     Ok(cond_graph)
 }
+
+// ── PyGraphTrainingGraph: warmup → capture → replay wrapper ─────────────────
+
+/// High-level training-loop wrapper that warms up, captures a CUDA graph, then replays it.
+pub struct PyGraphTrainingGraph {
+    graph: Option<PyGraph>,
+    warmup_iters: usize,
+    iter_count: usize,
+}
+
+impl PyGraphTrainingGraph {
+    /// Create with default warmup (5 iterations).
+    #[must_use]
+    pub fn new() -> Self {
+        Self { graph: None, warmup_iters: 5, iter_count: 0 }
+    }
+
+    /// Create with custom warmup count.
+    #[must_use]
+    pub fn with_warmup(warmup_iters: usize) -> Self {
+        Self { graph: None, warmup_iters, iter_count: 0 }
+    }
+
+    /// Mutable access to the captured PyGraph (None before capture completes).
+    pub fn graph(&mut self) -> Option<&mut PyGraph> {
+        self.graph.as_mut()
+    }
+
+    /// Execute one training step (warmup / capture / replay).
+    pub fn step<F: FnMut()>(&mut self, f: &mut F) -> CudaResult<()> {
+        self.iter_count += 1;
+
+        if self.iter_count <= self.warmup_iters {
+            f();
+            cuda_synchronize();
+            Ok(())
+        } else if self.graph.is_none() {
+            let graph = PyGraph::capture(|| f())?;
+            self.graph = Some(graph);
+            Ok(())
+        } else {
+            self.graph.as_ref().ok_or(CudaError::NullPtr)?.launch()
+        }
+    }
+
+    /// Reset -- force re-capture on next step.
+    pub fn reset(&mut self) {
+        self.graph = None;
+        self.iter_count = 0;
+    }
+
+    /// True once the graph has been captured.
+    #[must_use]
+    pub fn is_captured(&self) -> bool {
+        self.graph.is_some()
+    }
+}
+
+impl Default for PyGraphTrainingGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}

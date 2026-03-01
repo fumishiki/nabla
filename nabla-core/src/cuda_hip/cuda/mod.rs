@@ -24,8 +24,8 @@ pub use core::{CuBuffer, CudaError, CudaResult, Epilogue};
 pub use math_ops::cuda_matmul_epilogue;
 pub use graph_runtime::{
     CondCmp, ConditionalGraph, ConditionalKind, KernelNodeState, NablaCudaGraph, PyGraph,
-    cuda_conditional_set_from_scalar, cuda_copy_from_host, cuda_graph_capture,
-    cuda_graph_capture_cached, cuda_if_positive, cuda_to_vec_async,
+    PyGraphTrainingGraph, cuda_conditional_set_from_scalar, cuda_copy_from_host,
+    cuda_graph_capture, cuda_graph_capture_cached, cuda_if_positive, cuda_to_vec_async,
 };
 pub use training::{DoubleBuffer, TrainingGraph};
 pub(crate) use training::{GpuOp, GpuTape};

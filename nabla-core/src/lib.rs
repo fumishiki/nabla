@@ -78,4 +78,9 @@ pub use scalar::Scalar;
 pub use tensor::{MatrixLike, Tensor, TensorView};
 
 #[cfg(feature = "cuda")]
-pub use cuda_backend::{CudaError, CudaResult, cuda_synchronize};
+pub use cuda_backend::{
+    CuBuffer, CudaError, CudaResult, Epilogue, KernelNodeState, NablaCudaGraph,
+    PyGraph, PyGraphTrainingGraph, TrainingGraph,
+    cuda_copy_from_host, cuda_graph_capture, cuda_graph_capture_cached,
+    cuda_matmul_epilogue, cuda_synchronize,
+};
