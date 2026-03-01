@@ -23,6 +23,10 @@ let y = fuse!(x.sin().powf(2.0); x);        // sin²(x) — 1 GPU kernel, not 2
 let loss = train_step!(model, opt, tape, |x, out| out.cross_entropy_indices(&t)?)?;
 ```
 
+<p align="center">
+  <img src="assets/demo_quickstart.gif" alt="nabla demo — solve, SVD, einsum, autodiff, CAS in 30 lines" width="800">
+</p>
+
 ## The pain nabla solves
 
 | | Raw Rust | nabla |
@@ -42,6 +46,9 @@ let loss = train_step!(model, opt, tape, |x, out| out.cross_entropy_indices(&t)?
 ```bash
 cd benchmarks && bash run.sh
 ```
+
+<!-- Uncomment after generating on CUDA machine: vhs assets/demo_benchmark.tape -->
+<!-- <p align="center"><img src="assets/demo_benchmark.gif" alt="nabla vs PyTorch benchmark" width="800"></p> -->
 
 ### Op throughput — 4096×4096 f32
 

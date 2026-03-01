@@ -17,6 +17,9 @@ docs/
 .DS_Store
 Thumbs.db
 
+# Models / large binaries
+*.gguf
+
 # Environment
 .env
 .env.*
