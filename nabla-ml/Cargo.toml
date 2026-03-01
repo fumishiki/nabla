@@ -12,7 +12,7 @@ categories = ["mathematics", "science"]
 default = ["cpu"]
 cpu = ["nabla-core/cpu", "dep:half", "dep:rayon"]
 gpu = ["nabla-core/gpu"]
-wgpu = ["nabla-core/wgpu"]
+wgpu = ["nabla-core/wgpu", "gpu"]
 cuda = ["nabla-core/cuda"]
 hip = ["nabla-core/hip"]
 

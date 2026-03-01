@@ -12,7 +12,7 @@
 
 **PyTorch-familiar GPU math for Rust — one crate, zero C++ dependencies.**
 
-GPU linear algebra in Rust today means: hand-rolling CUDA kernel strings, wiring cuBLAS through bindgen FFI, deriving gradients by hand. nabla gives you `loss.backward()`, `einsum!`, `fuse!`, and 190+ tensor ops across 4 backends — all pure Rust.
+**Who is this for**: If you do ML training, scientific simulation, or numerical computing in Rust and want GPU acceleration without C++ dependencies — this is your crate. `loss.backward()`, `einsum!`, `fuse!`, and 190+ tensor ops across 4 backends — all pure Rust.
 
 ```rust
 // This is real nabla code. It runs on CPU, Vulkan, CUDA, or AMD — switch one feature flag.

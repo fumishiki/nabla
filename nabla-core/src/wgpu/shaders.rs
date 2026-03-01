@@ -389,7 +389,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
 fn gen_reduce_sum(wg: u32) -> String {
     format!(
         r"
-var<workgroup> shared: array<f32, {wg}>;
+var<workgroup> wg_mem: array<f32, {wg}>;
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -402,11 +402,11 @@ fn main(
     let n = params[0];
     let i = gid.x;
     let pos = lid.x;
-    shared[pos] = select(0.0, input[i], i < n);
+    wg_mem[pos] = select(0.0, input[i], i < n);
     workgroupBarrier();
     if pos == 0u {{
         var acc: f32 = 0.0;
-        for (var k: u32 = 0u; k < {wg}u; k++) {{ acc += shared[k]; }}
+        for (var k: u32 = 0u; k < {wg}u; k++) {{ acc += wg_mem[k]; }}
         out[wgid.x] = acc;
     }}
 }}
@@ -417,7 +417,7 @@ fn main(
 fn gen_reduce_max(wg: u32) -> String {
     format!(
         r"
-var<workgroup> shared: array<f32, {wg}>;
+var<workgroup> wg_mem: array<f32, {wg}>;
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -430,12 +430,12 @@ fn main(
     let n = params[0];
     let i = gid.x;
     let pos = lid.x;
-    shared[pos] = select(-3.4028235e+38, input[i], i < n);
+    wg_mem[pos] = select(-3.4028235e+38, input[i], i < n);
     workgroupBarrier();
     if pos == 0u {{
-        var acc: f32 = shared[0];
+        var acc: f32 = wg_mem[0];
         for (var k: u32 = 1u; k < {wg}u; k++) {{
-            if shared[k] > acc {{ acc = shared[k]; }}
+            if wg_mem[k] > acc {{ acc = wg_mem[k]; }}
         }}
         out[wgid.x] = acc;
     }}
@@ -447,7 +447,7 @@ fn main(
 fn gen_reduce_min(wg: u32) -> String {
     format!(
         r"
-var<workgroup> shared: array<f32, {wg}>;
+var<workgroup> wg_mem: array<f32, {wg}>;
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
@@ -460,12 +460,12 @@ fn main(
     let n = params[0];
     let i = gid.x;
     let pos = lid.x;
-    shared[pos] = select(3.4028235e+38, input[i], i < n);
+    wg_mem[pos] = select(3.4028235e+38, input[i], i < n);
     workgroupBarrier();
     if pos == 0u {{
-        var acc: f32 = shared[0];
+        var acc: f32 = wg_mem[0];
         for (var k: u32 = 1u; k < {wg}u; k++) {{
-            if shared[k] < acc {{ acc = shared[k]; }}
+            if wg_mem[k] < acc {{ acc = wg_mem[k]; }}
         }}
         out[wgid.x] = acc;
     }}

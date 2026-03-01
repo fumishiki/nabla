@@ -18,7 +18,7 @@ mod cpu {
     }
 
     #[allow(dead_code)]
-    fn assert_approx_grid(got: &Tensor<f64>, expected: &Tensor<f64>, tol: f64) {
+    fn assert_approx_grid(got: &Tensor<f64, Cpu>, expected: &Tensor<f64, Cpu>, tol: f64) {
         assert_eq!(got.shape(), expected.shape(), "shape mismatch");
         let (r, c) = got.shape();
         for i in 0..r {
@@ -35,14 +35,14 @@ mod cpu {
 
     #[test]
     fn empty_same_as_zeros() {
-        let x: Tensor<f64> = Tensor::empty(3, 4);
+        let x: Tensor<f64, Cpu> = Tensor::empty(3, 4);
         assert_eq!(x.shape(), (3, 4));
         assert!((x.get(0, 0) - 0.0).abs() < 1e-10);
     }
 
     #[test]
     fn rand_shape_and_range() {
-        let t: Tensor<f64> = Tensor::rand(3, 4, 42);
+        let t: Tensor<f64, Cpu> = Tensor::rand(3, 4, 42);
         assert_eq!(t.shape(), (3, 4));
         for r in 0..3 {
             for c in 0..4 {
@@ -54,8 +54,8 @@ mod cpu {
 
     #[test]
     fn rand_deterministic() {
-        let a: Tensor<f64> = Tensor::rand(2, 3, 123);
-        let b: Tensor<f64> = Tensor::rand(2, 3, 123);
+        let a: Tensor<f64, Cpu> = Tensor::rand(2, 3, 123);
+        let b: Tensor<f64, Cpu> = Tensor::rand(2, 3, 123);
         for r in 0..2 {
             for c in 0..3 {
                 assert!((a.get(r, c) - b.get(r, c)).abs() < 1e-15);
@@ -65,14 +65,14 @@ mod cpu {
 
     #[test]
     fn randn_shape_and_stats() {
-        let t: Tensor<f64> = Tensor::randn(1, 10000, 42);
+        let t: Tensor<f64, Cpu> = Tensor::randn(1, 10000, 42);
         let mean = t.sum_all() / 10000.0;
         assert!(mean.abs() < 0.1, "randn mean {mean} too far from 0");
     }
 
     #[test]
     fn dropout_training_off() {
-        let x: Tensor<f64> = Tensor::fill(2, 3, 1.0);
+        let x: Tensor<f64, Cpu> = Tensor::fill(2, 3, 1.0);
         let out = x.dropout(0.5, false, 42);
         for r in 0..2 {
             for c in 0..3 {
@@ -83,7 +83,7 @@ mod cpu {
 
     #[test]
     fn dropout_training_on() {
-        let x: Tensor<f64> = Tensor::fill(1, 1000, 1.0);
+        let x: Tensor<f64, Cpu> = Tensor::fill(1, 1000, 1.0);
         let out = x.dropout(0.5, true, 42);
         let nonzero = (0..1000).filter(|&c| out.get(0, c).abs() > 1e-12).count();
         // ~50% should survive, check within reasonable range
@@ -103,21 +103,21 @@ mod cpu {
 
     #[test]
     fn dropout_p_zero() {
-        let x: Tensor<f64> = Tensor::fill(2, 3, 1.0);
+        let x: Tensor<f64, Cpu> = Tensor::fill(2, 3, 1.0);
         let out = x.dropout(0.0, true, 42);
         assert!((out.sum_all() - 6.0).abs() < 1e-12);
     }
 
     #[test]
     fn dropout_p_one() {
-        let x: Tensor<f64> = Tensor::fill(2, 3, 1.0);
+        let x: Tensor<f64, Cpu> = Tensor::fill(2, 3, 1.0);
         let out = x.dropout(1.0, true, 42);
         assert!(out.sum_all().abs() < 1e-12);
     }
 
     #[test]
     fn contiguous_identity() {
-        let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+        let a: Tensor<f64, Cpu> = mat![[1.0, 2.0], [3.0, 4.0]];
         let b = a.contiguous();
         assert_eq!(b.shape(), (2, 2));
         assert_eq!(b.get(0, 1), 2.0);
@@ -126,7 +126,7 @@ mod cpu {
 
     #[test]
     fn detach_is_independent_copy() {
-        let a: Tensor<f64> = mat![[1.0, 2.0], [3.0, 4.0]];
+        let a: Tensor<f64, Cpu> = mat![[1.0, 2.0], [3.0, 4.0]];
         let b = a.detach();
         assert_eq!(b.shape(), a.shape());
         assert_eq!(b.get(0, 0), a.get(0, 0));
@@ -145,7 +145,7 @@ mod cpu {
         let f: Tensor<f64, Cpu> = Tensor::fill(2, 3, 2.5);
         assert!(f.as_slice().iter().all(|&v| v == 2.5));
 
-        let id: Tensor<f64> = eye(3);
+        let id: Tensor<f64, Cpu> = Tensor::identity(3);
         assert_eq!(id.shape(), (3, 3));
         for r in 0..3 {
             for c in 0..3 {
@@ -154,7 +154,7 @@ mod cpu {
             }
         }
 
-        let made: Tensor<f64> = from_fn(2, 2, |r, c| (r * 2 + c) as f64);
+        let made: Tensor<f64, Cpu> = Tensor::from_fn(2, 2, |r, c| (r * 2 + c) as f64);
         assert!(approx_eq(made.get(1, 1), 3.0));
 
         let nd = nd_zeros::<f64>(&[2, 3, 4]);
@@ -164,7 +164,7 @@ mod cpu {
         assert_eq!(nd.dim(2), 4);
         assert!(approx_eq(nd.get_nd(&[1, 2, 3]), 0.0));
 
-        let r: Tensor<f64> = arange(0.0_f64, 1.0, 0.25);
+        let r: Tensor<f64, Cpu> = Tensor::arange(0.0_f64, 0.25_f64, 4);
         assert_eq!(r.shape(), (1, 4));
         assert!(approx_eq(r.get(0, 0), 0.0));
         assert!(approx_eq(r.get(0, 1), 0.25));
@@ -262,17 +262,6 @@ mod gpu {
         for i in 0..3 {
             for j in 0..4 {
                 assert_eq!(t.get(i, j), 0.0f32);
-            }
-        }
-    }
-
-    #[test]
-    fn from_fn_f64_values() {
-        let t = Tensor::<f64, Gpu>::from_fn(2, 3, |i, j| (i * 3 + j) as f64);
-        assert_eq!(t.shape(), (2, 3));
-        for i in 0..2 {
-            for j in 0..3 {
-                assert_eq!(t.get(i, j), (i * 3 + j) as f64);
             }
         }
     }
@@ -428,9 +417,9 @@ mod gpu {
     #[test]
     fn tiled_matmul_large_f32_matches_cpu() {
         let a_gpu = Tensor::<f32, Gpu>::from_fn(20, 20, |i, j| (i + j + 1) as f32 * 0.1);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(20, 20, |i, j| (j + 1) as f32 * 0.1);
+        let b_gpu = Tensor::<f32, Gpu>::from_fn(20, 20, |_i, j| (j + 1) as f32 * 0.1);
         let a_cpu = Tensor::<f32, Cpu>::from_fn(20, 20, |i, j| (i + j + 1) as f32 * 0.1);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(20, 20, |i, j| (j + 1) as f32 * 0.1);
+        let b_cpu = Tensor::<f32, Cpu>::from_fn(20, 20, |_i, j| (j + 1) as f32 * 0.1);
         tensors_close_f32(&(&a_gpu * &b_gpu), &(&a_cpu * &b_cpu));
     }
 

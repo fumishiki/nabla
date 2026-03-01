@@ -1,21 +1,20 @@
-# nabla quick start demo — 5 lines of GPU math
+# nabla REPL-style demo
 # Run: vhs assets/demo_quickstart.tape
+# NOTE: cargo build --example 00_demo --features cpu first for instant playback
 
 Output assets/demo_quickstart.gif
 Set Shell "bash"
-Set FontSize 16
-Set Width 860
-Set Height 500
+Set FontSize 18
+Set Width 740
+Set Height 780
 Set Theme "Dracula"
-Set TypingSpeed 30ms
-Set Padding 20
+Set TypingSpeed 40ms
+Set Padding 24
 
-Type "cat nabla-ml/examples/00_demo.rs"
+Sleep 500ms
+
+Type "cargo run --example 00_demo --features cpu 2>/dev/null"
 Enter
-Sleep 2s
 
-Type "cargo run --example 00_demo --features cpu"
-Enter
-Sleep 8s
-
-Sleep 2s
+Sleep 3s
+Sleep 4s
