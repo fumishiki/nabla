@@ -1,18 +1,10 @@
-// scalar/dual.rs — Dual<T> forward-mode automatic differentiation.
 
 use core::fmt;
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
-use super::{erf_approx, MathOps, ReductionOps, RealScalar, Scalar};
+use super::{MathOps, RealScalar, ReductionOps, Scalar, erf_approx};
 
-// ---------------------------------------------------------------------------
-// Dual<T> — forward-mode automatic differentiation
-// ---------------------------------------------------------------------------
 
-/// Dual number for forward-mode automatic differentiation: `value + deriv·ε`.
-///
-/// Propagates first-order derivatives through arithmetic and transcendental
-/// functions via the chain rule.  CPU-only (`#[cfg(feature = "cpu")]`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Dual<T: RealScalar> {
     /// Primal value.
@@ -168,7 +160,6 @@ impl<T: RealScalar> fmt::Display for Dual<T> {
     }
 }
 
-// Arithmetic ops for Dual<T>
 
 impl<T: RealScalar> Add for Dual<T> {
     type Output = Self;
@@ -229,7 +220,6 @@ impl<T: RealScalar> Neg for Dual<T> {
     }
 }
 
-// Mixed scalar-Dual arithmetic: enables natural code like `1.0 + dual` in #[nabla_grad].
 
 macro_rules! impl_dual_scalar_ops {
     ($scalar:ty) => {
@@ -322,7 +312,6 @@ macro_rules! impl_dual_scalar_ops {
 impl_dual_scalar_ops!(f32);
 impl_dual_scalar_ops!(f64);
 
-// MathOps for Dual<T> — chain rule propagation
 
 impl<T: RealScalar> MathOps for Dual<T> {
     // exp(a+bε) = exp(a) + exp(a)*b·ε
@@ -460,7 +449,10 @@ impl<T: RealScalar> MathOps for Dual<T> {
     fn math_acos(self) -> Self {
         let a: f64 = self.value.into();
         let b: f64 = self.deriv.into();
-        Self::new(T::from_f64(a.acos()), T::from_f64(-b / (1.0 - a * a).sqrt()))
+        Self::new(
+            T::from_f64(a.acos()),
+            T::from_f64(-b / (1.0 - a * a).sqrt()),
+        )
     }
     // atan(a+bε) = atan(a) + b/(1+a²)·ε
     #[inline]
@@ -498,14 +490,20 @@ impl<T: RealScalar> MathOps for Dual<T> {
     fn math_asinh(self) -> Self {
         let a: f64 = self.value.into();
         let b: f64 = self.deriv.into();
-        Self::new(T::from_f64(a.asinh()), T::from_f64(b / (a * a + 1.0).sqrt()))
+        Self::new(
+            T::from_f64(a.asinh()),
+            T::from_f64(b / (a * a + 1.0).sqrt()),
+        )
     }
     // acosh(a+bε) = acosh(a) + b/sqrt(a²-1)·ε
     #[inline]
     fn math_acosh(self) -> Self {
         let a: f64 = self.value.into();
         let b: f64 = self.deriv.into();
-        Self::new(T::from_f64(a.acosh()), T::from_f64(b / (a * a - 1.0).sqrt()))
+        Self::new(
+            T::from_f64(a.acosh()),
+            T::from_f64(b / (a * a - 1.0).sqrt()),
+        )
     }
     // atanh(a+bε) = atanh(a) + b/(1-a²)·ε
     #[inline]
@@ -519,18 +517,23 @@ impl<T: RealScalar> MathOps for Dual<T> {
     fn math_log2(self) -> Self {
         let a: f64 = self.value.into();
         let b: f64 = self.deriv.into();
-        Self::new(T::from_f64(a.log2()), T::from_f64(b / (a * core::f64::consts::LN_2)))
+        Self::new(
+            T::from_f64(a.log2()),
+            T::from_f64(b / (a * core::f64::consts::LN_2)),
+        )
     }
     // log10(a+bε) = log10(a) + b/(a*ln10)·ε
     #[inline]
     fn math_log10(self) -> Self {
         let a: f64 = self.value.into();
         let b: f64 = self.deriv.into();
-        Self::new(T::from_f64(a.log10()), T::from_f64(b / (a * core::f64::consts::LN_10)))
+        Self::new(
+            T::from_f64(a.log10()),
+            T::from_f64(b / (a * core::f64::consts::LN_10)),
+        )
     }
 }
 
-// ReductionOps for Dual<T>
 
 impl<T: RealScalar> ReductionOps for Dual<T> {
     #[inline]
@@ -559,7 +562,6 @@ impl<T: RealScalar> ReductionOps for Dual<T> {
     }
 }
 
-// Scalar for Dual<T>
 
 impl<T: RealScalar> Scalar for Dual<T> {
     type Real = T;

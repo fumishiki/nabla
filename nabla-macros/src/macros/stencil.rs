@@ -8,9 +8,7 @@ use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{Error, Expr, Ident, Result, Token, parse::{Parse, ParseStream}};
 
-// ── AST types ────────────────────────────────────────────────────────────────
 
-/// A single index expression: `i`, `i+1`, `i-1`, `j`, etc.
 #[derive(Clone)]
 pub(crate) enum IdxExpr {
     /// Plain index variable, e.g. `i`
@@ -39,27 +37,23 @@ impl Parse for IdxExpr {
     }
 }
 
-/// A tensor access: `a[i-1, j+2]`
 struct TensorAccess {
     name: Ident,
     indices: Vec<IdxExpr>,
 }
 
-/// An RHS term: `coeff * tensor_access` or just `tensor_access`
 struct RhsTerm {
     coeff: Option<Expr>,
     negate: bool,
     access: TensorAccess,
 }
 
-/// Full stencil: `out[i,j] = sum_of_terms`
 pub(crate) struct StencilInput {
     out_name: Ident,
     out_indices: Vec<Ident>,
     terms: Vec<RhsTerm>,
 }
 
-// ── Parser ───────────────────────────────────────────────────────────────────
 
 fn parse_idx_expr(input: ParseStream<'_>) -> Result<IdxExpr> {
     let var: Ident = input.parse()?;
@@ -168,7 +162,6 @@ fn parse_term_sign(input: ParseStream<'_>) -> Result<Option<bool>> {
     }
 }
 
-// ── Codegen ──────────────────────────────────────────────────────────────────
 
 fn idx_expr_token(idx: &IdxExpr, loop_var: &Ident) -> TokenStream2 {
     let off = idx.offset();

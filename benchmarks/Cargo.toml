@@ -1,0 +1,46 @@
+[package]
+name = "nabla-bench"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88.0"
+publish = false
+
+[features]
+cpu = ["nabla/cpu", "nabla-train/cpu"]
+cuda = ["nabla/cuda", "nabla-train/cuda"]
+
+[lib]
+name = "nabla_bench"
+path = "src/lib.rs"
+
+[dependencies]
+nabla = { path = "../nabla-ml", default-features = false }
+nabla-train = { path = "../nabla-train", default-features = false }
+
+[[bin]]
+name = "bench_ops"
+path = "src/bench_ops.rs"
+
+[[bin]]
+name = "bench_dispatch"
+path = "src/bench_dispatch.rs"
+
+[[bin]]
+name = "bench_dispatch_scaling"
+path = "src/bench_dispatch_scaling.rs"
+
+[[bin]]
+name = "verify_train"
+path = "src/verify_train.rs"
+
+[[bin]]
+name = "profile_train"
+path = "src/profile_train.rs"
+
+[[bin]]
+name = "profile_train_graph"
+path = "src/profile_train_graph.rs"
+
+[[bin]]
+name = "diag_capture"
+path = "src/diag_capture.rs"

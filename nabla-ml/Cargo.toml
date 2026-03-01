@@ -1,0 +1,28 @@
+[package]
+name = "nabla"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88.0"
+license = "Apache-2.0 OR MIT"
+description = "Type-safe linear algebra DSL for Rust — zero-copy, compile-time backend selection"
+keywords = ["linear-algebra", "tensor", "einsum", "gpu", "math"]
+categories = ["mathematics", "science"]
+
+[features]
+default = ["cpu"]
+cpu = ["nabla-core/cpu", "dep:half", "dep:rayon"]
+gpu = ["nabla-core/gpu"]
+wgpu = ["nabla-core/wgpu"]
+cuda = ["nabla-core/cuda"]
+hip = ["nabla-core/hip"]
+
+[dependencies]
+nabla-core = { path = "../nabla-core", default-features = false }
+half = { version = "2", features = ["num-traits"], optional = true }
+nabla-macros = { path = "../nabla-macros" }
+egg = "0.9"
+ordered-float = "4"
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+trybuild = "1"

@@ -636,6 +636,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nabla-bench"
+version = "0.1.0"
+dependencies = [
+ "nabla",
+ "nabla-train",
+]
+
+[[package]]
 name = "nabla-core"
 version = "0.1.0"
 dependencies = [
@@ -648,6 +656,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nabla-interface"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "nabla",
+ "nabla-core",
+ "pkg-config",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nabla-macros"
 version = "0.1.0"
 dependencies = [
@@ -656,6 +675,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "nabla-train"
+version = "0.1.0"
+dependencies = [
+ "nabla",
+ "nabla-core",
+ "nabla-macros",
 ]
 
 [[package]]

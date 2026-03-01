@@ -17,7 +17,6 @@ use syn::{
     parse::{Parse, ParseStream},
 };
 
-// ── Known function names ────────────────────────────────────────────────────
 
 const KNOWN_FNS: &[&str] = &[
     "sin", "cos", "exp", "ln", "tanh", "sqrt", "abs",
@@ -28,9 +27,7 @@ fn is_known_fn(name: &str) -> bool {
     KNOWN_FNS.contains(&name)
 }
 
-// ── AST ─────────────────────────────────────────────────────────────────────
 
-/// Intermediate AST for a symbolic math expression.
 enum SymExpr {
     /// Named variable: `x` → `Expr::var("x")`.
     Var(Ident),
@@ -52,7 +49,6 @@ enum SymExpr {
     Fn(String, Box<SymExpr>, Span),
 }
 
-// ── Code generation ─────────────────────────────────────────────────────────
 
 impl SymExpr {
     /// Lower the AST into a `TokenStream2` that constructs `nabla::cas::Expr`.
@@ -112,13 +108,10 @@ impl SymExpr {
     }
 }
 
-// ── Pratt parser ────────────────────────────────────────────────────────────
 
-/// Binding power for Pratt parsing. Higher = tighter binding.
 #[derive(Clone, Copy)]
 struct Bp(u8);
 
-/// Infix operator kind.
 #[derive(Clone, Copy)]
 enum InfixOp {
     Add,
@@ -141,7 +134,6 @@ impl InfixOp {
     }
 }
 
-/// Try to peek an infix operator from the stream without advancing.
 fn peek_infix(input: ParseStream<'_>) -> Option<InfixOp> {
     if input.peek(Token![+]) {
         Some(InfixOp::Add)
@@ -158,7 +150,6 @@ fn peek_infix(input: ParseStream<'_>) -> Option<InfixOp> {
     }
 }
 
-/// Consume the infix operator token and return its span.
 fn consume_infix(input: ParseStream<'_>, op: InfixOp) -> Result<Span> {
     match op {
         InfixOp::Add => input.parse::<Token![+]>().map(|t| t.span),
@@ -169,7 +160,6 @@ fn consume_infix(input: ParseStream<'_>, op: InfixOp) -> Result<Span> {
     }
 }
 
-/// Build a `SymExpr` binary node from operator, lhs, rhs, and span.
 fn make_binop(op: InfixOp, lhs: SymExpr, rhs: SymExpr, sp: Span) -> SymExpr {
     let (l, r) = (Box::new(lhs), Box::new(rhs));
     match op {
@@ -181,7 +171,6 @@ fn make_binop(op: InfixOp, lhs: SymExpr, rhs: SymExpr, sp: Span) -> SymExpr {
     }
 }
 
-/// Parse an expression with the given minimum binding power.
 fn parse_expr(input: ParseStream<'_>, min_bp: Bp) -> Result<SymExpr> {
     // Parse prefix / atom.
     let mut lhs = parse_prefix(input)?;
@@ -200,8 +189,6 @@ fn parse_expr(input: ParseStream<'_>, min_bp: Bp) -> Result<SymExpr> {
     Ok(lhs)
 }
 
-/// Parse a prefix expression: unary minus, parenthesized group, function call,
-/// variable, or numeric literal.
 fn parse_prefix(input: ParseStream<'_>) -> Result<SymExpr> {
     // Unary minus.
     if input.peek(Token![-]) {
@@ -275,9 +262,7 @@ fn parse_prefix(input: ParseStream<'_>) -> Result<SymExpr> {
     ))
 }
 
-// ── Top-level parse wrapper ─────────────────────────────────────────────────
 
-/// Parseable wrapper for use with `syn::parse2`.
 struct SymInput {
     expr: SymExpr,
 }
@@ -295,11 +280,7 @@ impl Parse for SymInput {
     }
 }
 
-// ── Public entry point ──────────────────────────────────────────────────────
 
-/// Implementation for the `sym!` proc macro.
-///
-/// Parses a mathematical expression and emits `nabla::cas::Expr` construction code.
 pub(crate) fn sym_impl(input: TokenStream2) -> Result<TokenStream2> {
     let parsed: SymInput = syn::parse2(input)?;
     Ok(parsed.expr.to_tokens())

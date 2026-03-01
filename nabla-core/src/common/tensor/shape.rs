@@ -1,18 +1,14 @@
-// tensor/shape.rs — Shape manipulation: reshape, flatten, concat, stack,
-//                   chunk, split, repeat, expand, pad, triu/tril, roll, flip,
-//                   gather, scatter, index_select, topk, sort, argsort, meshgrid,
-//                   map_axis, cast, into_nd, axpy_, scatter_add_dim0.
 
 #[cfg(feature = "cpu")]
 use rayon::prelude::*;
 
+use crate::backend::Backend;
 #[cfg(feature = "cpu")]
 use crate::backend::Cpu;
-use crate::backend::Backend;
 use crate::scalar::Scalar;
 
-use super::variants::NdTensor;
 use super::Tensor;
+use super::variants::NdTensor;
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- Shape manipulation ----
@@ -21,7 +17,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn reshape(&self, m: usize, n: usize) -> Self {
         let (rows, cols) = self.shape();
-        assert_eq!(m * n, rows * cols, "reshape: {rows}x{cols} cannot reshape to {m}x{n}");
+        assert_eq!(
+            m * n,
+            rows * cols,
+            "reshape: {rows}x{cols} cannot reshape to {m}x{n}"
+        );
         Self::from_fn(m, n, |r, c| {
             let flat = r * n + c;
             self.get(flat / cols, flat % cols)
@@ -41,11 +41,23 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let (m, n) = self.shape();
         match axis {
             0 => {
-                assert_eq!(sizes.0 * sizes.1, m, "unflatten: {m} != {}*{}", sizes.0, sizes.1);
+                assert_eq!(
+                    sizes.0 * sizes.1,
+                    m,
+                    "unflatten: {m} != {}*{}",
+                    sizes.0,
+                    sizes.1
+                );
                 self.reshape(sizes.0, sizes.1 * n)
             }
             1 => {
-                assert_eq!(sizes.0 * sizes.1, n, "unflatten: {n} != {}*{}", sizes.0, sizes.1);
+                assert_eq!(
+                    sizes.0 * sizes.1,
+                    n,
+                    "unflatten: {n} != {}*{}",
+                    sizes.0,
+                    sizes.1
+                );
                 self.reshape(m * sizes.0, sizes.1)
             }
             _ => panic!("unflatten: axis {axis} out of bounds for 2-D tensor"),
@@ -86,7 +98,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Insert a size-1 dimension at `axis`, producing an `NdTensor`.
     #[must_use]
     pub fn unsqueeze(&self, axis: usize) -> NdTensor<T> {
-        assert!(axis <= 2, "nabla: unsqueeze axis {axis} out of bounds (max 2 for 2-D tensor)");
+        assert!(
+            axis <= 2,
+            "nabla: unsqueeze axis {axis} out of bounds (max 2 for 2-D tensor)"
+        );
         let (r, c) = self.shape();
         let mut new_shape = vec![r, c];
         new_shape.insert(axis, 1);
@@ -118,7 +133,12 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         assert!(!tensors.is_empty(), "nabla: vcat on empty slice");
         let ncols = tensors[0].ncols();
         for (i, t) in tensors.iter().enumerate() {
-            assert_eq!(t.ncols(), ncols, "nabla: vcat tensor[{i}] has {c} cols, expected {ncols}", c = t.ncols());
+            assert_eq!(
+                t.ncols(),
+                ncols,
+                "nabla: vcat tensor[{i}] has {c} cols, expected {ncols}",
+                c = t.ncols()
+            );
         }
         let (offsets, total) = Self::concat_offsets(tensors, super::Tensor::nrows);
         Self::from_fn(total, ncols, |r, c| {
@@ -133,7 +153,12 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         assert!(!tensors.is_empty(), "nabla: hcat on empty slice");
         let nrows = tensors[0].nrows();
         for (i, t) in tensors.iter().enumerate() {
-            assert_eq!(t.nrows(), nrows, "nabla: hcat tensor[{i}] has {r} rows, expected {nrows}", r = t.nrows());
+            assert_eq!(
+                t.nrows(),
+                nrows,
+                "nabla: hcat tensor[{i}] has {r} rows, expected {nrows}",
+                r = t.nrows()
+            );
         }
         let (offsets, total) = Self::concat_offsets(tensors, super::Tensor::ncols);
         Self::from_fn(nrows, total, |r, c| {
@@ -156,11 +181,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn stack(tensors: &[&Self], axis: usize) -> NdTensor<T> {
         assert!(!tensors.is_empty(), "nabla: stack on empty slice");
-        assert!(axis <= 2, "nabla: stack axis {axis} out of bounds (max 2 for 2-D inputs)");
+        assert!(
+            axis <= 2,
+            "nabla: stack axis {axis} out of bounds (max 2 for 2-D inputs)"
+        );
         let (r, c) = tensors[0].shape();
         for (i, t) in tensors.iter().enumerate() {
             let (tr, tc) = t.shape();
-            assert!(tr == r && tc == c, "nabla: stack tensor[{i}] shape ({tr}x{tc}) differs from tensor[0] ({r}x{c})");
+            assert!(
+                tr == r && tc == c,
+                "nabla: stack tensor[{i}] shape ({tr}x{tc}) differs from tensor[0] ({r}x{c})"
+            );
         }
         let n = tensors.len();
         let new_shape: [usize; 3] = match axis {
@@ -186,13 +217,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
                 let r = self.nrows();
                 assert_eq!(r % n, 0, "nabla: chunk nrows ({r}) not divisible by {n}");
                 let chunk_size = r / n;
-                (0..n).map(|i| self.slice_rows(i * chunk_size..(i + 1) * chunk_size)).collect()
+                (0..n)
+                    .map(|i| self.slice_rows(i * chunk_size..(i + 1) * chunk_size))
+                    .collect()
             }
             1 => {
                 let c = self.ncols();
                 assert_eq!(c % n, 0, "nabla: chunk ncols ({c}) not divisible by {n}");
                 let chunk_size = c / n;
-                (0..n).map(|i| self.slice_cols(i * chunk_size..(i + 1) * chunk_size)).collect()
+                (0..n)
+                    .map(|i| self.slice_cols(i * chunk_size..(i + 1) * chunk_size))
+                    .collect()
             }
             _ => panic!("nabla: chunk axis {axis} out of bounds for 2-D tensor"),
         }
@@ -204,19 +239,25 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         match axis {
             0 => {
                 let mut offset = 0;
-                sizes.iter().map(|&s| {
-                    let part = self.submatrix(offset, offset + s, 0, self.ncols());
-                    offset += s;
-                    part
-                }).collect()
+                sizes
+                    .iter()
+                    .map(|&s| {
+                        let part = self.submatrix(offset, offset + s, 0, self.ncols());
+                        offset += s;
+                        part
+                    })
+                    .collect()
             }
             1 => {
                 let mut offset = 0;
-                sizes.iter().map(|&s| {
-                    let part = self.submatrix(0, self.nrows(), offset, offset + s);
-                    offset += s;
-                    part
-                }).collect()
+                sizes
+                    .iter()
+                    .map(|&s| {
+                        let part = self.submatrix(0, self.nrows(), offset, offset + s);
+                        offset += s;
+                        part
+                    })
+                    .collect()
             }
             _ => panic!("nabla: split axis must be 0 or 1, got {axis}"),
         }
@@ -231,7 +272,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::from_fn(m * row_reps, n * col_reps, |r, c| self.get(r % m, c % n))
     }
 
-    /// Expand (broadcast view) -- repeats without copying for broadcast dimensions.
+    /// Expand (broadcast view) -- GPU-native broadcast, no D2H during CUDA Graph capture.
     #[must_use]
     pub fn expand(&self, target_rows: usize, target_cols: usize) -> Self {
         let (m, n) = self.shape();
@@ -239,9 +280,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             (m == 1 || m == target_rows) && (n == 1 || n == target_cols),
             "nabla: expand ({m},{n}) -> ({target_rows},{target_cols}) invalid"
         );
-        Self::from_fn(target_rows, target_cols, |r, c| {
-            self.get(if m == 1 { 0 } else { r }, if n == 1 { 0 } else { c })
-        })
+        let mut out = Self::zeros(target_rows, target_cols);
+        B::expand_into(&mut out.storage, &self.storage, m, n);
+        out
     }
 
     /// Broadcast `self` to match `other`'s shape.
@@ -270,7 +311,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn triu(&self, diagonal: isize) -> Self {
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| {
-            if (c as isize) >= (r as isize) + diagonal { self.get(r, c) } else { T::zero() }
+            if (c as isize) >= (r as isize) + diagonal {
+                self.get(r, c)
+            } else {
+                T::zero()
+            }
         })
     }
 
@@ -279,7 +324,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn tril(&self, diagonal: isize) -> Self {
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| {
-            if (c as isize) <= (r as isize) + diagonal { self.get(r, c) } else { T::zero() }
+            if (c as isize) <= (r as isize) + diagonal {
+                self.get(r, c)
+            } else {
+                T::zero()
+            }
         })
     }
 
@@ -393,8 +442,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
                 let mut all_vals = vec![T::zero(); k * n];
                 let mut all_idxs = vec![T::zero(); k * n];
                 for c in 0..n {
-                    let mut pairs: Vec<(T, usize)> =
-                        (0..m).map(|r| (self.get(r, c), r)).collect();
+                    let mut pairs: Vec<(T, usize)> = (0..m).map(|r| (self.get(r, c), r)).collect();
                     pairs.sort_by(|a, b| b.0.to_f64().total_cmp(&a.0.to_f64()));
                     for j in 0..k {
                         all_vals[j * n + c] = pairs[j].0;
@@ -410,8 +458,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
                 let mut all_vals = vec![T::zero(); m * k];
                 let mut all_idxs = vec![T::zero(); m * k];
                 for r in 0..m {
-                    let mut pairs: Vec<(T, usize)> =
-                        (0..n).map(|c| (self.get(r, c), c)).collect();
+                    let mut pairs: Vec<(T, usize)> = (0..n).map(|c| (self.get(r, c), c)).collect();
                     pairs.sort_by(|a, b| b.0.to_f64().total_cmp(&a.0.to_f64()));
                     for j in 0..k {
                         all_vals[r * k + j] = pairs[j].0;
@@ -483,7 +530,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
                 indices.sort_by(|&a, &b| {
                     let va = self.get(a, key).to_f64();
                     let vb = self.get(b, key).to_f64();
-                    if descending { vb.total_cmp(&va) } else { va.total_cmp(&vb) }
+                    if descending {
+                        vb.total_cmp(&va)
+                    } else {
+                        va.total_cmp(&vb)
+                    }
                 });
                 indices
             }
@@ -497,7 +548,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
                 indices.sort_by(|&a, &b| {
                     let va = self.get(key, a).to_f64();
                     let vb = self.get(key, b).to_f64();
-                    if descending { vb.total_cmp(&va) } else { va.total_cmp(&vb) }
+                    if descending {
+                        vb.total_cmp(&va)
+                    } else {
+                        va.total_cmp(&vb)
+                    }
                 });
                 indices
             }
@@ -511,10 +566,18 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let nx = x.nrows() * x.ncols();
         let ny = y.nrows() * y.ncols();
         let get_x = |i: usize| {
-            if x.nrows() == 1 { x.get(0, i) } else { x.get(i, 0) }
+            if x.nrows() == 1 {
+                x.get(0, i)
+            } else {
+                x.get(i, 0)
+            }
         };
         let get_y = |i: usize| {
-            if y.nrows() == 1 { y.get(0, i) } else { y.get(i, 0) }
+            if y.nrows() == 1 {
+                y.get(0, i)
+            } else {
+                y.get(i, 0)
+            }
         };
         let gx = Self::from_fn(ny, nx, |_, c| get_x(c));
         let gy = Self::from_fn(ny, nx, |r, _| get_y(r));
@@ -554,8 +617,14 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn into_nd(&self, shape: &[usize]) -> NdTensor<T> {
         let total: usize = shape.iter().product();
         let (m, n) = self.shape();
-        assert_eq!(m * n, total, "nabla: into_nd shape mismatch: {m}x{n} != {total}");
-        let data: Vec<T> = (0..m).flat_map(|r| (0..n).map(move |c| self.get(r, c))).collect();
+        assert_eq!(
+            m * n,
+            total,
+            "nabla: into_nd shape mismatch: {m}x{n} != {total}"
+        );
+        let data: Vec<T> = (0..m)
+            .flat_map(|r| (0..n).map(move |c| self.get(r, c)))
+            .collect();
         NdTensor::from_vec(shape.to_vec(), data)
     }
 
@@ -563,7 +632,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn axpy_(&mut self, alpha: T, x: &Self) {
         let (m, n) = self.shape();
         let (p, q) = x.shape();
-        assert!(m == p && n == q, "nabla: axpy_ ({m}x{n}) vs ({p}x{q}) -- shapes must match");
+        assert!(
+            m == p && n == q,
+            "nabla: axpy_ ({m}x{n}) vs ({p}x{q}) -- shapes must match"
+        );
         let scaled = B::scale(&x.storage, alpha);
         self.storage = B::add(&self.storage, &scaled);
     }
@@ -571,11 +643,23 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Scatter-add along dimension 0.
     pub fn scatter_add_dim0(&mut self, indices: &[usize], src: &Self) {
         let (sr, sc) = src.shape();
-        assert_eq!(indices.len(), sr, "nabla: scatter_add_dim0 indices length {} != src nrows {}", indices.len(), sr);
+        assert_eq!(
+            indices.len(),
+            sr,
+            "nabla: scatter_add_dim0 indices length {} != src nrows {}",
+            indices.len(),
+            sr
+        );
         let (mr, mc) = self.shape();
-        assert_eq!(sc, mc, "nabla: scatter_add_dim0 ncols mismatch: src {sc} != self {mc}");
+        assert_eq!(
+            sc, mc,
+            "nabla: scatter_add_dim0 ncols mismatch: src {sc} != self {mc}"
+        );
         for (r, &target_r) in indices.iter().enumerate() {
-            assert!(target_r < mr, "nabla: scatter_add_dim0 index {target_r} out of bounds for {mr} rows");
+            assert!(
+                target_r < mr,
+                "nabla: scatter_add_dim0 index {target_r} out of bounds for {mr} rows"
+            );
             for c in 0..sc {
                 let old = self.get(target_r, c);
                 self.set(target_r, c, old + src.get(r, c));
@@ -584,7 +668,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-// ---- CPU-gated impls ----
 
 #[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Tensor<T, B> {
@@ -604,7 +687,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 impl<T: Scalar> Tensor<T, Cpu> {
     /// Borrow the underlying row-major data slice (zero-copy).
     #[inline]
-    /// View underlying data as a slice.
     pub fn as_slice(&self) -> &[T] {
         self.storage.data_slice()
     }

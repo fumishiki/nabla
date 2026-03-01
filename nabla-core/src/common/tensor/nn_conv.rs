@@ -1,13 +1,10 @@
-// nn_conv.rs — Conv1d/2d/3d/transpose and pooling ops.
-// tensor/nn/conv.rs — Convolution operations and config structs.
 
 use crate::backend::Backend;
 use crate::scalar::Scalar;
-use crate::tensor::{two, Tensor};
+use crate::tensor::{Tensor, two};
 
-// ---- Convolution configuration builders ----
 
-/// Configuration for 2-D convolution, replacing positional stride/padding/dilation/groups args.
+/// Configuration for 2-D convolution (stride, padding, dilation, groups).
 pub struct Conv2dConfig {
     /// Stride in (height, width).
     pub stride: (usize, usize),
@@ -57,7 +54,7 @@ impl Conv2dConfig {
     }
 }
 
-/// Configuration for 1-D convolution.
+/// Configuration for 1-D convolution (stride, padding, dilation, groups).
 pub struct Conv1dConfig {
     /// Stride.
     pub stride: usize,
@@ -107,7 +104,7 @@ impl Conv1dConfig {
     }
 }
 
-/// Configuration for 3-D convolution.
+/// Configuration for 3-D convolution (stride, padding, dilation, groups).
 pub struct Conv3dConfig {
     /// Stride in (depth, height, width).
     pub stride: (usize, usize, usize),
@@ -215,8 +212,19 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ) -> Self {
         assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
         let out = Self::from_storage(B::conv2d(
-            &self.storage, &weight.storage,
-            n_batch, c_in, h, w, c_out, kh, kw, stride, padding, dilation, groups,
+            &self.storage,
+            &weight.storage,
+            n_batch,
+            c_in,
+            h,
+            w,
+            c_out,
+            kh,
+            kw,
+            stride,
+            padding,
+            dilation,
+            groups,
         ));
         if let Some(bi) = bias {
             let out_h = (h + 2 * padding.0 - dilation.0 * (kh - 1) - 1) / stride.0 + 1;
@@ -250,8 +258,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ) -> Self {
         assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
         let out = Self::from_storage(B::conv1d(
-            &self.storage, &weight.storage,
-            n_batch, c_in, length, c_out, kernel_size, stride, padding, dilation, groups,
+            &self.storage,
+            &weight.storage,
+            n_batch,
+            c_in,
+            length,
+            c_out,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            groups,
         ));
         if let Some(bi) = bias {
             let out_len = (length + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1;
@@ -281,8 +298,19 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         config: &Conv2dConfig,
     ) -> Self {
         self.conv2d(
-            weight, bias, n_batch, c_in, h, w, c_out, kh, kw,
-            config.stride, config.padding, config.dilation, config.groups,
+            weight,
+            bias,
+            n_batch,
+            c_in,
+            h,
+            w,
+            c_out,
+            kh,
+            kw,
+            config.stride,
+            config.padding,
+            config.dilation,
+            config.groups,
         )
     }
 
@@ -301,8 +329,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         config: &Conv1dConfig,
     ) -> Self {
         self.conv1d(
-            weight, bias, n_batch, c_in, length, c_out, kernel_size,
-            config.stride, config.padding, config.dilation, config.groups,
+            weight,
+            bias,
+            n_batch,
+            c_in,
+            length,
+            c_out,
+            kernel_size,
+            config.stride,
+            config.padding,
+            config.dilation,
+            config.groups,
         )
     }
 
@@ -327,8 +364,18 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let out_h = (h - 1) * stride.0 - 2 * padding.0 + kh + output_padding.0;
         let out_w = (w - 1) * stride.1 - 2 * padding.1 + kw + output_padding.1;
         let out = Self::from_storage(B::conv_transpose2d(
-            &self.storage, &weight.storage,
-            n_batch, c_in, h, w, c_out, kh, kw, stride, padding, output_padding,
+            &self.storage,
+            &weight.storage,
+            n_batch,
+            c_in,
+            h,
+            w,
+            c_out,
+            kh,
+            kw,
+            stride,
+            padding,
+            output_padding,
         ));
         if let Some(bi) = bias {
             let bias_exp = B::from_fn(n_batch * c_out, out_h * out_w, |row, _col| {
@@ -341,7 +388,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-// ---- 3-D convolution (cpu-gated) ----
 
 #[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Tensor<T, B> {
@@ -349,11 +395,22 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn conv3d(
-        &self, weight: &Self, bias: Option<&Self>,
-        n_batch: usize, c_in: usize, d: usize, h: usize, w: usize,
-        c_out: usize, kd: usize, kh: usize, kw: usize,
-        stride: (usize, usize, usize), padding: (usize, usize, usize),
-        dilation: (usize, usize, usize), groups: usize,
+        &self,
+        weight: &Self,
+        bias: Option<&Self>,
+        n_batch: usize,
+        c_in: usize,
+        d: usize,
+        h: usize,
+        w: usize,
+        c_out: usize,
+        kd: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize, usize),
+        padding: (usize, usize, usize),
+        dilation: (usize, usize, usize),
+        groups: usize,
     ) -> Self {
         assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
         let out_d = (d + 2 * padding.0 - dilation.0 * (kd - 1) - 1) / stride.0 + 1;
@@ -361,8 +418,21 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let out_w = (w + 2 * padding.2 - dilation.2 * (kw - 1) - 1) / stride.2 + 1;
         let out_spatial = out_d * out_h * out_w;
         let out = Self::from_storage(B::conv3d(
-            &self.storage, &weight.storage,
-            n_batch, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation, groups,
+            &self.storage,
+            &weight.storage,
+            n_batch,
+            c_in,
+            d,
+            h,
+            w,
+            c_out,
+            kd,
+            kh,
+            kw,
+            stride,
+            padding,
+            dilation,
+            groups,
         ));
         if let Some(bi) = bias {
             let bias_exp = B::from_fn(n_batch * c_out, out_spatial, |row, _col| {
@@ -393,15 +463,25 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         config: &Conv3dConfig,
     ) -> Self {
         self.conv3d(
-            weight, bias, n_batch, c_in, d, h, w, c_out, kd, kh, kw,
-            config.stride, config.padding, config.dilation, config.groups,
+            weight,
+            bias,
+            n_batch,
+            c_in,
+            d,
+            h,
+            w,
+            c_out,
+            kd,
+            kh,
+            kw,
+            config.stride,
+            config.padding,
+            config.dilation,
+            config.groups,
         )
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-
-// tensor/nn/pooling.rs — Pooling and interpolation operations.
 
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
@@ -410,22 +490,48 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// 2-D max pooling.
     #[must_use]
     pub fn max_pool2d(
-        &self, h: usize, w: usize, kh: usize, kw: usize,
-        stride: (usize, usize), padding: (usize, usize),
+        &self,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
     ) -> Self {
         Self::from_storage(B::max_pool2d(
-            &self.storage, h, w, kh, kw, stride.0, stride.1, padding.0, padding.1,
+            &self.storage,
+            h,
+            w,
+            kh,
+            kw,
+            stride.0,
+            stride.1,
+            padding.0,
+            padding.1,
         ))
     }
 
     /// 2-D max pooling with argmax flat indices.
     #[must_use]
     pub fn max_pool2d_with_indices(
-        &self, h: usize, w: usize, kh: usize, kw: usize,
-        stride: (usize, usize), padding: (usize, usize),
+        &self,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
     ) -> (Self, Self) {
         let (v, idx) = B::max_pool2d_with_indices(
-            &self.storage, h, w, kh, kw, stride.0, stride.1, padding.0, padding.1,
+            &self.storage,
+            h,
+            w,
+            kh,
+            kw,
+            stride.0,
+            stride.1,
+            padding.0,
+            padding.1,
         );
         (Self::from_storage(v), Self::from_storage(idx))
     }
@@ -433,11 +539,24 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// 2-D average pooling.
     #[must_use]
     pub fn avg_pool2d(
-        &self, h: usize, w: usize, kh: usize, kw: usize,
-        stride: (usize, usize), padding: (usize, usize),
+        &self,
+        h: usize,
+        w: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
     ) -> Self {
         Self::from_storage(B::avg_pool2d(
-            &self.storage, h, w, kh, kw, stride.0, stride.1, padding.0, padding.1,
+            &self.storage,
+            h,
+            w,
+            kh,
+            kw,
+            stride.0,
+            stride.1,
+            padding.0,
+            padding.1,
         ))
     }
 
@@ -449,7 +568,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// 1-D max pooling.
     #[must_use]
-    pub fn max_pool1d(&self, length: usize, kernel_size: usize, stride: usize, padding: usize) -> Self {
+    pub fn max_pool1d(
+        &self,
+        length: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+    ) -> Self {
         let out_len = (length + 2 * padding - kernel_size) / stride + 1;
         let nc = self.nrows();
         let two = two::<T>();
@@ -474,7 +599,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// 1-D average pooling.
     #[must_use]
-    pub fn avg_pool1d(&self, length: usize, kernel_size: usize, stride: usize, padding: usize) -> Self {
+    pub fn avg_pool1d(
+        &self,
+        length: usize,
+        kernel_size: usize,
+        stride: usize,
+        padding: usize,
+    ) -> Self {
         let out_len = (length + 2 * padding - kernel_size) / stride + 1;
         let nc = self.nrows();
         let ks = T::from_f64(kernel_size as f64);
@@ -491,7 +622,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-// ---- Interpolation (cpu-gated) ----
 
 #[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Tensor<T, B> {

@@ -1,12 +1,10 @@
-// tensor/ops.rs — Tensor arithmetic: element access, element-wise ops, broadcast,
-//                  transpose/permute, matrix multiply, and operator overloads.
 
 use core::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, RangeBounds, Sub, SubAssign};
 
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 
-use super::{resolve_range, two, Tensor};
+use super::{Tensor, resolve_range, two};
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Validate two tensors have the same shape.
@@ -161,12 +159,14 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let h = re - rs;
         let w = ce - cs;
         assert_eq!(
-            src.nrows(), h,
+            src.nrows(),
+            h,
             "slice_set: src nrows {srn} != region height {h}",
             srn = src.nrows()
         );
         assert_eq!(
-            src.ncols(), w,
+            src.ncols(),
+            w,
             "slice_set: src ncols {scn} != region width {w}",
             scn = src.ncols()
         );
@@ -193,18 +193,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         self.get(0, 0)
     }
 
+    /// Pre-fetch data to host-side cache for fast element access.
+    /// On GPU backends this triggers a single bulk device-to-host transfer.
+    /// On CPU this is a no-op.
+    pub fn prefetch(&self) {
+        B::prefetch(&self.storage);
+    }
+
     /// Collect all elements into a flat `Vec<T>` in row-major order.
     #[must_use]
     pub fn to_vec(&self) -> Vec<T> {
-        let (m, n) = self.shape();
-        let len = m * n;
-        let mut v = Vec::with_capacity(len);
-        for r in 0..m {
-            for c in 0..n {
-                v.push(self.get(r, c));
-            }
-        }
-        v
+        B::to_vec_async(&self.storage)
     }
 
     // ---- Element-wise operations ----
@@ -265,6 +264,52 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             let clamped_lo = (x + lo + (x - lo).math_abs()) / two;
             (clamped_lo + hi - (clamped_lo - hi).math_abs()) / two
         })
+    }
+
+    /// Element-wise sign: returns -1, 0, or 1 for each element.
+    ///
+    /// Uses `T::zero()` and `T::one_impl()` for type-generic comparison.
+    #[must_use]
+    pub fn sign(&self) -> Self {
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            let v = self.get(r, c).to_f64();
+            if v > 0.0 {
+                T::one_impl()
+            } else if v < 0.0 {
+                T::zero() - T::one_impl()
+            } else {
+                T::zero()
+            }
+        })
+    }
+
+    /// Element-wise remainder: `self % rhs` (each element).
+    #[must_use]
+    pub fn rem(&self, rhs: &Self) -> Self {
+        self.assert_same_shape(rhs, "rem");
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| {
+            let a = self.get(r, c).to_f64();
+            let b = rhs.get(r, c).to_f64();
+            T::from_f64(a % b)
+        })
+    }
+
+    /// Element-wise remainder with a scalar divisor.
+    #[must_use]
+    pub fn rem_scalar(&self, rhs: T) -> Self {
+        let (m, n) = self.shape();
+        let b = rhs.to_f64();
+        Self::from_fn(m, n, |r, c| T::from_f64(self.get(r, c).to_f64() % b))
+    }
+
+    /// Hadamard (element-wise) product. Alias for [`Tensor::emul`].
+    #[deprecated(since = "0.1.0", note = "use emul() instead")]
+    #[must_use]
+    #[inline]
+    pub fn hadamard(&self, rhs: &Self) -> Self {
+        self.emul(rhs)
     }
 
     /// Replace elements where `mask` is non-zero with `value`.
@@ -372,11 +417,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Permute axes of a 2-D tensor.
     #[must_use]
     pub fn permute(&self, axes: &[usize]) -> Self {
-        assert_eq!(axes.len(), 2, "nabla: Tensor is 2-D -- permute axes must have length 2");
+        assert_eq!(
+            axes.len(),
+            2,
+            "nabla: Tensor is 2-D -- permute axes must have length 2"
+        );
         assert!(
             axes[0] < 2 && axes[1] < 2 && axes[0] != axes[1],
             "nabla: permute axes must be a permutation of {{0, 1}}, got [{}, {}]",
-            axes[0], axes[1]
+            axes[0],
+            axes[1]
         );
         match (axes[0], axes[1]) {
             (0, 1) => self.clone(),
@@ -402,6 +452,28 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         B::matmul_into(&mut out.storage, &a.storage, &b.storage);
     }
 
+    /// Compute `a^T @ b` without materializing the transpose.
+    #[must_use]
+    pub fn matmul_tn(&self, rhs: &Self) -> Self {
+        let (k, m) = self.shape();
+        let (k2, n) = rhs.shape();
+        assert_eq!(k, k2, "matmul_tn: a rows {k} != b rows {k2}");
+        let mut out = Self::zeros(m, n);
+        B::matmul_tn_into(&mut out.storage, &self.storage, &rhs.storage);
+        out
+    }
+
+    /// Compute `a @ b^T` without materializing the transpose.
+    #[must_use]
+    pub fn matmul_nt(&self, rhs: &Self) -> Self {
+        let (m, k) = self.shape();
+        let (n, k2) = rhs.shape();
+        assert_eq!(k, k2, "matmul_nt: a cols {k} != b cols {k2}");
+        let mut out = Self::zeros(m, n);
+        B::matmul_nt_into(&mut out.storage, &self.storage, &rhs.storage);
+        out
+    }
+
     /// Fused matmul + element-wise activation.
     #[must_use]
     pub fn matmul_fused<F>(a: &Self, b: &Self, act: F) -> Self
@@ -413,9 +485,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-// ---- Operator overloads ----
 
-// Auto-broadcasting Add: exact match, row/col/scalar broadcast.
 impl<T: Scalar, B: Backend> Add for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
@@ -452,13 +522,10 @@ impl<T: Scalar, B: Backend> Add for &Tensor<T, B> {
             let s = self.get(0, 0);
             return Tensor::from_fn(p, q, |r, c| s + rhs.get(r, c));
         }
-        panic!(
-            "nabla: add ({m}x{n}) vs ({p}x{q}) -- shapes are not broadcast-compatible"
-        );
+        panic!("nabla: add ({m}x{n}) vs ({p}x{q}) -- shapes are not broadcast-compatible");
     }
 }
 
-// Auto-broadcasting Sub: exact match, row/col/scalar broadcast.
 impl<T: Scalar, B: Backend> Sub for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
@@ -495,36 +562,48 @@ impl<T: Scalar, B: Backend> Sub for &Tensor<T, B> {
             let s = self.get(0, 0);
             return Tensor::from_fn(p, q, |r, c| s - rhs.get(r, c));
         }
-        panic!(
-            "nabla: sub ({m}x{n}) vs ({p}x{q}) -- shapes are not broadcast-compatible"
-        );
+        panic!("nabla: sub ({m}x{n}) vs ({p}x{q}) -- shapes are not broadcast-compatible");
     }
 }
 
-/// In-place element-wise addition: `tensor += &other`.
 impl<T: Scalar, B: Backend> AddAssign<&Tensor<T, B>> for Tensor<T, B> {
     fn add_assign(&mut self, rhs: &Tensor<T, B>) {
         let (m, n) = self.shape();
         let (p, q) = rhs.shape();
-        assert!(m == p && n == q, "nabla: += ({m}x{n}) vs ({p}x{q}) -- shapes must match");
+        assert!(
+            m == p && n == q,
+            "nabla: += ({m}x{n}) vs ({p}x{q}) -- shapes must match"
+        );
         self.storage = B::add(&self.storage, &rhs.storage);
     }
 }
 
-/// In-place element-wise subtraction: `tensor -= &other`.
 impl<T: Scalar, B: Backend> SubAssign<&Tensor<T, B>> for Tensor<T, B> {
     fn sub_assign(&mut self, rhs: &Tensor<T, B>) {
         let (m, n) = self.shape();
         let (p, q) = rhs.shape();
-        assert!(m == p && n == q, "nabla: -= ({m}x{n}) vs ({p}x{q}) -- shapes must match");
+        assert!(
+            m == p && n == q,
+            "nabla: -= ({m}x{n}) vs ({p}x{q}) -- shapes must match"
+        );
         self.storage = B::sub(&self.storage, &rhs.storage);
     }
 }
 
-/// In-place scalar scaling: `tensor *= scalar`.
 impl<T: Scalar, B: Backend> MulAssign<T> for Tensor<T, B> {
     fn mul_assign(&mut self, rhs: T) {
         self.storage = B::scale(&self.storage, rhs);
+    }
+}
+
+impl<T: Scalar, B: Backend> Tensor<T, B> {
+    /// In-place axpy: `self[i] += alpha * x[i]`. Zero allocation, single kernel.
+    #[inline]
+    pub fn axpy_inplace(&mut self, alpha: T, x: &Self) {
+        let (m, n) = self.shape();
+        let (p, q) = x.shape();
+        assert!(m == p && n == q, "nabla: axpy_inplace ({m}x{n}) vs ({p}x{q}) -- shapes must match");
+        B::axpy_inplace(&mut self.storage, alpha, &x.storage);
     }
 }
 
@@ -536,7 +615,6 @@ impl<T: Scalar, B: Backend> Neg for &Tensor<T, B> {
     }
 }
 
-/// Matrix multiply (`*`). Panics if inner dimensions do not match.
 impl<T: Scalar, B: Backend> Mul for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
@@ -553,7 +631,6 @@ impl<T: Scalar, B: Backend> Mul for &Tensor<T, B> {
     }
 }
 
-/// Scalar multiply: `&tensor * scalar`.
 impl<T: Scalar, B: Backend> Mul<T> for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
@@ -562,7 +639,6 @@ impl<T: Scalar, B: Backend> Mul<T> for &Tensor<T, B> {
     }
 }
 
-/// Scalar division: `&tensor / scalar`.
 impl<T: Scalar, B: Backend> Div<T> for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
@@ -573,7 +649,6 @@ impl<T: Scalar, B: Backend> Div<T> for &Tensor<T, B> {
     }
 }
 
-/// Scalar division: `tensor / scalar` (owned).
 impl<T: Scalar, B: Backend> Div<T> for Tensor<T, B> {
     type Output = Self;
 
@@ -583,9 +658,7 @@ impl<T: Scalar, B: Backend> Div<T> for Tensor<T, B> {
     }
 }
 
-// ---- Owned / mixed-ref operator overloads ----
 
-/// `Tensor + Tensor` (owned + owned) — delegates to `&lhs + &rhs`.
 impl<T: Scalar, B: Backend> Add for Tensor<T, B> {
     type Output = Self;
 
@@ -595,7 +668,6 @@ impl<T: Scalar, B: Backend> Add for Tensor<T, B> {
     }
 }
 
-/// `&Tensor + Tensor` (ref + owned) — delegates to `&lhs + &rhs`.
 impl<T: Scalar, B: Backend> Add<Tensor<T, B>> for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
@@ -605,7 +677,6 @@ impl<T: Scalar, B: Backend> Add<Tensor<T, B>> for &Tensor<T, B> {
     }
 }
 
-/// `Tensor + &Tensor` (owned + ref) — delegates to `&lhs + rhs`.
 impl<T: Scalar, B: Backend> Add<&Tensor<T, B>> for Tensor<T, B> {
     type Output = Self;
 
@@ -615,7 +686,6 @@ impl<T: Scalar, B: Backend> Add<&Tensor<T, B>> for Tensor<T, B> {
     }
 }
 
-/// `Tensor - Tensor` (owned - owned) — delegates to `&lhs - &rhs`.
 impl<T: Scalar, B: Backend> Sub for Tensor<T, B> {
     type Output = Self;
 
@@ -625,7 +695,6 @@ impl<T: Scalar, B: Backend> Sub for Tensor<T, B> {
     }
 }
 
-/// `&Tensor - Tensor` (ref - owned) — delegates to `&lhs - &rhs`.
 impl<T: Scalar, B: Backend> Sub<Tensor<T, B>> for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
@@ -635,7 +704,6 @@ impl<T: Scalar, B: Backend> Sub<Tensor<T, B>> for &Tensor<T, B> {
     }
 }
 
-/// `Tensor - &Tensor` (owned - ref) — delegates to `&lhs - rhs`.
 impl<T: Scalar, B: Backend> Sub<&Tensor<T, B>> for Tensor<T, B> {
     type Output = Self;
 
@@ -645,7 +713,6 @@ impl<T: Scalar, B: Backend> Sub<&Tensor<T, B>> for Tensor<T, B> {
     }
 }
 
-/// `-Tensor` (owned negation) — delegates to `-&self`.
 impl<T: Scalar, B: Backend> Neg for Tensor<T, B> {
     type Output = Self;
 
@@ -655,9 +722,7 @@ impl<T: Scalar, B: Backend> Neg for Tensor<T, B> {
     }
 }
 
-// ---- Owned matmul operator overloads (I-3) ----
 
-/// `Tensor * Tensor` (owned * owned) — delegates to `&lhs * &rhs`.
 impl<T: Scalar, B: Backend> Mul for Tensor<T, B> {
     type Output = Self;
 
@@ -667,7 +732,6 @@ impl<T: Scalar, B: Backend> Mul for Tensor<T, B> {
     }
 }
 
-/// `Tensor * &Tensor` (owned * ref) — delegates to `&lhs * rhs`.
 impl<T: Scalar, B: Backend> Mul<&Tensor<T, B>> for Tensor<T, B> {
     type Output = Self;
 
@@ -677,7 +741,6 @@ impl<T: Scalar, B: Backend> Mul<&Tensor<T, B>> for Tensor<T, B> {
     }
 }
 
-/// `&Tensor * Tensor` (ref * owned) — delegates to `self * &rhs`.
 impl<T: Scalar, B: Backend> Mul<Tensor<T, B>> for &Tensor<T, B> {
     type Output = Tensor<T, B>;
 
@@ -687,10 +750,7 @@ impl<T: Scalar, B: Backend> Mul<Tensor<T, B>> for &Tensor<T, B> {
     }
 }
 
-// ---- Commutative scalar operators (I-2) ----
 
-/// Generate `scalar * &Tensor`, `scalar * Tensor`, `scalar + &Tensor`, `scalar + Tensor`,
-/// `scalar - &Tensor`, `scalar - Tensor` for concrete scalar types.
 macro_rules! impl_scalar_lhs_ops {
     ($($t:ty),*) => { $(
         /// `scalar * &Tensor` — scalar scaling (commutative).

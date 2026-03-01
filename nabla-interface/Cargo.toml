@@ -1,0 +1,26 @@
+[package]
+name = "nabla-interface"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88.0"
+license = "Apache-2.0 OR MIT"
+description = "GGUF export + llama.cpp FFI bridge for nabla"
+keywords = ["gguf", "llama", "inference", "quantization", "nabla"]
+categories = ["science", "mathematics"]
+
+[features]
+default = ["cpu"]
+cpu = ["nabla-ml/cpu"]
+wgpu = ["nabla-ml/wgpu"]
+cuda = ["nabla-ml/cuda"]
+hip = ["nabla-ml/hip"]
+llama = []
+
+[dependencies]
+nabla-core = { path = "../nabla-core", default-features = false }
+nabla-ml = { path = "../nabla-ml", package = "nabla", default-features = false }
+half = { version = "2", features = ["num-traits"] }
+thiserror = "2"
+
+[build-dependencies]
+pkg-config = "0.3"

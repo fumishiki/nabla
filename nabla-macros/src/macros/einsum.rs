@@ -1,15 +1,3 @@
-// einsum.rs — Einstein summation proc macro implementation.
-//
-// Parses `output[free_indices] = term1 * term2 * ...` and generates
-// optimised Rust code:
-//   - GEMM pattern  → `Tensor::matmul_into`  (nabla CPU / GPU tiled)
-//   - GEMV pattern  → `Tensor::matmul_into`  (M×1 column vector)
-//   - Hadamard      → `emul`
-//   - Trace         → diagonal sum loop
-//   - Outer         → `from_fn` outer product
-//   - N-D Fallback  → `Tensor::from_fn` + general accumulation loops
-//
-// All compile errors use `syn::Error::new_spanned` for precise diagnostics.
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
@@ -19,11 +7,7 @@ use syn::{
     parse::{Parse, ParseStream},
 };
 
-// ---------------------------------------------------------------------------
-// AST types
-// ---------------------------------------------------------------------------
 
-/// A single tensor reference in the expression: `name[i, j]` or `name[i]`.
 struct IndexedTensor {
     name: Ident,
     /// Index names in order (N-D: no limit on count).
@@ -33,7 +17,6 @@ struct IndexedTensor {
     bracket_span: Option<Span>,
 }
 
-/// Parsed representation of a full einsum expression.
 pub(crate) struct EinsumInput {
     /// The LHS output name (e.g. `c` in `c[i,j] = ...`).
     _output_name: Ident,
@@ -45,7 +28,6 @@ pub(crate) struct EinsumInput {
     rhs_terms: Vec<IndexedTensor>,
 }
 
-/// Compile-time classification of the contraction pattern.
 #[derive(Debug)]
 enum ContractionKind {
     /// C = A B  (standard layout: a[i,k] * b[k,j])
@@ -69,9 +51,6 @@ enum ContractionKind {
     Fallback,
 }
 
-// ---------------------------------------------------------------------------
-// Parser
-// ---------------------------------------------------------------------------
 
 impl Parse for EinsumInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
@@ -134,9 +113,6 @@ fn name_list(indices: &[Ident]) -> Vec<String> {
     indices.iter().map(Ident::to_string).collect()
 }
 
-// ---------------------------------------------------------------------------
-// Validation (I3c: spanned errors)
-// ---------------------------------------------------------------------------
 
 fn validate(input: &EinsumInput) -> Result<()> {
     if input.rhs_terms.is_empty() {
@@ -209,9 +185,6 @@ fn is_trace_index(input: &EinsumInput, name: &str) -> bool {
         .any(|t| t.indices.iter().filter(|i| *i == name).count() >= 2)
 }
 
-// ---------------------------------------------------------------------------
-// Canonicalization (alpha-equivalence + term ordering)
-// ---------------------------------------------------------------------------
 
 fn canonicalize(input: &mut EinsumInput) {
     // Sort 2-term RHS alphabetically by tensor name BEFORE renaming.
@@ -266,9 +239,6 @@ fn canonicalize(input: &mut EinsumInput) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Contraction classifier
-// ---------------------------------------------------------------------------
 
 fn classify(input: &EinsumInput) -> ContractionKind {
     let free = &input.output_indices;
@@ -376,9 +346,6 @@ fn classify(input: &EinsumInput) -> ContractionKind {
     ContractionKind::Fallback
 }
 
-// ---------------------------------------------------------------------------
-// Code generation entry
-// ---------------------------------------------------------------------------
 
 pub(crate) fn einsum_impl(input: TokenStream2) -> Result<TokenStream2> {
     let mut parsed: EinsumInput = syn::parse2(input)?;
@@ -403,13 +370,7 @@ fn codegen_einsum(input: &EinsumInput) -> Result<TokenStream2> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers (unified element access, dim lookup, tiling, output shape)
-// ---------------------------------------------------------------------------
 
-/// Unified element access for both original `IndexedTensor` and `IntermediateTensor`.
-///
-/// `is_original`: originals use `.get(i,j)` for 1D/2D; intermediates use `.get_nd`.
 fn element_access(binding: &Ident, indices: &[Ident], is_original: bool) -> TokenStream2 {
     match (indices.len(), is_original) {
         (0, _) => quote! { #binding },
@@ -426,10 +387,6 @@ fn element_access(binding: &Ident, indices: &[Ident], is_original: bool) -> Toke
     }
 }
 
-/// Generate a dimension expression for a tensor at a given axis position.
-///
-/// For 2-D tensors (<=2 indices), uses `.nrows()` / `.ncols()` for readability.
-/// For N-D tensors (>2 indices), always uses `.dim(pos)`.
 fn dim_expr_at(binding: &Ident, pos: usize, ndim: usize) -> TokenStream2 {
     if ndim > 2 {
         quote! { #binding.dim(#pos) }
@@ -442,11 +399,6 @@ fn dim_expr_at(binding: &Ident, pos: usize, ndim: usize) -> TokenStream2 {
     }
 }
 
-/// Unified dimension lookup: find the dimension expression for `idx` across a
-/// slice of `(binding, indices, is_original)` descriptors.
-///
-/// If `preferred_pos` is `Some(p)`, matches only at that axis position first,
-/// then falls back to any position.
 fn find_dim_expr(
     idx: &Ident,
     tensors: &[(&Ident, &[Ident], bool)],
@@ -488,7 +440,6 @@ fn find_dim_expr(
     ))
 }
 
-/// Build tensor descriptors from `IndexedTensor` slice for `find_dim_expr`.
 fn rhs_descriptors(terms: &[IndexedTensor]) -> Vec<(Ident, &[Ident], bool)> {
     terms
         .iter()
@@ -499,10 +450,6 @@ fn rhs_descriptors(terms: &[IndexedTensor]) -> Vec<(Ident, &[Ident], bool)> {
         .collect()
 }
 
-/// Build L1-tiled contraction loops around an accumulation step.
-///
-/// The innermost (last) contraction index gets step_by(64) tiling for cache locality.
-/// Outer contraction indices use plain loops.
 fn build_tiled_loops<F>(
     contraction_indices: &[&Ident],
     dim_lookup: F,
@@ -547,11 +494,6 @@ where
     Ok(loops)
 }
 
-/// Emit the output tensor construction (scalar / 1D / 2D / N-D).
-///
-/// `dim_lookup`: resolves an index ident to its dimension expression.
-/// `loops`: the contraction loop body (accumulator pattern).
-/// `wrap`: if true, wraps result in `let __final = ...;` (for sequential contraction final step).
 fn emit_output_tensor<F>(
     free_indices: &[Ident],
     dim_lookup: F,
@@ -636,9 +578,6 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// Specialised codegen (GEMM / GEMV / Hadamard / Trace / Outer / BatchGEMM)
-// ---------------------------------------------------------------------------
 
 fn bind_ref(name: &Ident) -> (Ident, TokenStream2) {
     let bind = Ident::new(&format!("__{name}"), name.span());
@@ -817,9 +756,6 @@ fn codegen_batch_gemm(input: &EinsumInput, batch_count: usize) -> Result<TokenSt
     })
 }
 
-// ---------------------------------------------------------------------------
-// Fallback: general loop-based contraction
-// ---------------------------------------------------------------------------
 
 fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
     if input.rhs_terms.len() >= 3 {
@@ -880,7 +816,6 @@ fn codegen_fallback(input: &EinsumInput) -> Result<TokenStream2> {
     })
 }
 
-/// Deduplicated tensor binding statements.
 fn dedup_bindings(terms: &[IndexedTensor]) -> Vec<TokenStream2> {
     let mut seen: HashSet<String> = HashSet::new();
     terms
@@ -897,9 +832,6 @@ fn dedup_bindings(terms: &[IndexedTensor]) -> Vec<TokenStream2> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Greedy contraction order optimizer for 3+ term einsums
-// ---------------------------------------------------------------------------
 
 fn greedy_contraction_order(
     terms: &[IndexedTensor],
@@ -977,11 +909,7 @@ fn greedy_contraction_order(
     order
 }
 
-// ---------------------------------------------------------------------------
-// Sequential binary contraction for 3+ terms
-// ---------------------------------------------------------------------------
 
-/// Intermediate tensor descriptor for sequential contraction.
 struct IntermediateTensor {
     binding: Ident,
     indices: Vec<Ident>,

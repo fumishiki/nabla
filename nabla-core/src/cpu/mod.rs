@@ -1,17 +1,10 @@
-// cpu.rs — Cpu backend: CpuStorage (row-major Vec<T>) + impl Backend for Cpu.
-//
-// Element storage is a plain Vec<T> with
-// row-major layout: data[r * ncols + c].
-//
-// matmul_into uses a tiled i-k-j loop (TILE=64) for cache-friendly access.
 
+use crate::backend::BackendCore;
 use crate::scalar::Scalar;
 use rayon::prelude::*;
 
-// Tiled matmul tile size — chosen to fit in L1 cache for f64.
 const TILE: usize = 64;
 
-/// Row-major owned storage for a 2-D CPU matrix.
 pub struct CpuStorage<T: Scalar> {
     data: Vec<T>,
     nrows: usize,
@@ -91,7 +84,6 @@ impl<T: Scalar> CpuStorage<T> {
     }
 }
 
-// Internal macro: generate a Backend unary method that maps over CpuStorage elements.
 macro_rules! cpu_unary_op {
     ($fn_name:ident, |$x:ident| $body:expr) => {
         #[inline]
@@ -101,14 +93,12 @@ macro_rules! cpu_unary_op {
     };
 }
 
-// Batch version: define multiple unary ops via Scalar::math_* methods.
 macro_rules! cpu_unary_ops {
     ($($fn_name:ident => $method:ident),* $(,)?) => {
         $(cpu_unary_op!($fn_name, |x| x.$method());)*
     };
 }
 
-// Internal macro: generate a Backend binary method that zips two CpuStorage.
 macro_rules! cpu_binary_op {
     ($fn_name:ident, |$x:ident, $y:ident| $body:expr) => {
         #[inline]
@@ -118,10 +108,8 @@ macro_rules! cpu_binary_op {
     };
 }
 
-/// CPU backend — row-major `Vec<T>` storage, no external BLAS dependencies.
 pub struct Cpu;
 
-// Shared helpers for CPU reduction ops.
 #[inline]
 fn cpu_fold_first<T: Scalar>(a: &CpuStorage<T>, f: impl Fn(T, T) -> T) -> T {
     assert!(!a.data.is_empty(), "reduction on empty matrix");
@@ -143,7 +131,7 @@ fn cpu_argext<T: Scalar>(a: &CpuStorage<T>, is_better: impl Fn(T, T) -> bool) ->
 
 impl crate::backend::private::Sealed for Cpu {}
 
-impl crate::backend::Backend for Cpu {
+impl crate::backend::BackendCore for Cpu {
     type Storage<T: Scalar> = CpuStorage<T>;
 
     #[inline]
@@ -191,6 +179,169 @@ impl crate::backend::Backend for Cpu {
         storage.set_unchecked(row, col, val);
     }
 
+    cpu_binary_op!(add, |x, y| x + y);
+
+    cpu_binary_op!(sub, |x, y| x - y);
+
+    cpu_unary_op!(neg, |x| -x);
+
+    #[inline]
+    fn transpose<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
+        const BLK: usize = 64;
+        let (rows, cols) = (a.nrows, a.ncols);
+        let mut out = CpuStorage::new_zeroed(cols, rows);
+        let mut i0 = 0;
+        while i0 < rows {
+            let imax = (i0 + BLK).min(rows);
+            let mut j0 = 0;
+            while j0 < cols {
+                let jmax = (j0 + BLK).min(cols);
+                for i in i0..imax {
+                    for j in j0..jmax {
+                        out.data[j * rows + i] = a.data[i * cols + j];
+                    }
+                }
+                j0 += BLK;
+            }
+            i0 += BLK;
+        }
+        out
+    }
+
+    #[inline]
+    fn scale<T: Scalar>(a: &CpuStorage<T>, s: T) -> CpuStorage<T> {
+        a.map_elem(|x| x * s)
+    }
+
+    #[inline]
+    fn axpy_inplace<T: Scalar>(y: &mut CpuStorage<T>, alpha: T, x: &CpuStorage<T>) {
+        y.data.par_iter_mut().zip(x.data.par_iter()).for_each(|(yi, &xi)| {
+            *yi = *yi + alpha * xi;
+        });
+    }
+
+    #[inline]
+    fn clone_storage<T: Scalar>(storage: &CpuStorage<T>) -> CpuStorage<T> {
+        CpuStorage {
+            data: storage.data.clone(),
+            nrows: storage.nrows,
+            ncols: storage.ncols,
+        }
+    }
+}
+
+impl crate::backend::BackendMath for Cpu {
+    cpu_unary_ops!(
+        exp   => math_exp,
+        ln    => math_ln,
+        log1p => math_log1p,
+        sin   => math_sin,
+        cos   => math_cos,
+        tan   => math_tan,
+        tanh  => math_tanh,
+        sqrt  => math_sqrt,
+        abs   => math_abs,
+        recip => math_recip,
+        erf   => math_erf,
+        ceil  => math_ceil,
+        floor => math_floor,
+        round => math_round,
+        asin  => math_asin,
+        acos  => math_acos,
+        atan  => math_atan,
+        sinh  => math_sinh,
+        cosh  => math_cosh,
+        asinh => math_asinh,
+        acosh => math_acosh,
+        atanh => math_atanh,
+        log2  => math_log2,
+        log10 => math_log10,
+    );
+
+    #[inline]
+    fn powf<T: Scalar>(a: &CpuStorage<T>, p: T) -> CpuStorage<T> {
+        a.map_elem(|x| x.math_powf(p))
+    }
+
+    cpu_binary_op!(atan2, |x, y| x.math_atan2(y));
+
+    cpu_binary_op!(emul, |x, y| x.math_mul(y));
+
+    cpu_binary_op!(ediv, |x, y| x.math_div(y));
+}
+
+impl crate::backend::BackendReduce for Cpu {
+    #[inline]
+    fn sum_all<T: Scalar>(a: &CpuStorage<T>) -> T {
+        a.data
+            .par_iter()
+            .fold(|| T::zero(), |acc, &x| acc.reduction_add(x))
+            .reduce(|| T::zero(), crate::scalar::ReductionOps::reduction_add)
+    }
+
+    #[inline]
+    fn max_all<T: Scalar>(a: &CpuStorage<T>) -> T {
+        cpu_fold_first(a, crate::scalar::ReductionOps::reduction_max)
+    }
+
+    #[inline]
+    fn min_all<T: Scalar>(a: &CpuStorage<T>) -> T {
+        cpu_fold_first(a, crate::scalar::ReductionOps::reduction_min)
+    }
+
+    #[inline]
+    fn argmax_all<T: Scalar>(a: &CpuStorage<T>) -> (usize, usize) {
+        cpu_argext(a, crate::scalar::ReductionOps::reduction_gt)
+    }
+
+    #[inline]
+    fn argmin_all<T: Scalar>(a: &CpuStorage<T>) -> (usize, usize) {
+        cpu_argext(a, |cur, best| best.reduction_gt(cur))
+    }
+
+    fn sum_axis1<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
+        let nrows = a.nrows;
+        let ncols = a.ncols;
+        let mut data = Vec::with_capacity(nrows);
+        for r in 0..nrows {
+            let base = r * ncols;
+            let mut acc = T::zero();
+            for j in 0..ncols {
+                acc = acc + a.data[base + j];
+            }
+            data.push(acc);
+        }
+        CpuStorage {
+            data,
+            nrows,
+            ncols: 1,
+        }
+    }
+
+    fn max_axis1<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
+        let nrows = a.nrows;
+        let ncols = a.ncols;
+        let mut data = Vec::with_capacity(nrows);
+        for r in 0..nrows {
+            let base = r * ncols;
+            let mut acc = a.data[base];
+            for j in 1..ncols {
+                let v = a.data[base + j];
+                if v.to_f64() > acc.to_f64() {
+                    acc = v;
+                }
+            }
+            data.push(acc);
+        }
+        CpuStorage {
+            data,
+            nrows,
+            ncols: 1,
+        }
+    }
+}
+
+impl crate::backend::BackendBlas for Cpu {
     #[allow(clippy::many_single_char_names)]
     fn matmul_into<T: Scalar>(out: &mut CpuStorage<T>, a: &CpuStorage<T>, b: &CpuStorage<T>) {
         let (m, k, n) = (a.nrows, a.ncols, b.ncols);
@@ -230,118 +381,9 @@ impl crate::backend::Backend for Cpu {
                 }
             });
     }
+}
 
-    cpu_binary_op!(add, |x, y| x + y);
-
-    cpu_binary_op!(sub, |x, y| x - y);
-
-    cpu_unary_op!(neg, |x| -x);
-
-    #[inline]
-    fn transpose<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-        const BLK: usize = 64;
-        let (rows, cols) = (a.nrows, a.ncols);
-        let mut out = CpuStorage::new_zeroed(cols, rows);
-        let mut i0 = 0;
-        while i0 < rows {
-            let imax = (i0 + BLK).min(rows);
-            let mut j0 = 0;
-            while j0 < cols {
-                let jmax = (j0 + BLK).min(cols);
-                for i in i0..imax {
-                    for j in j0..jmax {
-                        out.data[j * rows + i] = a.data[i * cols + j];
-                    }
-                }
-                j0 += BLK;
-            }
-            i0 += BLK;
-        }
-        out
-    }
-
-    #[inline]
-    fn scale<T: Scalar>(a: &CpuStorage<T>, s: T) -> CpuStorage<T> {
-        a.map_elem(|x| x * s)
-    }
-
-    #[inline]
-    fn clone_storage<T: Scalar>(storage: &CpuStorage<T>) -> CpuStorage<T> {
-        CpuStorage {
-            data: storage.data.clone(),
-            nrows: storage.nrows,
-            ncols: storage.ncols,
-        }
-    }
-
-    cpu_unary_ops!(
-        exp   => math_exp,
-        ln    => math_ln,
-        log1p => math_log1p,
-        sin   => math_sin,
-        cos   => math_cos,
-        tan   => math_tan,
-        tanh  => math_tanh,
-        sqrt  => math_sqrt,
-        abs   => math_abs,
-        recip => math_recip,
-        erf   => math_erf,
-        ceil  => math_ceil,
-        floor => math_floor,
-        round => math_round,
-        asin  => math_asin,
-        acos  => math_acos,
-        atan  => math_atan,
-        sinh  => math_sinh,
-        cosh  => math_cosh,
-        asinh => math_asinh,
-        acosh => math_acosh,
-        atanh => math_atanh,
-        log2  => math_log2,
-        log10 => math_log10,
-    );
-
-    #[inline]
-    fn powf<T: Scalar>(a: &CpuStorage<T>, p: T) -> CpuStorage<T> {
-        a.map_elem(|x| x.math_powf(p))
-    }
-
-    cpu_binary_op!(atan2, |x, y| x.math_atan2(y));
-
-    cpu_binary_op!(emul, |x, y| x.math_mul(y));
-
-    cpu_binary_op!(ediv, |x, y| x.math_div(y));
-
-    #[inline]
-    fn sum_all<T: Scalar>(a: &CpuStorage<T>) -> T {
-        a.data
-            .par_iter()
-            .fold(|| T::zero(), |acc, &x| acc.reduction_add(x))
-            .reduce(|| T::zero(), crate::scalar::ReductionOps::reduction_add)
-    }
-
-    #[inline]
-    fn max_all<T: Scalar>(a: &CpuStorage<T>) -> T {
-        cpu_fold_first(a, crate::scalar::ReductionOps::reduction_max)
-    }
-
-    #[inline]
-    fn min_all<T: Scalar>(a: &CpuStorage<T>) -> T {
-        cpu_fold_first(a, crate::scalar::ReductionOps::reduction_min)
-    }
-
-    #[inline]
-    fn argmax_all<T: Scalar>(a: &CpuStorage<T>) -> (usize, usize) {
-        cpu_argext(a, crate::scalar::ReductionOps::reduction_gt)
-    }
-
-    #[inline]
-    fn argmin_all<T: Scalar>(a: &CpuStorage<T>) -> (usize, usize) {
-        cpu_argext(a, |cur, best| best.reduction_gt(cur))
-    }
-
-    // --- CPU activation ops ---
-
+impl crate::backend::BackendNN for Cpu {
     fn silu<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
         a.map_elem(|x| {
             let s = T::one() / (T::one() + (T::zero() - x).math_exp());
@@ -394,8 +436,6 @@ impl crate::backend::Backend for Cpu {
         })
     }
 
-    // --- CPU softmax ---
-
     fn softmax<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
         let nrows = a.nrows;
         let ncols = a.ncols;
@@ -419,8 +459,6 @@ impl crate::backend::Backend for Cpu {
         }
         CpuStorage { data, nrows, ncols }
     }
-
-    // --- CPU layer_norm / rms_norm ---
 
     fn layer_norm<T: Scalar>(
         a: &CpuStorage<T>,
@@ -472,51 +510,6 @@ impl crate::backend::Backend for Cpu {
         CpuStorage { data, nrows, ncols }
     }
 
-    // --- CPU axis reductions ---
-
-    fn sum_axis1<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-        let nrows = a.nrows;
-        let ncols = a.ncols;
-        let mut data = Vec::with_capacity(nrows);
-        for r in 0..nrows {
-            let base = r * ncols;
-            let mut acc = T::zero();
-            for j in 0..ncols {
-                acc = acc + a.data[base + j];
-            }
-            data.push(acc);
-        }
-        CpuStorage {
-            data,
-            nrows,
-            ncols: 1,
-        }
-    }
-
-    fn max_axis1<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
-        let nrows = a.nrows;
-        let ncols = a.ncols;
-        let mut data = Vec::with_capacity(nrows);
-        for r in 0..nrows {
-            let base = r * ncols;
-            let mut acc = a.data[base];
-            for j in 1..ncols {
-                let v = a.data[base + j];
-                if v.to_f64() > acc.to_f64() {
-                    acc = v;
-                }
-            }
-            data.push(acc);
-        }
-        CpuStorage {
-            data,
-            nrows,
-            ncols: 1,
-        }
-    }
-
-    // --- CPU embedding ---
-
     fn embedding<T: Scalar>(indices: &CpuStorage<T>, weight: &CpuStorage<T>) -> CpuStorage<T> {
         let n_tokens = indices.nrows * indices.ncols;
         let embed_dim = weight.ncols;
@@ -534,7 +527,9 @@ impl crate::backend::Backend for Cpu {
             ncols: embed_dim,
         }
     }
+}
 
+impl crate::backend::BackendFusion for Cpu {
     fn fuse_launch<T: Scalar>(
         _inputs: &[*const u8],
         nrows: usize,

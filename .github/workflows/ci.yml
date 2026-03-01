@@ -22,6 +22,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets --locked
+      - run: cargo check --workspace --all-targets --locked --no-default-features
+      - run: cargo check --workspace --all-targets --locked --features wgpu
 
   test:
     runs-on: ubuntu-latest
@@ -58,7 +60,7 @@ jobs:
         with:
           toolchain: "1.88.0"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-targets
+      - run: cargo check --workspace --all-targets --locked
 
   doc:
     runs-on: ubuntu-latest
@@ -69,3 +71,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit

@@ -63,9 +63,7 @@ fn emit_shape_checks(tensors: &[Ident], msg: &str) -> Vec<TokenStream2> {
         .collect()
 }
 
-// ── Map-reduce detection ────────────────────────────────────────────────────
 
-/// Information extracted from a `<pointwise_expr>.sum_axis(N)` or `mean_axis(N)` call.
 struct MapReduceInfo {
     pointwise_expr: Expr,
     reduce_op: &'static str,
@@ -74,7 +72,6 @@ struct MapReduceInfo {
     inputs: Vec<Ident>,
 }
 
-/// Try to extract a map-reduce pattern from the outermost call.
 fn try_extract_map_reduce(expr: &Expr, tensor_names: &[String]) -> Option<MapReduceInfo> {
     let Expr::MethodCall(mc) = expr else {
         return None;
@@ -121,7 +118,6 @@ fn try_extract_map_reduce(expr: &Expr, tensor_names: &[String]) -> Option<MapRed
     })
 }
 
-/// Emit a `Tensor::__fuse_reduce(...)` call from a `MapReduceInfo`.
 fn emit_map_reduce_fuse(mr: MapReduceInfo) -> Result<TokenStream2> {
     let MapReduceInfo {
         pointwise_expr,
@@ -166,14 +162,11 @@ fn emit_map_reduce_fuse(mr: MapReduceInfo) -> Result<TokenStream2> {
     }})
 }
 
-// ── GEMM + activation fusion ────────────────────────────────────────────────
 
-/// Activation methods recognized for GEMM fusion.
 const GEMM_ACTIVATIONS: &[&str] = &[
     "sigmoid", "relu", "tanh", "gelu", "exp", "ln", "sqrt", "abs", "neg", "recip",
 ];
 
-/// Detect `(A * B).activation()` pattern for L3 GEMM+activation fusion.
 fn detect_gemm_activation(expr: &Expr) -> Option<(Expr, Expr, Ident)> {
     if let Expr::MethodCall(mc) = expr
         && mc.args.is_empty()
@@ -221,7 +214,6 @@ fn emit_gemm_activation(lhs: Expr, rhs: Expr, act: Ident) -> TokenStream2 {
     }
 }
 
-// ── fuse! input parsing ─────────────────────────────────────────────────────
 
 pub(crate) struct FuseInput {
     pub(crate) body: Expr,
@@ -251,7 +243,6 @@ impl Parse for FuseInput {
     }
 }
 
-// ── fuse! codegen ───────────────────────────────────────────────────────────
 
 pub(crate) fn fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
     let FuseInput { body, tensors } = syn::parse2(input)?;
@@ -310,6 +301,8 @@ pub(crate) fn fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
         }}
     } else {
         // Fallback: tensor-level chained ops
+        eprintln!("warning: fuse! expression is not element-wise fusible — falling back to tensor-level ops. \
+                   Only +, -, *, /, exp, ln, log1p, sin, cos, tanh, sqrt, abs, recip, erf, ceil, floor, round, neg, powf are fusible.");
         let lifted = lift_expr(&body, &tensor_names);
         quote! { #lifted }
     };
@@ -320,7 +313,6 @@ pub(crate) fn fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
     }})
 }
 
-// ── mega_fuse! input parsing ────────────────────────────────────────────────
 
 pub(crate) struct MegaFuseInput {
     pub(crate) bodies: Vec<Expr>,
@@ -400,7 +392,6 @@ impl Parse for MegaFuseInput {
     }
 }
 
-// ── mega_fuse! codegen ──────────────────────────────────────────────────────
 
 pub(crate) fn mega_fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
     let MegaFuseInput {
@@ -425,24 +416,26 @@ pub(crate) fn mega_fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
     let first = &tensors[0];
     let shape_checks = emit_shape_checks(&tensors, "mega_fuse!: shape mismatch");
 
-    let n_inputs = tensors.len();
-    let storage_ptrs = storage_ptrs(&tensors);
     let let_bindings = let_bindings(&tensors);
 
     let mut gpu_exprs: Vec<String> = Vec::new();
     let mut cpu_closures: Vec<TokenStream2> = Vec::new();
     let mut combined_hash = String::new();
     let mut prev_scalar_body: Option<TokenStream2> = None;
+    let mut op_inputs: Vec<Vec<Ident>> = Vec::new();
 
     for body in &bodies {
         let simplified = eqsat_simplify(body);
+        let mut inputs = Vec::new();
+        collect_tensor_idents(&simplified, &tensor_names, &mut inputs);
+        let op_tensor_names: Vec<String> = inputs.iter().map(|i| i.to_string()).collect();
 
-        let gpu_str = cuda_expr_mega(&simplified, &tensor_names)?;
+        let gpu_str = cuda_expr_mega(&simplified, &op_tensor_names)?;
         combined_hash.push_str(&gpu_str);
         combined_hash.push(';');
         gpu_exprs.push(gpu_str);
 
-        let scalar_body = scalar_expr_mega(&simplified, &tensor_names, prev_scalar_body.as_ref())?;
+        let scalar_body = scalar_expr_mega(&simplified, &op_tensor_names, prev_scalar_body.as_ref())?;
 
         cpu_closures.push(quote! {
             Box::new(|__fuse_r: usize, __fuse_c: usize| {
@@ -452,24 +445,33 @@ pub(crate) fn mega_fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
         });
 
         prev_scalar_body = Some(scalar_body);
+        op_inputs.push(inputs);
     }
 
     let kernel_hash = expr_hash(&combined_hash);
-    let n_ops = bodies.len();
-
     let gpu_expr_lits: Vec<TokenStream2> = gpu_exprs.iter().map(|e| quote! { #e }).collect();
-    let n_inputs_repeated: Vec<TokenStream2> = vec![quote! { #n_inputs }; n_ops];
     let uses_prev_lits: Vec<TokenStream2> = uses_prev
         .iter()
         .map(|&b| if b { quote! { true } } else { quote! { false } })
+        .collect();
+    let op_ptrs: Vec<Vec<TokenStream2>> = op_inputs.iter().map(|v| storage_ptrs(v)).collect();
+    let op_ptr_lists: Vec<TokenStream2> = op_ptrs
+        .iter()
+        .map(|ptrs| quote! { vec![#(#ptrs),*] })
+        .collect();
+    let op_input_counts: Vec<TokenStream2> = op_inputs
+        .iter()
+        .map(|inputs| {
+            let n = inputs.len();
+            quote! { #n }
+        })
         .collect();
 
     Ok(quote! {{
         #(#shape_checks)*
         use nabla::scalar::MathOps as _;
-        let __mega_ptrs: Vec<*const u8> = vec![#(#storage_ptrs),*];
         let __mega_ops: Vec<(Vec<*const u8>, String, usize, bool)> = vec![
-            #( (__mega_ptrs.clone(), #gpu_expr_lits.to_string(), #n_inputs_repeated, #uses_prev_lits) ),*
+            #( (#op_ptr_lists, #gpu_expr_lits.to_string(), #op_input_counts, #uses_prev_lits) ),*
         ];
         let __mega_cpu_fns: Vec<Box<dyn FnMut(usize, usize) -> _>> = vec![
             #(#cpu_closures),*

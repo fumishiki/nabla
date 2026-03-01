@@ -11,9 +11,7 @@ use syn::{Error, Expr, ExprBinary, ExprMethodCall, ExprPath, ExprUnary, Result};
 
 use super::expr::{contains_tensor, scalar_method_name};
 
-// ── CUDA method mapping ─────────────────────────────────────────────────────
 
-/// Map Rust method names to their CUDA C equivalents.
 fn cuda_method_expr(method: &str, recv: &str) -> Option<String> {
     match method {
         "exp" => Some(format!("exp({recv})")),
@@ -57,16 +55,11 @@ fn cast_int_lit(expr: &Expr) -> Option<f64> {
     }
 }
 
-// ── Scalar expression rewriting ─────────────────────────────────────────────
 
-/// Rewrite expression to scalar-level ops for use inside `from_fn`.
-/// Tensor variables become `__fuse_v_<name>` (scalar values read via .get()).
 pub(crate) fn scalar_expr(expr: &Expr, tensor_names: &[String]) -> Result<TokenStream2> {
     scalar_expr_inner(expr, tensor_names, None, None)
 }
 
-/// Like `scalar_expr` but maps `prev` to the provided token stream
-/// (the scalar body of the preceding mega_fuse! op, inlined).
 pub(crate) fn scalar_expr_mega(
     expr: &Expr,
     tensor_names: &[String],
@@ -176,14 +169,11 @@ fn scalar_expr_inner(
     }
 }
 
-// ── CUDA expression codegen ─────────────────────────────────────────────────
 
-/// Generate a CUDA C expression string from the AST for GPU fused kernels.
 pub(crate) fn cuda_expr(expr: &Expr, tensor_names: &[String]) -> Result<String> {
     cuda_expr_inner(expr, tensor_names, false)
 }
 
-/// Like `cuda_expr` but maps `prev` to `"__NABLA_PREV__"` for mega_fuse!.
 pub(crate) fn cuda_expr_mega(expr: &Expr, tensor_names: &[String]) -> Result<String> {
     cuda_expr_inner(expr, tensor_names, true)
 }
@@ -276,9 +266,7 @@ fn cuda_expr_inner(expr: &Expr, tensor_names: &[String], mega_mode: bool) -> Res
     }
 }
 
-// ── Tensor-level lift ───────────────────────────────────────────────────────
 
-/// Rewrite expression to **tensor-level** operations (GPU-compatible fallback).
 pub(crate) fn lift_expr(expr: &Expr, tensor_names: &[String]) -> TokenStream2 {
     match expr {
         Expr::Path(_) => expr.to_token_stream(),
@@ -354,12 +342,9 @@ fn lift_unary(op: &syn::UnOp, inner: TokenStream2, has_tensor: bool) -> TokenStr
     }
 }
 
-// ── Register pressure estimation ────────────────────────────────────────────
 
-/// Maximum recommended registers per thread before spill risk.
 pub(crate) const MAX_FUSE_REGISTERS: usize = 120;
 
-/// Walk the expression tree and estimate register usage for a fused kernel.
 pub(crate) fn estimate_register_pressure(expr: &Expr, tensor_names: &[String]) -> usize {
     let mut transcendental = 0usize;
     let mut arithmetic = 0usize;
@@ -463,7 +448,6 @@ fn free_fn_cost(func: &str) -> (usize, usize) {
     }
 }
 
-/// Compute a simple FNV-1a hash of the GPU expression for kernel name deduplication.
 pub(crate) fn expr_hash(s: &str) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.as_bytes() {

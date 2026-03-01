@@ -1,21 +1,16 @@
-// tensor/variants.rs — NdTensor, StaticMatrix, DynTensor: alternative tensor representations.
 
 use core::fmt;
 use core::ops::{Add, Index, IndexMut, Mul, Neg, Sub};
 
-use super::fmt_matrix;
 use super::Tensor;
+use super::fmt_matrix;
 use crate::backend::{Backend, DefaultBackend};
 use crate::scalar::Scalar;
 
 #[cfg(feature = "cpu")]
 use crate::backend::Cpu;
 
-// ============================================================================
-// NdTensor: N-dimensional tensor stored as a flat Vec<T>
-// ============================================================================
 
-/// N-dimensional tensor stored as a flat `Vec<T>` in row-major (C-order) layout.
 #[derive(Clone)]
 pub struct NdTensor<T: Scalar> {
     pub(super) data: Vec<T>,
@@ -266,7 +261,11 @@ impl<T: Scalar> NdTensor<T> {
             total
         );
         let strides = Self::compute_strides(&shape);
-        Self { data, shape, strides }
+        Self {
+            data,
+            shape,
+            strides,
+        }
     }
 
     /// Reshape to a new shape. Total elements must match.
@@ -275,12 +274,15 @@ impl<T: Scalar> NdTensor<T> {
         let total: usize = new_shape.iter().product();
         let old_total: usize = self.shape.iter().product();
         assert_eq!(
-            total,
-            old_total,
+            total, old_total,
             "nabla: reshape_nd total mismatch: {total} ≠ {old_total}"
         );
         let strides = Self::compute_strides(new_shape);
-        Self { data: self.data.clone(), shape: new_shape.to_vec(), strides }
+        Self {
+            data: self.data.clone(),
+            shape: new_shape.to_vec(),
+            strides,
+        }
     }
 
     /// Convert N-D tensor to 2D Tensor by treating the last dimension as columns
@@ -321,11 +323,7 @@ impl<T: Scalar> Index<&[usize]> for NdTensor<T> {
     }
 }
 
-// ============================================================================
-// StaticMatrix: stack-allocated fixed-size matrix
-// ============================================================================
 
-/// A stack-allocated `R x C` matrix with element type `T`.
 #[derive(Clone, Copy)]
 pub struct StaticMatrix<T: Scalar, const R: usize, const C: usize> {
     data: [[T; C]; R],
@@ -499,8 +497,6 @@ impl_static_binop!(binary: Sub, sub, -);
 impl_static_binop!(unary: Neg, neg, -);
 impl_static_binop!(scalar: Mul, mul, *);
 
-/// Multiply `StaticMatrix<T, R, K>` by `StaticMatrix<T, K, C>`.
-/// Compile-time error if inner dimensions don't match.
 impl<T: Scalar, const R: usize, const K: usize, const N: usize> Mul<StaticMatrix<T, K, N>>
     for StaticMatrix<T, R, K>
 {
@@ -510,7 +506,6 @@ impl<T: Scalar, const R: usize, const K: usize, const N: usize> Mul<StaticMatrix
     }
 }
 
-// Reference-based operators for StaticMatrix (match nabla convention: &a op &b).
 
 impl<T: Scalar, const R: usize, const C: usize> Add<&StaticMatrix<T, R, C>>
     for &StaticMatrix<T, R, C>
@@ -561,9 +556,7 @@ impl<T: Scalar, const R: usize, const C: usize> Index<(usize, usize)> for Static
     }
 }
 
-impl<T: Scalar, const R: usize, const C: usize> IndexMut<(usize, usize)>
-    for StaticMatrix<T, R, C>
-{
+impl<T: Scalar, const R: usize, const C: usize> IndexMut<(usize, usize)> for StaticMatrix<T, R, C> {
     #[inline]
     fn index_mut(&mut self, (row, col): (usize, usize)) -> &mut T {
         &mut self.data[row][col]
@@ -591,11 +584,7 @@ impl<T: Scalar + fmt::Debug, const R: usize, const C: usize> fmt::Debug for Stat
     }
 }
 
-// ============================================================================
-// DynTensor: Array/Matrix traits and enum for runtime dispatch
-// ============================================================================
 
-/// Base trait for any 2-D array-like type.
 pub trait Array<T: Scalar> {
     /// Number of rows.
     fn nrows(&self) -> usize;
@@ -611,7 +600,6 @@ pub trait Array<T: Scalar> {
 }
 
 #[cfg(feature = "cpu")]
-/// Matrix algebra trait extending [`Array`].
 pub trait Matrix<T: Scalar>: Array<T> {
     /// Transpose into a CPU-backed [`Tensor`].
     fn t_dyn(&self) -> Tensor<T, Cpu>;
@@ -683,10 +671,8 @@ impl<T: Scalar, const R: usize, const C: usize> Matrix<T> for StaticMatrix<T, R,
     }
 }
 
-// -- DynTensor: enum-based closed multiple dispatch --
 
 #[cfg(feature = "cpu")]
-/// A type-erased 2-D dense matrix that can live on any enabled backend.
 pub enum DynTensor {
     /// CPU backend (always available).
     Cpu(Tensor<f32, Cpu>),

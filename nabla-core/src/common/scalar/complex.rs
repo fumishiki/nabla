@@ -1,18 +1,10 @@
-// scalar/complex.rs — Complex<T> struct, c32/c64 aliases, arithmetic, and trait impls.
 
 use core::fmt;
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
-use super::{erf_approx, MathOps, ReductionOps, RealScalar, Scalar};
+use super::{MathOps, RealScalar, ReductionOps, Scalar, erf_approx};
 
-// ---------------------------------------------------------------------------
-// Complex<T> struct
-// ---------------------------------------------------------------------------
 
-/// A generic complex number with real part `re` and imaginary part `im`.
-///
-/// `c32 = Complex<f32>` and `c64 = Complex<f64>` are the two concrete types
-/// exposed by nabla. Complex types are CPU-only (GPU backends support `f32`/`f64`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub struct Complex<T: RealScalar> {
@@ -23,10 +15,8 @@ pub struct Complex<T: RealScalar> {
 }
 
 #[allow(non_camel_case_types)]
-/// 32-bit complex number (`Complex<f32>`).
 pub type c32 = Complex<f32>;
 #[allow(non_camel_case_types)]
-/// 64-bit complex number (`Complex<f64>`).
 pub type c64 = Complex<f64>;
 
 impl<T: RealScalar> Complex<T> {
@@ -154,9 +144,7 @@ impl<T: RealScalar> Complex<T> {
     }
 }
 
-// Arithmetic ops for Complex<T>
 
-/// Implement `Add` or `Sub` for `Complex<T>` (component-wise real arithmetic).
 macro_rules! impl_complex_binop {
     ($Op:ident, $fn_name:ident, $op:tt) => {
         impl<T: RealScalar> $Op for Complex<T> {
@@ -219,11 +207,7 @@ impl<T: RealScalar> fmt::Display for Complex<T> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MathOps for Complex<T>
-// ---------------------------------------------------------------------------
 
-/// Implement `MathOps` for `Complex<T>`.
 macro_rules! impl_complex_mathops {
     ($ty:ty, $real:ty) => {
         impl MathOps for $ty {
@@ -317,18 +301,13 @@ macro_rules! impl_complex_mathops {
 impl_complex_mathops!(c32, f32);
 impl_complex_mathops!(c64, f64);
 
-// ---------------------------------------------------------------------------
-// ReductionOps for Complex<T>
-// ---------------------------------------------------------------------------
 
-/// Magnitude-squared for complex comparison: `re^2 + im^2`.
 macro_rules! mag2 {
     ($z:expr) => {
         $z.re * $z.re + $z.im * $z.im
     };
 }
 
-/// Implement `ReductionOps` for `Complex<T>`.
 macro_rules! impl_complex_reduction {
     ($ty:ty) => {
         impl ReductionOps for $ty {
@@ -363,11 +342,7 @@ macro_rules! impl_complex_reduction {
 impl_complex_reduction!(c32);
 impl_complex_reduction!(c64);
 
-// ---------------------------------------------------------------------------
-// Scalar for Complex<T>
-// ---------------------------------------------------------------------------
 
-/// Implement `Scalar` for a complex type (`c32` / `c64`).
 macro_rules! impl_complex_scalar {
     ($T:ty, $F:ty, $from_f64:expr, $to_f64:expr) => {
         impl Scalar for $T {

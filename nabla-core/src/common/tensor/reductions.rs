@@ -1,10 +1,8 @@
-// tensor/reductions.rs — Reduction operations: sum, mean, norm, min/max,
-//                       argmin/argmax, variance, cumsum, cumprod, etc.
 
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 
-use super::{two, Tensor};
+use super::{Tensor, two};
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     fn axis_len(&self, axis: usize, op: &str) -> usize {
@@ -17,7 +15,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     fn resolve_axis(axis: isize, op: &str) -> usize {
         let ndim = 2isize;
-        let resolved = if axis < 0 { (ndim + axis) as usize } else { axis as usize };
+        let resolved = if axis < 0 {
+            (ndim + axis) as usize
+        } else {
+            axis as usize
+        };
         assert!(
             resolved < 2,
             "nabla: {op} axis {axis} out of range for 2-D tensor"
@@ -141,7 +143,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn dot(&self, other: &Self) -> T {
         let (m, n) = self.shape();
         let (p, q) = other.shape();
-        assert!(m == p && n == q, "nabla: dot ({m}x{n}) vs ({p}x{q}) -- shapes must match");
+        assert!(
+            m == p && n == q,
+            "nabla: dot ({m}x{n}) vs ({p}x{q}) -- shapes must match"
+        );
         self.emul(other).sum_all()
     }
 
@@ -151,8 +156,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let n = self.nrows() * self.ncols();
         let m = other.nrows() * other.ncols();
         Self::from_fn(n, m, |i, j| {
-            let a = if self.ncols() == 1 { self.get(i, 0) } else { self.get(0, i) };
-            let b = if other.ncols() == 1 { other.get(j, 0) } else { other.get(0, j) };
+            let a = if self.ncols() == 1 {
+                self.get(i, 0)
+            } else {
+                self.get(0, i)
+            };
+            let b = if other.ncols() == 1 {
+                other.get(j, 0)
+            } else {
+                other.get(0, j)
+            };
             a * b
         })
     }
@@ -233,12 +246,12 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn sum_axis(&self, axis: usize) -> Self {
         match axis {
-            0 => Self::from_fn(1, self.ncols(), |_, c| {
-                (0..self.nrows()).fold(T::zero(), |acc, r| acc + self.get(r, c))
-            }),
-            1 => Self::from_fn(self.nrows(), 1, |r, _| {
-                (0..self.ncols()).fold(T::zero(), |acc, c| acc + self.get(r, c))
-            }),
+            0 => {
+                let t = self.t();
+                let sum_t = Self::from_storage(B::sum_axis1(&t.storage));
+                sum_t.t()
+            }
+            1 => Self::from_storage(B::sum_axis1(&self.storage)),
             _ => panic!("sum_axis: axis {axis} out of bounds"),
         }
     }
@@ -253,12 +266,14 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 
     /// Sum along axis with signed indexing: `sum_dim(-1)` = last axis.
+    #[deprecated(since = "0.1.0", note = "use sum_axis() instead")]
     #[must_use]
     pub fn sum_dim(&self, axis: isize) -> Self {
         self.sum_axis(Self::resolve_axis(axis, "sum_dim"))
     }
 
     /// Mean along axis with signed indexing: `mean_dim(-1)` = last axis.
+    #[deprecated(since = "0.1.0", note = "use mean_axis() instead")]
     #[must_use]
     pub fn mean_dim(&self, axis: isize) -> Self {
         self.mean_axis(Self::resolve_axis(axis, "mean_dim"))
@@ -419,14 +434,22 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Cumulative sum along `dim` with signed (negative) index support.
     #[must_use]
     pub fn cumsum_dim(&self, dim: i64) -> Self {
-        let axis = if dim < 0 { (2i64 + dim) as isize } else { dim as isize };
+        let axis = if dim < 0 {
+            (2i64 + dim) as isize
+        } else {
+            dim as isize
+        };
         self.cumsum(Self::resolve_axis(axis, "cumsum_dim"))
     }
 
     /// Cumulative product along `dim` with signed (negative) index support.
     #[must_use]
     pub fn cumprod_dim(&self, dim: i64) -> Self {
-        let axis = if dim < 0 { (2i64 + dim) as isize } else { dim as isize };
+        let axis = if dim < 0 {
+            (2i64 + dim) as isize
+        } else {
+            dim as isize
+        };
         self.cumprod(Self::resolve_axis(axis, "cumprod_dim"))
     }
 

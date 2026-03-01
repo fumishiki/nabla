@@ -1,29 +1,10 @@
-// scalar — Scalar trait + Complex<T> struct + MathOps + ReductionOps + math_utils.
-//
-// Scalar numeric types, complex numbers, and math utilities for the
-// sole numeric abstraction layer for nabla.  All four supported element types
-// (f32, f64, c32, c64) implement the `Scalar` trait defined here.
-//
-// Design notes:
-//   - `MathOps` and `ReductionOps` are `pub(crate)` — they are sealed impl
-//     details that back element-wise and reduction operations in the backend.
-//   - `Scalar`, `RealScalar`, `Complex<T>`, `c32`, `c64`, and `math_utils`
-//     are `pub` — they form the public numeric surface of nabla.
-//   - Complex types are `#[cfg(feature = "cpu")]` gated because GPU backends
-//     currently support f32/f64 only.
-//   - `erf_approx` lives here because it is shared by MathOps impls for all
-//     four types.
 
 #![allow(clippy::many_single_char_names)]
 
 use core::fmt;
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
-// ---------------------------------------------------------------------------
-// erf approximation (Abramowitz & Stegun, max error ~1.5e-7)
-// ---------------------------------------------------------------------------
 
-/// Abramowitz & Stegun polynomial approximation for erf (max error ~1.5e-7).
 #[inline]
 pub(crate) fn erf_approx(x: f64) -> f64 {
     let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
@@ -35,14 +16,8 @@ pub(crate) fn erf_approx(x: f64) -> f64 {
     result.copysign(x)
 }
 
-// ---------------------------------------------------------------------------
-// MathOps — element-wise math dispatch (pub(crate), sealed impl detail)
-// ---------------------------------------------------------------------------
 
-/// Element-wise math operations for all four Scalar types.
-///
-/// `pub(crate)` — not part of the public API; used as a supertrait bound on
-/// [`Scalar`] so that backends can call these methods generically.
+/// Element-wise math operations dispatched per scalar type.
 #[allow(missing_docs)]
 pub trait MathOps: Sized + Copy {
     fn math_exp(self) -> Self;
@@ -75,14 +50,12 @@ pub trait MathOps: Sized + Copy {
     fn math_log10(self) -> Self;
 }
 
-/// Helper: generate `#[inline] fn math_X(self) -> Self { self.X() }` for simple delegations.
 macro_rules! delegate_math {
     ($($math_fn:ident => $std_fn:ident),+ $(,)?) => {
         $(#[inline] fn $math_fn(self) -> Self { self.$std_fn() })+
     };
 }
 
-/// Implement `MathOps` for a real float type (`f32` / `f64`).
 macro_rules! impl_real_mathops {
     ($ty:ty, $erf_conv:expr) => {
         impl MathOps for $ty {
@@ -109,14 +82,7 @@ macro_rules! impl_real_mathops {
 impl_real_mathops!(f32, |x: f32| erf_approx(f64::from(x)) as f32);
 impl_real_mathops!(f64, erf_approx);
 
-// ---------------------------------------------------------------------------
-// ReductionOps — reduction helpers (pub(crate), sealed impl detail)
-// ---------------------------------------------------------------------------
 
-/// Reduction helpers: sum identity and ordered comparison for all four Scalar types.
-///
-/// `pub(crate)` — used exclusively by `sum_all`/`max_all`/`min_all`/
-/// `argmax_all`/`argmin_all` in the backend; not part of the public API.
 pub(crate) trait ReductionOps: Sized + Copy {
     /// Accumulate `self + other` for sum reduction.
     fn reduction_add(self, other: Self) -> Self;
@@ -131,7 +97,6 @@ pub(crate) trait ReductionOps: Sized + Copy {
     fn reduction_gt(self, other: Self) -> bool;
 }
 
-/// Implement `ReductionOps` for a real type (`f32` / `f64`).
 macro_rules! impl_real_reduction {
     ($ty:ty) => {
         impl ReductionOps for $ty {
@@ -158,16 +123,8 @@ macro_rules! impl_real_reduction {
 impl_real_reduction!(f32);
 impl_real_reduction!(f64);
 
-// ---------------------------------------------------------------------------
-// Scalar trait
-// ---------------------------------------------------------------------------
 
-/// Marker + capability trait for numeric types supported by nabla.
-///
-/// Implemented for `f32`, `f64`, `c32`, and `c64`.  All backends are generic
-/// over `T: Scalar` and dispatch element-wise operations through [`MathOps`]
-/// and `ReductionOps`.
-// MathOps and ReductionOps are private supertraits (sealed impl details).
+/// Scalar element type for tensors (f32, f64, complex, dual numbers).
 #[allow(private_bounds)]
 pub trait Scalar:
     Copy
@@ -229,7 +186,6 @@ pub trait Scalar:
     }
 }
 
-/// Implement `Scalar` for a real float type (`f32` / `f64`).
 macro_rules! impl_real_scalar {
     ($T:ty, $zero:expr, $one:expr, $from_f64:expr, $to_f64:expr) => {
         impl Scalar for $T {
@@ -267,21 +223,13 @@ macro_rules! impl_real_scalar {
 impl_real_scalar!(f32, 0.0, 1.0, |v: f64| v as f32, f64::from);
 impl_real_scalar!(f64, 0.0, 1.0, |v: f64| v, |x: f64| x);
 
-// ---------------------------------------------------------------------------
-// RealScalar subtrait
-// ---------------------------------------------------------------------------
 
-/// Subtrait for real-valued scalars (`f32`, `f64`).
-///
-/// Adds `PartialOrd` and `Into<f64>` (for use in Complex arithmetic).
+/// Marker trait for real-valued scalars (f32, f64) with total ordering.
 pub trait RealScalar: Scalar<Real = Self> + PartialOrd + Into<f64> {}
 
 impl RealScalar for f32 {}
 impl RealScalar for f64 {}
 
-// ---------------------------------------------------------------------------
-// Sub-modules (macros above are visible to child modules by textual scoping)
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "cpu")]
 mod complex;
@@ -289,13 +237,10 @@ mod complex;
 mod dual;
 #[cfg(feature = "cpu")]
 mod multi_dual;
-// ---------------------------------------------------------------------------
-// Half-precision types (f16, bf16) — CPU-only, f32-promoted compute
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "cpu")]
 mod half_impl {
-    use super::{erf_approx, MathOps, ReductionOps, Scalar};
+    use super::{MathOps, ReductionOps, Scalar, erf_approx};
 
     /// Helper: generate `fn math_X(self) -> Self { <$ty>::from_f32(f32::from(self).X()) }` for half types.
     macro_rules! delegate_half_math {
@@ -394,11 +339,8 @@ mod half_impl {
     impl_half_scalar!(half::bf16);
 }
 
-// ---------------------------------------------------------------------------
-// Utility functions for einsum-generated code
-// ---------------------------------------------------------------------------
 
-/// Utility functions for use in einsum-generated code.
+/// Free-function wrappers for common scalar operations.
 pub mod math_utils {
     use super::Scalar;
 
@@ -441,7 +383,6 @@ pub mod math_utils {
     }
 }
 
-// Re-exports
 #[cfg(feature = "cpu")]
 pub use complex::{Complex, c32, c64};
 #[cfg(feature = "cpu")]

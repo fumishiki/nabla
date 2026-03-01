@@ -1,12 +1,3 @@
-// wgpu/storage.rs — GpuStorage<T>, GpuContext, and dispatch helpers.
-// wgpu/context.rs — GpuContext singleton, pipeline cache, GPU storage type.
-//
-// Design:
-//   - GpuContext (OnceLock singleton) owns wgpu::Device + wgpu::Queue.
-//   - GpuStorage<T> owns a wgpu::Buffer (RAII, Arc-backed via wgpu internals).
-//   - GPU ops are f32-only; TypeId dispatch guards all entry points.
-//   - host_cache: Mutex<Option<Vec<T>>> — lazily populated on first get/readback.
-//   - Pipeline cache: Mutex<HashMap<&'static str, wgpu::ComputePipeline>>.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -39,7 +30,6 @@ pub(super) fn bytes_to_u32(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
-// ── GpuContext singleton ──────────────────────────────────────────────────────
 
 pub(super) struct GpuContext {
     pub(super) device: wgpu::Device,
@@ -86,6 +76,7 @@ pub(super) enum ShaderOp {
     SumAxis1,
     MaxAxis1,
     Embedding,
+    Axpy,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -171,7 +162,6 @@ pub(super) fn with_pipeline<R>(
     f(pipeline)
 }
 
-// ── Dispatch helper ───────────────────────────────────────────────────────────
 
 pub(super) fn bind_group(
     ctx: &GpuContext,
@@ -216,7 +206,6 @@ pub(super) fn dispatch_and_wait(
     ctx.device.poll(wgpu::MaintainBase::Wait).panic_on_timeout();
 }
 
-/// Read a GPU buffer back to host as bytes.
 pub(super) fn readback(ctx: &GpuContext, buf: &wgpu::Buffer, size_bytes: u64) -> Vec<u8> {
     let staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -237,12 +226,7 @@ pub(super) fn readback(ctx: &GpuContext, buf: &wgpu::Buffer, size_bytes: u64) ->
     data
 }
 
-// ── GpuStorage ───────────────────────────────────────────────────────────────
 
-/// Row-major GPU-backed matrix.
-///
-/// `buffer` owns device memory (RAII via wgpu's Arc-backed buffer).
-/// `host_cache` is populated lazily on the first `get` call and invalidated on `set`.
 pub struct GpuStorage<T: Scalar> {
     pub(crate) nrows: usize,
     pub(crate) ncols: usize,
@@ -251,11 +235,9 @@ pub struct GpuStorage<T: Scalar> {
 }
 
 // SAFETY: wgpu::Buffer is Send+Sync (Arc-backed). Mutex<Option<Vec<T>>> is
-// Send+Sync when T: Send+Sync, which the Scalar bound guarantees.
 unsafe impl<T: Scalar> Send for GpuStorage<T> {}
 unsafe impl<T: Scalar> Sync for GpuStorage<T> {}
 
-/// Lock a mutex, recovering from poisoned state.
 #[inline]
 pub(super) fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -287,7 +269,12 @@ impl<T: Scalar> GpuStorage<T> {
         }
     }
 
-    pub(super) fn from_buffer_cached(nrows: usize, ncols: usize, buffer: wgpu::Buffer, cache: Vec<T>) -> Self {
+    pub(super) fn from_buffer_cached(
+        nrows: usize,
+        ncols: usize,
+        buffer: wgpu::Buffer,
+        cache: Vec<T>,
+    ) -> Self {
         Self {
             nrows,
             ncols,

@@ -20,39 +20,59 @@ fn err(msg: impl std::fmt::Display) -> Error {
     Error::new(Span::call_site(), msg)
 }
 
-// ── mat! ────────────────────────────────────────────────────────────────────
 
-/// Parsed `mat!` input: rows of expressions.
 pub(crate) struct MatInput {
     pub(crate) rows: Vec<Vec<Expr>>,
+    pub(crate) type_prefix: Option<syn::Type>,
 }
 
 impl Parse for MatInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
+        // Optional type prefix: `f64:` or `f32:` etc.
+        let type_prefix = if input.peek(syn::Ident) && input.peek2(syn::Token![:]) {
+            let ty: syn::Type = input.parse()?;
+            input.parse::<syn::Token![:]>()?;
+            Some(ty)
+        } else {
+            None
+        };
+
         if input.peek(syn::token::Bracket) {
             let rows = input
                 .parse_terminated(RowExprs::parse, Comma)?
                 .into_iter()
                 .map(|r| r.elems)
                 .collect();
-            Ok(Self { rows })
+            Ok(Self { rows, type_prefix })
         } else {
-            parse_semicolon_rows(input)
+            let mut mi = parse_semicolon_rows(input)?;
+            mi.type_prefix = type_prefix;
+            Ok(mi)
         }
     }
 }
 
-/// Parse `e00, e01; e10, e11` — rows separated by `;`, elements by `,`.
 fn parse_semicolon_rows(input: ParseStream<'_>) -> Result<MatInput> {
-    let rows: Vec<_> = input.parse_terminated(parse_row_exprs, syn::Token![;])?.into_iter().collect();
+    let mut rows = Vec::new();
+    while !input.is_empty() {
+        let mut elems = Vec::new();
+        elems.push(input.parse::<Expr>()?);
+        while input.peek(Comma) {
+            input.parse::<Comma>()?;
+            if input.is_empty() || input.peek(syn::Token![;]) {
+                break;
+            }
+            elems.push(input.parse::<Expr>()?);
+        }
+        rows.push(elems);
+        if input.peek(syn::Token![;]) {
+            input.parse::<syn::Token![;]>()?;
+        }
+    }
     if rows.is_empty() {
         return Err(err("mat![] requires at least one row"));
     }
-    Ok(MatInput { rows })
-}
-
-fn parse_row_exprs(input: ParseStream<'_>) -> Result<Vec<Expr>> {
-    input.parse_terminated(Expr::parse, Comma).map(|row| row.into_iter().collect())
+    Ok(MatInput { rows, type_prefix: None })
 }
 
 struct RowExprs {
@@ -73,9 +93,9 @@ impl Parse for RowExprs {
 }
 
 pub(crate) fn mat_impl(input: TokenStream2) -> Result<TokenStream2> {
-    let MatInput { rows } = syn::parse2(input)?;
+    let mi: MatInput = syn::parse2(input)?;
 
-    let first_row = rows
+    let first_row = mi.rows
         .first()
         .ok_or_else(|| err("mat![] requires at least one row"))?;
     let ncols = first_row.len();
@@ -83,19 +103,17 @@ pub(crate) fn mat_impl(input: TokenStream2) -> Result<TokenStream2> {
         return Err(err("mat![] requires at least one column"));
     }
 
-    for (idx, row) in rows.iter().enumerate() {
+    for (idx, row) in mi.rows.iter().enumerate() {
         if row.len() != ncols {
             return Err(err(format!(
                 "mat![] row {} has {} columns, expected {}",
-                idx,
-                row.len(),
-                ncols
+                idx, row.len(), ncols
             )));
         }
     }
 
-    let nrows = rows.len();
-    let row_tokens: Vec<TokenStream2> = rows
+    let nrows = mi.rows.len();
+    let row_tokens: Vec<TokenStream2> = mi.rows
         .iter()
         .map(|row| {
             let elems = row.iter();
@@ -103,17 +121,21 @@ pub(crate) fn mat_impl(input: TokenStream2) -> Result<TokenStream2> {
         })
         .collect();
 
+    let array_type = match &mi.type_prefix {
+        Some(ty) => quote! { [[#ty; COLS]; ROWS] },
+        None => quote! { [[_; COLS]; ROWS] },
+    };
+
     Ok(quote! {
         {
             const ROWS: usize = #nrows;
             const COLS: usize = #ncols;
-            let data: [[_; COLS]; ROWS] = [#(#row_tokens),*];
+            let data: #array_type = [#(#row_tokens),*];
             nabla::tensor::Tensor::from_fn(ROWS, COLS, |i, j| data[i][j])
         }
     })
 }
 
-// ── block! ──────────────────────────────────────────────────────────────────
 
 pub(crate) fn block_impl(input: TokenStream2) -> Result<TokenStream2> {
     let outer: syn::ExprArray = syn::parse2(input)?;
@@ -154,7 +176,6 @@ pub(crate) fn block_impl(input: TokenStream2) -> Result<TokenStream2> {
     Ok(quote! { nabla::vcat!(#(#row_exprs),*) })
 }
 
-// ── named! ──────────────────────────────────────────────────────────────────
 
 struct NamedField {
     name: Ident,
@@ -209,7 +230,6 @@ pub(crate) fn named_impl(input: TokenStream2) -> Result<TokenStream2> {
     }})
 }
 
-// ── generated! ──────────────────────────────────────────────────────────────
 
 pub(crate) fn generated_impl(input: TokenStream2) -> Result<TokenStream2> {
     let func: syn::ItemFn = syn::parse2(input)?;
@@ -222,7 +242,6 @@ pub(crate) fn generated_impl(input: TokenStream2) -> Result<TokenStream2> {
     })
 }
 
-// ── axis! ───────────────────────────────────────────────────────────────────
 
 pub(crate) fn axis_impl(input: TokenStream2) -> Result<TokenStream2> {
     let names: Punctuated<Ident, Comma> =
@@ -236,7 +255,6 @@ pub(crate) fn axis_impl(input: TokenStream2) -> Result<TokenStream2> {
     Ok(quote! { #(#structs)* })
 }
 
-// ── named_zeros! ────────────────────────────────────────────────────────────
 
 struct NamedZerosInput {
     axes: Vec<Ident>,

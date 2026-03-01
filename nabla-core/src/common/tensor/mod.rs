@@ -1,32 +1,19 @@
-// tensor/mod.rs — Tensor<T, B> core struct, accessors, fuse internals, and axis compat.
-//
-// Design notes:
-// - Operator overloads are defined on references to avoid moves (Julia semantics).
-// - Shape mismatches in Add/Sub/Mul panic with a descriptive message (Option A).
-// - Adjoint uses `T::IS_REAL` const to choose between transpose and conj+transpose.
-// - `adjoint` delegates element-wise conjugation via `scalar::math_utils::conj`.
 
-/// Tensor constructors: zeros, ones, identity, rand, fill, linspace, etc.
 pub mod constructors;
-/// Neural network operations: activations, normalization, loss, convolution, pooling, attention.
-/// Convolution (1d/2d/3d/transpose) and pooling ops.
 pub mod nn_conv;
-/// Activations, normalization, losses, and attention.
 pub mod nn_ops;
 pub use nn_conv::*;
 #[allow(unused_imports)]
 pub use nn_ops::*;
-/// Tensor arithmetic: element access, element-wise ops, broadcast, transpose, matmul, overloads.
 pub mod ops;
-/// Reduction operations: sum, mean, norm, min/max, argmin/argmax, variance, cumsum, cumprod.
 pub mod reductions;
-/// Shape manipulation: reshape, concat, stack, gather, scatter, sort, topk, CPU-gated impls.
 pub mod shape;
-/// NdTensor, StaticMatrix, DynTensor: alternative tensor representations.
 pub mod variants;
 
 pub use constructors::{ColIter, RowIter, TensorView};
-pub use variants::{Array, DynTensor, Matrix, NdTensor, StaticMatrix};
+pub use variants::{Array, NdTensor, StaticMatrix};
+#[cfg(feature = "cpu")]
+pub use variants::{DynTensor, Matrix};
 
 use core::fmt;
 use core::marker::PhantomData;
@@ -35,10 +22,7 @@ use core::ops::{Bound, RangeBounds};
 use crate::backend::{Backend, DefaultBackend};
 use crate::scalar::Scalar;
 
-/// A 2-D dense matrix backed by a pluggable [`Backend`].
-///
-/// The default backend is [`crate::backend::Cpu`], which uses nabla's CPU kernels.
-/// The optional `Axes` parameter carries named axis types at zero cost.
+/// Dense 2-D matrix with pluggable backend and optional phantom axis types.
 pub struct Tensor<T: Scalar, B: Backend = DefaultBackend, Axes = ()> {
     pub(super) storage: B::Storage<T>,
     _axes: PhantomData<fn() -> Axes>,
@@ -60,7 +44,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-/// `for row in &tensor` iterates rows (same as `tensor.eachrow()`).
 impl<'a, T: Scalar, B: Backend> IntoIterator for &'a Tensor<T, B> {
     type Item = Tensor<T, B>;
     type IntoIter = RowIter<'a, T, B>;
@@ -70,7 +53,6 @@ impl<'a, T: Scalar, B: Backend> IntoIterator for &'a Tensor<T, B> {
     }
 }
 
-// Named axes: zero-cost axis reinterpretation + accessors for any Axes.
 impl<T: Scalar, B: Backend, Axes> Tensor<T, B, Axes> {
     #[inline]
     fn cast_axes<NewAxes>(storage: B::Storage<T>) -> Tensor<T, B, NewAxes> {
@@ -268,9 +250,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         ))
     }
 
-    /// Create a tensor from a preallocated storage.
-    #[inline]
     /// Construct from raw backend storage.
+    #[inline]
     pub fn from_storage(storage: B::Storage<T>) -> Self {
         Self {
             storage,
@@ -289,17 +270,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-/// Sealed module for `MatmulCompat`.
 mod matmul_compat_seal {
     pub trait Sealed {}
     impl Sealed for () {}
     impl<A, K> Sealed for (A, K) {}
 }
 
-/// Compile-time axis compatibility for matrix multiplication.
-///
-/// `(A, K) * (K, B) -> (A, B)` when axes are named.
-/// Untyped `()` is compatible with everything.
+/// Sealed trait constraining valid axis combinations for matrix multiplication.
 pub trait MatmulCompat<Rhs, Out>: matmul_compat_seal::Sealed {}
 
 impl MatmulCompat<(), ()> for () {}
@@ -307,7 +284,6 @@ impl<A, K> MatmulCompat<(), ()> for (A, K) {}
 impl<K, B> MatmulCompat<(K, B), ()> for () {}
 impl<A, K, B> MatmulCompat<(K, B), (A, B)> for (A, K) {}
 
-/// Resolve a `RangeBounds` into `(start, end)` given a dimension length.
 pub(super) fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> (usize, usize) {
     let start = match range.start_bound() {
         Bound::Included(&s) => s,
@@ -322,7 +298,6 @@ pub(super) fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> (usiz
     (start, end)
 }
 
-/// Generate element-wise math forwarding methods on Tensor.
 macro_rules! impl_tensor_math {
     ($($(#[$meta:meta])* $name:ident);+ $(;)?) => {
         impl<T: Scalar, B: Backend> Tensor<T, B> {
@@ -389,15 +364,11 @@ impl_tensor_math! {
     log10;
 }
 
-/// Helper: `T::one() + T::one()` (avoids repeating the pattern).
 #[inline]
 pub(super) fn two<T: Scalar>() -> T {
     T::one() + T::one()
 }
 
-// ============================================================================
-// Display formatting (formerly display.rs)
-// ============================================================================
 
 fn display_indices(len: usize) -> Vec<Option<usize>> {
     if len > 6 {
@@ -410,13 +381,6 @@ fn display_indices(len: usize) -> Vec<Option<usize>> {
     }
 }
 
-/// Write a matrix in `[[a, b], [c, d]]` style.
-///
-/// `prefix` is written before the outer `[`; when `None` a space is inserted
-/// between rows (Display style), otherwise `, ` (Debug style).
-///
-/// When `rows > 6` or `cols > 6`, only the first 3 and last 3 entries along
-/// each over-sized dimension are shown, separated by `...`.
 pub(crate) fn fmt_matrix(
     rows: usize,
     cols: usize,
@@ -472,10 +436,14 @@ pub(crate) fn fmt_matrix(
 impl<T: Scalar + fmt::Display, B: Backend> fmt::Display for Tensor<T, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (rows, cols) = self.shape();
+        let prec = f.precision();
         fmt_matrix(
             rows,
             cols,
-            |r, c, f| write!(f, "{}", self.get(r, c)),
+            |r, c, fmt| match prec {
+                Some(p) => write!(fmt, "{:.prec$}", self.get(r, c).to_f64(), prec = p),
+                None => write!(fmt, "{}", self.get(r, c)),
+            },
             f,
             None,
         )
@@ -496,14 +464,8 @@ impl<T: Scalar + fmt::Debug, B: Backend> fmt::Debug for Tensor<T, B> {
     }
 }
 
-// ============================================================================
-// MatrixLike trait (formerly matrix_like.rs)
-// ============================================================================
 
-/// Common read-only matrix interface (Julia `AbstractMatrix` equivalent).
-///
-/// Implemented by [`Tensor<T,B>`], [`StaticMatrix<T,R,C>`], and
-/// [`TensorView<T,B>`](crate::tensor::TensorView).
+/// Read-only matrix interface for shape and element access.
 pub trait MatrixLike<T: Scalar> {
     /// Number of rows.
     fn nrows(&self) -> usize;
@@ -525,7 +487,6 @@ pub trait MatrixLike<T: Scalar> {
     }
 }
 
-// -- impl for Tensor<T, B, Axes> --
 
 impl<T: Scalar, B: Backend, Axes> MatrixLike<T> for Tensor<T, B, Axes> {
     #[inline]
@@ -549,7 +510,6 @@ impl<T: Scalar, B: Backend, Axes> MatrixLike<T> for Tensor<T, B, Axes> {
     }
 }
 
-// -- impl for StaticMatrix<T, R, C> --
 
 impl<T: Scalar, const R: usize, const C: usize> MatrixLike<T> for StaticMatrix<T, R, C> {
     #[inline]

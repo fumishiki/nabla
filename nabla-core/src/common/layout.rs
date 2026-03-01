@@ -2,9 +2,6 @@
 
 use core::fmt;
 
-/// N×N binary matrix over GF(2). Represents a linear map on F₂ᴺ.
-///
-/// Each row is stored as a `u64` bitmask, supporting N ≤ 64.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct LinearLayout<const N: usize> {
     rows: [u64; N],
@@ -156,9 +153,6 @@ impl<const N: usize> fmt::Debug for LinearLayout<N> {
     }
 }
 
-/// 16×16 binary layout.
 pub type LinearLayout16 = LinearLayout<16>;
-/// 32×32 binary layout.
 pub type LinearLayout32 = LinearLayout<32>;
-/// 64×64 binary layout.
 pub type LinearLayout64 = LinearLayout<64>;

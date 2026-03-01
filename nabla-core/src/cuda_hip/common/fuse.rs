@@ -1,9 +1,5 @@
-// ── Fused kernel source generation ──────────────────────────────────────────
+use std::fmt::Write;
 
-/// Generate a fused element-wise kernel in CUDA C.
-///
-/// When `use_ldg` is true (CUDA), read-only loads use `__ldg()` cache hints.
-/// When false (HIP), direct loads are used instead.
 pub(crate) fn fuse_kernel_source(
     gpu_expr: &str,
     n_inputs: usize,
@@ -15,7 +11,7 @@ pub(crate) fn fuse_kernel_source(
     let is_f32 = type_name == "float";
     let mut src = String::with_capacity(if is_f32 { 1536 } else { 512 });
 
-    src.push_str(&format!("// estimated registers: {reg_estimate}\n"));
+    let _ = write!(src, "// estimated registers: {reg_estimate}\n");
 
     if is_f32 {
         let scalar_expr = gpu_expr.to_string();
@@ -34,14 +30,16 @@ pub(crate) fn fuse_kernel_source(
         src.push_str("    if (i + 3 < n) {\n");
         for j in 0..n_inputs {
             if use_ldg {
-                src.push_str(&format!(
-                    "        float4 v{j} = __ldg(reinterpret_cast<const float4*>(in{j}) + i4);\n"
-                ));
-            } else {
-                src.push_str(&format!(
-                    "        float4 v{j} = reinterpret_cast<const float4*>(in{j})[i4];\n"
-                ));
-            }
+            let _ = write!(
+                src,
+                "        float4 v{j} = __ldg(reinterpret_cast<const float4*>(in{j}) + i4);\n"
+            );
+        } else {
+            let _ = write!(
+                src,
+                "        float4 v{j} = reinterpret_cast<const float4*>(in{j})[i4];\n"
+            );
+        }
         }
         src.push_str("        float4 r;\n");
         for comp in &["x", "y", "z", "w"] {
@@ -121,15 +119,6 @@ pub(crate) fn fuse_kernel_source(
     src
 }
 
-/// Generate a fused map-reduce kernel source.
-///
-/// For `axis=1`: one block per row, threads cooperatively reduce columns.
-/// For `axis=0`: one block per column, threads cooperatively reduce rows.
-///
-/// `reduce_op`: 0=sum, 3=mean (caller divides by count for mean if needed,
-/// but this kernel always emits a sum; the Backend wrapper divides for mean).
-///
-/// `use_ldg`: use `__ldg()` for read-only loads (CUDA only).
 pub(crate) fn fuse_reduce_kernel_source(
     gpu_expr: &str,
     n_inputs: usize,
@@ -150,7 +139,9 @@ pub(crate) fn fuse_reduce_kernel_source(
     for i in 0..n_inputs {
         src.push_str(&format!("const {t}* __restrict__ in{i}, "));
     }
-    src.push_str(&format!("{t}* __restrict__ out, unsigned rows, unsigned cols) {{\n"));
+    src.push_str(&format!(
+        "{t}* __restrict__ out, unsigned rows, unsigned cols) {{\n"
+    ));
 
     if axis == 1 {
         // axis=1: each block handles one row → output shape (rows, 1).
@@ -224,35 +215,6 @@ pub(crate) fn fuse_reduce_kernel_source(
     src
 }
 
-/// Generate a mega-kernel that fuses multiple element-wise operations into a
-/// single launch. Each op reads from its own input buffers and writes to its
-/// own output buffer.
-///
-/// When `use_ldg` is true (CUDA), read-only loads use `__ldg()` cache hints.
-/// When false (HIP), direct loads are used instead.
-/// Generate CUDA/HIP C source for a mega-fused element-wise kernel.
-///
-/// # DAG fusion (`uses_prev`)
-///
-/// When `uses_prev[k]` is `true`, op k reads the result of op k-1 from a
-/// register (`op{k-1}_r`) instead of from a global-memory input buffer.
-/// The macro emits `"__NABLA_PREV__"` as a sentinel in the `gpu_expr`; this
-/// function replaces it with the appropriate register reference per path:
-///
-/// - float4 main path:  `op{k-1}_r.{comp}`
-/// - double2 main path: `op{k-1}_r.{comp}`
-/// - f32 scalar tail:   `op{k-1}_out[j]` (already written earlier in loop)
-/// - f64 scalar tail:   `op{k-1}_out[i]`
-///
-/// The kernel signature for a `uses_prev` op omits the `in0` pointer; any
-/// other tensor references in the expression still get their own `inN` params.
-///
-/// # Parameters
-/// * `ops`        — per-op `(gpu_expr, n_inputs)` tuples.
-/// * `uses_prev`  — one bool per op; must have the same length as `ops`.
-/// * `type_name`  — `"float"` or `"double"`.
-/// * `kernel_name`— CUDA/HIP function name.
-/// * `use_ldg`    — emit `__ldg(...)` read-only cache hint (CUDA only).
 pub(crate) fn mega_fuse_kernel_source(
     ops: &[(String, usize)], // (gpu_expr, n_inputs)
     uses_prev: &[bool],
@@ -324,8 +286,8 @@ pub(crate) fn mega_fuse_kernel_source(
                 }
                 // Replace inN[i] placeholders with loaded float4 components.
                 for j in (0..*n_in).rev() {
-                    comp_expr = comp_expr
-                        .replace(&format!("in{j}[i]"), &format!("op{op_idx}_v{j}.{comp}"));
+                    comp_expr =
+                        comp_expr.replace(&format!("in{j}[i]"), &format!("op{op_idx}_v{j}.{comp}"));
                 }
                 src.push_str(&format!("        op{op_idx}_r.{comp} = {comp_expr};\n"));
             }
@@ -342,8 +304,8 @@ pub(crate) fn mega_fuse_kernel_source(
             let mut tail_expr = gpu_expr.clone();
             // DAG sentinel → previous op's output element (already written in this loop iteration).
             if op_uses_prev {
-                tail_expr = tail_expr
-                    .replace("__NABLA_PREV__", &format!("op{}_out[j]", op_idx - 1));
+                tail_expr =
+                    tail_expr.replace("__NABLA_PREV__", &format!("op{}_out[j]", op_idx - 1));
             }
             for j in (0..*n_in).rev() {
                 if use_ldg {
@@ -352,8 +314,8 @@ pub(crate) fn mega_fuse_kernel_source(
                         &format!("__ldg(&op{op_idx}_in{j}[j])"),
                     );
                 } else {
-                    tail_expr = tail_expr
-                        .replace(&format!("in{j}[i]"), &format!("op{op_idx}_in{j}[j]"));
+                    tail_expr =
+                        tail_expr.replace(&format!("in{j}[i]"), &format!("op{op_idx}_in{j}[j]"));
                 }
             }
             src.push_str(&format!("            op{op_idx}_out[j] = {tail_expr};\n"));
@@ -389,8 +351,8 @@ pub(crate) fn mega_fuse_kernel_source(
                     comp_expr = comp_expr.replace("__NABLA_PREV__", &prev_reg);
                 }
                 for j in (0..*n_in).rev() {
-                    comp_expr = comp_expr
-                        .replace(&format!("in{j}[i]"), &format!("op{op_idx}_v{j}.{comp}"));
+                    comp_expr =
+                        comp_expr.replace(&format!("in{j}[i]"), &format!("op{op_idx}_v{j}.{comp}"));
                 }
                 src.push_str(&format!("        op{op_idx}_r.{comp} = {comp_expr};\n"));
             }
@@ -406,8 +368,8 @@ pub(crate) fn mega_fuse_kernel_source(
             let mut tail_expr = gpu_expr.clone();
             // DAG sentinel → previous op's output element (already written).
             if op_uses_prev {
-                tail_expr = tail_expr
-                    .replace("__NABLA_PREV__", &format!("op{}_out[i]", op_idx - 1));
+                tail_expr =
+                    tail_expr.replace("__NABLA_PREV__", &format!("op{}_out[i]", op_idx - 1));
             }
             for j in (0..*n_in).rev() {
                 if use_ldg {
@@ -416,8 +378,8 @@ pub(crate) fn mega_fuse_kernel_source(
                         &format!("__ldg(&op{op_idx}_in{j}[i])"),
                     );
                 } else {
-                    tail_expr = tail_expr
-                        .replace(&format!("in{j}[i]"), &format!("op{op_idx}_in{j}[i]"));
+                    tail_expr =
+                        tail_expr.replace(&format!("in{j}[i]"), &format!("op{op_idx}_in{j}[i]"));
                 }
             }
             src.push_str(&format!("        op{op_idx}_out[i] = {tail_expr};\n"));
@@ -427,23 +389,6 @@ pub(crate) fn mega_fuse_kernel_source(
     src
 }
 
-/// Generate a tiled mega-kernel that fuses multiple element-wise operations
-/// using shared memory to amortize global-memory bandwidth when all ops share
-/// the same input buffers.
-///
-/// Each thread block loads one tile of every shared input into `__shared__`
-/// memory, then all ops read from that tile. This avoids redundant L2/HBM
-/// traffic when the same input is consumed by multiple operations.
-///
-/// Grid = `ceil(n / tile_size)` (standard, no atomic work-stealing).
-/// Tile size: 1024 elements for f32 (256 threads × 4), 512 for f64 (256 × 2).
-///
-/// Only beneficial when:
-/// - All ops use the same set of inputs (same `n_inputs` and same pointers).
-/// - `n >= 65536` (enough work to fill shared-memory pipelines).
-/// - `ops.len() >= 2` (shared memory load amortises across ≥2 consumers).
-///
-/// `use_ldg`: use `__ldg()` for the global-memory load phase (CUDA only).
 pub(crate) fn mega_fuse_tiled_kernel_source(
     ops: &[(String, usize)], // (gpu_expr, n_inputs) — all must have equal n_inputs
     type_name: &str,

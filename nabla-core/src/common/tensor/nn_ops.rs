@@ -1,9 +1,7 @@
-// nn_ops.rs — Activations, normalization, losses, and attention.
-// tensor/nn/activations.rs — ML activation functions.
 
 use crate::backend::Backend;
 use crate::scalar::Scalar;
-use crate::tensor::{two, Tensor};
+use crate::tensor::{Tensor, two};
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- ML activation functions ----
@@ -73,14 +71,39 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn hardswish(&self) -> Self {
         Self::from_storage(B::hardswish(&self.storage))
     }
+
+    // ---- Backward activations (GPU-native, no D2H) ----
+
+    /// ReLU backward: `self * (input > 0 ? 1 : 0)` where self = grad.
+    #[must_use]
+    pub fn relu_backward(&self, input: &Self) -> Self {
+        Self::from_storage(B::relu_backward(&self.storage, &input.storage))
+    }
+    /// Leaky ReLU backward: `self * (input > 0 ? 1 : alpha)` where self = grad.
+    #[must_use]
+    pub fn leaky_relu_backward(&self, input: &Self, alpha: T) -> Self {
+        Self::from_storage(B::leaky_relu_backward(&self.storage, &input.storage, alpha))
+    }
+    /// ELU backward: `self * (input > 0 ? 1 : alpha * exp(input))` where self = grad.
+    #[must_use]
+    pub fn elu_backward(&self, input: &Self, alpha: T) -> Self {
+        Self::from_storage(B::elu_backward(&self.storage, &input.storage, alpha))
+    }
+    /// GELU backward: `self * (cdf + x * pdf)` where self = grad.
+    #[must_use]
+    pub fn gelu_backward(&self, input: &Self) -> Self {
+        Self::from_storage(B::gelu_backward(&self.storage, &input.storage))
+    }
+    /// Abs backward: `self * sign(input)` where self = grad.
+    #[must_use]
+    pub fn abs_backward(&self, input: &Self) -> Self {
+        Self::from_storage(B::abs_backward(&self.storage, &input.storage))
+    }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
 
-// tensor/nn/norm.rs — Normalization and dropout.
 
 use core::marker::PhantomData;
-
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     fn axis_is_rows(axis: usize, op: &str) -> bool {
@@ -242,7 +265,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-// ---- Dropout (cpu-gated) ----
 
 #[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Tensor<T, B> {
@@ -259,7 +281,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let scale = T::from_f64(1.0 / (1.0 - p));
         let threshold = (p * (u64::MAX as f64)) as u64;
         let (m, n) = self.shape();
-        let mut s = if seed == 0 { 0xDEAD_BEEF_CAFE_1234_u64 } else { seed };
+        let mut s = if seed == 0 {
+            0xDEAD_BEEF_CAFE_1234_u64
+        } else {
+            seed
+        };
         let mut data = Vec::with_capacity(m * n);
         for r in 0..m {
             for c in 0..n {
@@ -290,10 +316,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-
-// tensor/nn/losses.rs — Loss functions.
-
 
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
@@ -304,9 +326,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn cross_entropy_loss(&self, targets: &Self) -> T {
         let (batch, n) = self.shape();
         assert_eq!(
-            targets.shape(), (batch, n),
+            targets.shape(),
+            (batch, n),
             "nabla: cross_entropy_loss shape mismatch -- self {}x{} vs targets {}x{}",
-            batch, n, targets.nrows(), targets.ncols()
+            batch,
+            n,
+            targets.nrows(),
+            targets.ncols()
         );
         let sum: T = (0..batch)
             .map(|r| {
@@ -323,14 +349,24 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn cross_entropy_fused(&self, target: &Self) -> Self {
         let (n, c) = self.shape();
         assert_eq!(
-            target.nrows(), n,
+            target.nrows(),
+            n,
             "nabla: cross_entropy_fused shape mismatch -- input {}x{} vs target {}x{}",
-            n, c, target.nrows(), target.ncols()
+            n,
+            c,
+            target.nrows(),
+            target.ncols()
         );
         Self {
             storage: B::cross_entropy_fused(&self.storage, &target.storage, n, c),
             _axes: PhantomData,
         }
+    }
+
+    /// Fused MSE sum loss: `sum((self - target)^2)` -> (1,1) tensor.
+    #[must_use]
+    pub fn mse_sum_loss_tensor(&self, target: &Self) -> Self {
+        Self::from_storage(B::mse_sum_fwd(&self.storage, &target.storage))
     }
 
     /// MSE loss: `mean((pred - target)^2)`.
@@ -441,9 +477,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-
-// tensor/nn/attention.rs — Attention, embedding, and batched linear algebra.
 
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
@@ -473,10 +506,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Multi-head attention.
     #[must_use]
     pub fn multi_head_attention(
-        q: &Self, k: &Self, v: &Self, num_heads: usize, mask: Option<&Self>,
+        q: &Self,
+        k: &Self,
+        v: &Self,
+        num_heads: usize,
+        mask: Option<&Self>,
     ) -> Self {
         let d_model = q.ncols();
-        assert!(d_model.is_multiple_of(num_heads), "nabla: d_model must be divisible by num_heads");
+        assert!(
+            d_model.is_multiple_of(num_heads),
+            "nabla: d_model must be divisible by num_heads"
+        );
         let d_head = d_model / num_heads;
         let seq_q = q.nrows();
         let seq_k = k.nrows();
@@ -495,16 +535,38 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn sdpa(
-        q: &Self, k: &Self, v: &Self, mask: Option<&Self>,
-        seq_q: usize, seq_k: usize, head_dim: usize, batch_heads: usize,
+        q: &Self,
+        k: &Self,
+        v: &Self,
+        mask: Option<&Self>,
+        seq_q: usize,
+        seq_k: usize,
+        head_dim: usize,
+        batch_heads: usize,
     ) -> Self {
-        assert!(head_dim <= 128, "nabla: sdpa head_dim must be <= 128 (FA_HEAD_DIM_MAX), got {head_dim}");
-        assert_eq!(q.nrows(), batch_heads * seq_q, "nabla: sdpa Q nrows must equal batch_heads*seq_q");
-        assert_eq!(q.ncols(), head_dim, "nabla: sdpa Q ncols must equal head_dim");
+        assert!(
+            head_dim <= 128,
+            "nabla: sdpa head_dim must be <= 128 (FA_HEAD_DIM_MAX), got {head_dim}"
+        );
+        assert_eq!(
+            q.nrows(),
+            batch_heads * seq_q,
+            "nabla: sdpa Q nrows must equal batch_heads*seq_q"
+        );
+        assert_eq!(
+            q.ncols(),
+            head_dim,
+            "nabla: sdpa Q ncols must equal head_dim"
+        );
         Self::from_storage(B::sdpa(
-            &q.storage, &k.storage, &v.storage,
+            &q.storage,
+            &k.storage,
+            &v.storage,
             mask.map(|m| &m.storage),
-            seq_q, seq_k, head_dim, batch_heads,
+            seq_q,
+            seq_k,
+            head_dim,
+            batch_heads,
         ))
     }
 
@@ -534,13 +596,28 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn baddbmm(
-        &self, a: &Self, b: &Self, batch: usize, m: usize, k: usize, n: usize,
-        beta: T, alpha: T,
+        &self,
+        a: &Self,
+        b: &Self,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+        beta: T,
+        alpha: T,
     ) -> Self {
         assert_eq!(self.nrows(), batch * m);
         assert_eq!(self.ncols(), n);
         Self::from_storage(B::baddbmm(
-            &self.storage, &a.storage, &b.storage, batch, m, k, n, beta, alpha,
+            &self.storage,
+            &a.storage,
+            &b.storage,
+            batch,
+            m,
+            k,
+            n,
+            beta,
+            alpha,
         ))
     }
 }

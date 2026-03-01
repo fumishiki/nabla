@@ -1,8 +1,6 @@
-// wgpu/shaders.rs — WGSL shader generation for all GPU compute operations.
 
-use super::storage::{ShaderOp, PipelineKey};
+use super::storage::{PipelineKey, ShaderOp};
 
-// ── WGSL shader generation ───────────────────────────────────────────────────
 
 pub(super) fn generate_shader(key: PipelineKey) -> String {
     let wg = key.wg_size;
@@ -36,6 +34,7 @@ pub(super) fn generate_shader(key: PipelineKey) -> String {
         ShaderOp::SumAxis1 => gen_sum_axis1(wg),
         ShaderOp::MaxAxis1 => gen_max_axis1(wg),
         ShaderOp::Embedding => gen_embedding(wg),
+        ShaderOp::Axpy => gen_axpy(wg),
     }
 }
 
@@ -55,7 +54,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     if op == 0u {{ out[i] = a[i] + b[i]; }}
     else if op == 1u {{ out[i] = a[i] - b[i]; }}
     else if op == 2u {{ out[i] = a[i] * b[i]; }}
-    else {{ out[i] = a[i] / b[i]; }}
+    else if op == 3u {{ out[i] = a[i] / b[i]; }}
+    else {{ out[i] = atan2(a[i], b[i]); }}
 }}
 "
     )
@@ -113,7 +113,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     else if op == 11u {{ out[i] = ceil(v); }}
     else if op == 12u {{ out[i] = floor(v); }}
     else if op == 13u {{ out[i] = round(v); }}
-    else {{ out[i] = tan(v); }}
+    else if op == 14u {{ out[i] = tan(v); }}
+    else if op == 15u {{ out[i] = asin(v); }}
+    else if op == 16u {{ out[i] = acos(v); }}
+    else if op == 17u {{ out[i] = atan(v); }}
+    else if op == 18u {{ out[i] = sinh(v); }}
+    else if op == 19u {{ out[i] = cosh(v); }}
+    else if op == 20u {{ out[i] = asinh(v); }}
+    else if op == 21u {{ out[i] = acosh(v); }}
+    else if op == 22u {{ out[i] = atanh(v); }}
+    else if op == 23u {{ out[i] = log2(v); }}
+    else {{ out[i] = log(v) / log(10.0); }}
 }}
 "
     )
@@ -229,8 +239,6 @@ fn main(
     )
 }
 
-/// Generate WGSL software MMA shader: each thread computes TR x TC output tile.
-/// Workgroup: (BN/TC) x (BM/TR) threads, each holding TR x TC registers.
 pub fn gen_matmul_register_tile(tr: u32, tc: u32, bm: u32, bn: u32, bk: u32) -> String {
     let wg_x = bn / tc;
     let wg_y = bm / tr;
@@ -323,8 +331,6 @@ fn main(
     )
 }
 
-/// Select register tile params based on matrix dimensions.
-/// Returns (tr, tc, bm, bn, bk).
 pub fn select_register_tile_params(m: usize, n: usize, _k: usize) -> (u32, u32, u32, u32, u32) {
     let size = m.max(n);
     if size <= 64 {
@@ -554,7 +560,6 @@ fn main(
     )
 }
 
-// ── Activation & composite WGSL shaders ──────────────────────────────────────
 
 fn gen_activation_silu(wg: u32) -> String {
     format!(
@@ -885,7 +890,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     )
 }
 
-// Select matmul tile size based on matrix dimensions
+fn gen_axpy(wg: u32) -> String {
+    format!(
+        r"
+@group(0) @binding(0) var<storage, read_write> y: array<f32>;
+@group(0) @binding(1) var<storage, read> x: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let n = params[0];
+    if i >= n {{ return; }}
+    let alpha = bitcast<f32>(params[1]);
+    y[i] = y[i] + alpha * x[i];
+}}
+"
+    )
+}
+
 pub(super) fn select_matmul_tile(m: usize, k: usize, n: usize) -> u32 {
     let max_dim = m.max(k).max(n);
     if max_dim < 64 {

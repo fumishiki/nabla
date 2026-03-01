@@ -9,7 +9,6 @@ use proc_macro2::{Ident, Span};
 use quote::quote;
 use syn::{Expr, ExprBinary, ExprPath, ExprUnary};
 
-// ── Language definition ─────────────────────────────────────────────────────
 
 define_language! {
     pub(crate) enum FuseExpr {
@@ -32,31 +31,31 @@ define_language! {
     }
 }
 
-// ── Rewrite rules ───────────────────────────────────────────────────────────
 
 fn fuse_rules() -> Vec<Rewrite<FuseExpr, ()>> {
     vec![
         rewrite!("add-zero-r"; "(+ ?x 0)"  => "?x"),
         rewrite!("add-zero-l"; "(+ 0 ?x)"  => "?x"),
+        rewrite!("add-comm";   "(+ ?a ?b)" => "(+ ?b ?a)"),
+        rewrite!("add-assoc";  "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
         rewrite!("mul-one-r";  "(* ?x 1)"  => "?x"),
         rewrite!("mul-one-l";  "(* 1 ?x)"  => "?x"),
         rewrite!("mul-zero-r"; "(* ?x 0)"  => "0"),
         rewrite!("mul-zero-l"; "(* 0 ?x)"  => "0"),
+        rewrite!("mul-comm";   "(* ?a ?b)" => "(* ?b ?a)"),
+        rewrite!("mul-assoc";  "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
+        rewrite!("distrib-factor-l"; "(+ (* ?a ?b) (* ?a ?c))" => "(* ?a (+ ?b ?c))"),
+        rewrite!("distrib-factor-r"; "(+ (* ?b ?a) (* ?c ?a))" => "(* (+ ?b ?c) ?a)"),
         rewrite!("double-neg"; "(neg (neg ?x))" => "?x"),
-        rewrite!("exp-ln";     "(exp (ln ?x))"  => "?x"),
         rewrite!("ln-exp";     "(ln (exp ?x))"  => "?x"),
         rewrite!("pow-zero";   "(pow ?x 0)" => "1"),
         rewrite!("pow-one";    "(pow ?x 1)" => "?x"),
-        rewrite!("sub-self";   "(- ?x ?x)"  => "0"),
-        rewrite!("div-self";   "(/ ?x ?x)"  => "1"),
         rewrite!("abs-abs";    "(abs (abs ?x))" => "(abs ?x)"),
         rewrite!("sqrt-pow2";  "(pow (sqrt ?x) 2)" => "(abs ?x)"),
     ]
 }
 
-// ── syn::Expr → egg ─────────────────────────────────────────────────────────
 
-/// Store an opaque sub-expression as a unique symbol.
 fn add_opaque_symbol(
     expr: &Expr,
     rec: &mut RecExpr<FuseExpr>,
@@ -100,8 +99,6 @@ fn method_to_expr(method: &str, recv: Id, rhs_arg: Option<Id>) -> Option<FuseExp
     }
 }
 
-/// Convert a `syn::Expr` into an egg `RecExpr`, returning the root `Id`.
-/// Opaque sub-expressions get unique symbols stored in `sym_map`.
 fn expr_to_egg(expr: &Expr, rec: &mut RecExpr<FuseExpr>, sym_map: &mut Vec<(String, Expr)>) -> Id {
     match expr {
         // Literal numbers
@@ -186,9 +183,7 @@ fn expr_to_egg(expr: &Expr, rec: &mut RecExpr<FuseExpr>, sym_map: &mut Vec<(Stri
     }
 }
 
-// ── egg → syn::Expr ─────────────────────────────────────────────────────────
 
-/// Reconstruct a `syn::Expr` from an egg `RecExpr`, resolving opaque symbols.
 fn egg_to_expr(rec: &RecExpr<FuseExpr>, id: Id, sym_map: &[(String, Expr)]) -> Expr {
     let node = &rec[id];
     match node {
@@ -252,10 +247,7 @@ fn pow_expr(rec: &RecExpr<FuseExpr>, sym_map: &[(String, Expr)], a: Id, b: Id) -
     syn::parse_quote!(#la.powf(#lb))
 }
 
-// ── Public API ──────────────────────────────────────────────────────────────
 
-/// Run equality saturation on an expression, returning the algebraically
-/// simplified `syn::Expr`.
 pub(crate) fn eqsat_simplify(expr: &Expr) -> Expr {
     let mut rec = RecExpr::default();
     let mut sym_map = Vec::new();

@@ -1,4 +1,3 @@
-// tensor/constructors.rs — Tensor constructors: zeros, ones, identity, rand, fill, linspace, etc.
 
 #[cfg(feature = "cpu")]
 use rayon::prelude::*;
@@ -227,22 +226,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-// ============================================================================
-// TensorView (from view.rs)
-// ============================================================================
 
-/// Zero-copy read-only view into a region of a [`Tensor`].
-///
-/// Created by [`Tensor::view_slice`]. Unlike [`.slice()`](Tensor::slice) which
-/// copies, `TensorView` borrows the original data.
-///
-/// # Example
-/// ```ignore
-/// let a = zeros(100, 100);
-/// let v = a.view_slice(0..10, 0..10);  // zero-copy
-/// assert_eq!(v.get(0, 0), a.get(0, 0));
-/// let owned = v.to_owned_tensor();     // copy only when needed
-/// ```
+/// Zero-copy read-only view into a sub-region of a [`Tensor`].
 pub struct TensorView<'a, T: Scalar, B: Backend> {
     source: &'a Tensor<T, B>,
     row_start: usize,
@@ -319,7 +304,6 @@ impl<T: Scalar, B: Backend> MatrixLike<T> for TensorView<'_, T, B> {
     }
 }
 
-// -- Tensor::view_slice constructor --
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Create a zero-copy read-only view of a submatrix.
@@ -368,9 +352,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-// ============================================================================
-// Row and column iterators (from iter.rs)
-// ============================================================================
 
 #[inline]
 fn next_index(idx: &mut usize, limit: usize) -> Option<usize> {
@@ -417,12 +398,18 @@ impl<T: Scalar, B: Backend> Iterator for ColIter<'_, T, B> {
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Iterator over rows, yielding `1 x ncols` tensors.
     pub fn eachrow(&self) -> RowIter<'_, T, B> {
-        RowIter { tensor: self, idx: 0 }
+        RowIter {
+            tensor: self,
+            idx: 0,
+        }
     }
 
     /// Iterator over columns, yielding `nrows x 1` tensors.
     pub fn eachcol(&self) -> ColIter<'_, T, B> {
-        ColIter { tensor: self, idx: 0 }
+        ColIter {
+            tensor: self,
+            idx: 0,
+        }
     }
 
     /// Iterate over all elements in row-major order.

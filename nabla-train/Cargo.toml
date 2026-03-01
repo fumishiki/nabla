@@ -1,0 +1,22 @@
+[package]
+name = "nabla-train"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88.0"
+license = "Apache-2.0 OR MIT"
+description = "Training stack for nabla (optimizer, dataloader, trainer, checkpoint)"
+keywords = ["training", "optimizer", "dataloader", "ml", "nabla"]
+categories = ["science", "mathematics"]
+
+[features]
+default = ["cpu"]
+cpu = ["nabla-ml/cpu"]
+gpu = ["nabla-ml/gpu"]
+wgpu = ["nabla-ml/wgpu"]
+cuda = ["nabla-ml/cuda"]
+hip = ["nabla-ml/hip"]
+
+[dependencies]
+nabla-core = { path = "../nabla-core", default-features = false }
+nabla-macros = { path = "../nabla-macros" }
+nabla-ml = { path = "../nabla-ml", package = "nabla", default-features = false }

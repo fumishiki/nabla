@@ -1,16 +1,10 @@
-// scalar/multi_dual.rs — MultiDual<T, N> N-lane batch dual number for Jacobian columns.
 
 use core::fmt;
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
-use super::{erf_approx, MathOps, ReductionOps, RealScalar, Scalar};
+use super::{MathOps, RealScalar, ReductionOps, Scalar, erf_approx};
 
-// ---------------------------------------------------------------------------
-// MultiDual<T, N> — N-lane batch dual number for Jacobian columns
-// ---------------------------------------------------------------------------
 
-/// N-lane batch dual number. Computes N partial derivatives simultaneously.
-/// `derivs[i]` tracks the partial derivative along lane `i`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MultiDual<T: RealScalar, const N: usize> {
     /// Primal value.
@@ -80,7 +74,6 @@ impl<T: RealScalar, const N: usize> PartialOrd for MultiDual<T, N> {
     }
 }
 
-// Arithmetic ops for MultiDual<T, N>
 
 impl<T: RealScalar, const N: usize> Add for MultiDual<T, N> {
     type Output = Self;
@@ -163,7 +156,6 @@ impl<T: RealScalar, const N: usize> Neg for MultiDual<T, N> {
     }
 }
 
-// MathOps for MultiDual<T, N> — chain rule propagation per lane
 
 impl<T: RealScalar, const N: usize> MathOps for MultiDual<T, N> {
     #[inline]
@@ -350,7 +342,6 @@ impl<T: RealScalar, const N: usize> MathOps for MultiDual<T, N> {
     }
 }
 
-// ReductionOps for MultiDual<T, N>
 
 impl<T: RealScalar, const N: usize> ReductionOps for MultiDual<T, N> {
     #[inline]
@@ -379,7 +370,6 @@ impl<T: RealScalar, const N: usize> ReductionOps for MultiDual<T, N> {
     }
 }
 
-// Scalar for MultiDual<T, N>
 
 impl<T: RealScalar, const N: usize> Scalar for MultiDual<T, N> {
     type Real = T;

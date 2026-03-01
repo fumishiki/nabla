@@ -1,7 +1,7 @@
 #!/usr/bin/env rust-script
 //! ```cargo
 //! [dependencies]
-//! nabla = { path = "../nabla", features = ["cpu"] }
+//! nabla = { path = "../nabla-ml", features = ["cpu"] }
 //! ```
 
 use nabla::prelude::*;

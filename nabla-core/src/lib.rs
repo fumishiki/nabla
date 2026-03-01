@@ -24,62 +24,53 @@
     )
 )]
 
-// Require at least one backend. Multiple backends are allowed — DefaultBackend priority: cuda > hip > gpu > cpu.
 #[cfg(not(any(feature = "cpu", feature = "gpu", feature = "cuda", feature = "hip")))]
 compile_error!("nabla-core: enable at least one backend feature (cpu / wgpu / cuda / hip)");
 
-// ── common ──────────────────────────────────────────────────────────────────
 
-/// Scalar numeric types supported by nabla.
 #[path = "common/scalar/mod.rs"]
 pub mod scalar;
 
-/// 2-D dense tensor type with operator overloads.
 #[path = "common/tensor/mod.rs"]
 pub mod tensor;
 
-/// Compute backend trait + DefaultBackend alias (includes error types).
 #[path = "common/backend.rs"]
 pub mod backend;
 
-// error is a submodule of backend; re-export at crate root for path compat.
 pub use backend::error;
 
-/// F₂ binary matrix layout for GPU shared memory swizzling.
+#[allow(missing_docs)]
 #[path = "common/layout.rs"]
 pub mod layout;
 
-// ── cpu ─────────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "cpu")]
+#[allow(missing_docs)]
 #[path = "cpu/mod.rs"]
 pub(crate) mod cpu;
 
-// ── wgpu ────────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "gpu")]
+#[allow(missing_docs)]
 #[path = "wgpu/mod.rs"]
 pub mod gpu;
 
-// ── cuda/hip ─────────────────────────────────────────────────────────────────
 
 #[cfg(any(feature = "cuda", feature = "hip"))]
-#[path = "cuda_hip/common/kernels.rs"]
+#[path = "cuda_hip/common/kernels/mod.rs"]
 pub(crate) mod kernels_cu;
 
 #[cfg(any(feature = "cuda", feature = "hip"))]
+#[allow(missing_docs)]
 #[path = "cuda_hip/mod.rs"]
 pub mod gpu_common;
 
 #[cfg(feature = "cuda")]
-#[path = "cuda_hip/cuda.rs"]
-pub mod cuda_backend;
+pub use gpu_common::cuda as cuda_backend;
 
 #[cfg(feature = "hip")]
-#[path = "cuda_hip/hip.rs"]
-pub(crate) mod hip_backend;
+pub(crate) use gpu_common::hip as hip_backend;
 
-// ── re-exports ───────────────────────────────────────────────────────────────
 
 pub use backend::{Backend, DefaultBackend};
 pub use layout::{LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64};
@@ -87,17 +78,4 @@ pub use scalar::Scalar;
 pub use tensor::{MatrixLike, Tensor, TensorView};
 
 #[cfg(feature = "cuda")]
-pub use cuda_backend::{
-    CuBuffer, NablaCudaGraph, cuda_graph_capture, cuda_graph_capture_cached, cuda_synchronize,
-    CudaError, CudaResult, DoubleBuffer, KernelNodeState, PyGraph, TrainingGraph,
-    cuda_copy_from_host, cuda_to_vec_async,
-};
-
-#[cfg(feature = "cuda")]
-pub use cuda_backend::{ConditionalGraph, ConditionalKind};
-
-#[cfg(feature = "cuda")]
-pub use cuda_backend::{CondCmp, cuda_conditional_set_from_scalar, cuda_if_positive};
-
-#[cfg(any(feature = "cuda", feature = "hip"))]
-pub use gpu_common::RtcStorage;
+pub use cuda_backend::{CudaError, CudaResult, cuda_synchronize};

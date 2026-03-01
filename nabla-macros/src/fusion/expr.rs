@@ -6,15 +6,12 @@
 use proc_macro2::Ident;
 use syn::{Expr, ExprBinary, ExprMethodCall, ExprPath, ExprUnary};
 
-// ── Constants ───────────────────────────────────────────────────────────────
 
-/// Element-wise unary methods that operate per-element (no args).
 const ELEMENTWISE_UNARY: &[&str] = &[
     "exp", "ln", "log1p", "sin", "cos", "tanh", "sqrt", "abs", "recip", "erf", "ceil", "floor",
     "round", "neg",
 ];
 
-/// Element-wise unary methods that take one scalar arg.
 const ELEMENTWISE_UNARY_ARG: &[&str] = &["powf"];
 
 fn single_ident(expr: &Expr) -> Option<&Ident> {
@@ -46,10 +43,7 @@ fn expr_any(expr: &Expr, pred: &mut impl FnMut(&Expr) -> bool) -> bool {
     }
 }
 
-// ── Fusibility analysis ─────────────────────────────────────────────────────
 
-/// Check if the entire expression tree can be fused into a single from_fn pass.
-/// Returns true only when all ops are element-wise.
 pub(crate) fn is_elementwise_fusible(expr: &Expr) -> bool {
     match expr {
         Expr::Path(ExprPath { path, .. }) if path.segments.len() == 1 => true,
@@ -97,7 +91,6 @@ pub(crate) fn is_elementwise_fusible(expr: &Expr) -> bool {
     }
 }
 
-/// Check if an expression references any tensor variable.
 pub(crate) fn contains_tensor(expr: &Expr, tensor_names: &[String]) -> bool {
     let mut pred = |e: &Expr| {
         single_ident(e)
@@ -107,7 +100,6 @@ pub(crate) fn contains_tensor(expr: &Expr, tensor_names: &[String]) -> bool {
     expr_any(expr, &mut pred)
 }
 
-// ── Ident collection ────────────────────────────────────────────────────────
 
 fn collect_idents(
     expr: &Expr,
@@ -152,22 +144,17 @@ fn collect_idents(
     }
 }
 
-/// Walk `expr` and push every tensor-variable `Ident` into `out` (no duplicates).
 pub(crate) fn collect_tensor_idents(expr: &Expr, tensor_names: &[String], out: &mut Vec<Ident>) {
     let mut accept = |ident: &Ident| tensor_names.contains(&ident.to_string());
     collect_idents(expr, out, &mut accept, true);
 }
 
-/// Walk `expr` and push every single-segment `Path` ident into `out` (deduplicated).
-/// Used for auto-capture mode when the user omits the explicit tensor list.
 pub(crate) fn collect_all_path_idents(expr: &Expr, out: &mut Vec<Ident>) {
     let mut accept = |_: &Ident| true;
     collect_idents(expr, out, &mut accept, false);
 }
 
-// ── Method name mapping ─────────────────────────────────────────────────────
 
-/// Map Rust method names to their MathOps scalar trait equivalents.
 pub(crate) fn scalar_method_name(method: &str) -> Option<&'static str> {
     match method {
         "exp" => Some("math_exp"),
@@ -188,9 +175,7 @@ pub(crate) fn scalar_method_name(method: &str) -> Option<&'static str> {
     }
 }
 
-// ── Prev detection ──────────────────────────────────────────────────────────
 
-/// Return `true` if `expr` references the special identifier `prev`.
 pub(crate) fn expr_references_prev(expr: &Expr) -> bool {
     let mut pred = |e: &Expr| single_ident(e).map(|ident| ident == "prev").unwrap_or(false);
     expr_any(expr, &mut pred)
