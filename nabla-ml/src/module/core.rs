@@ -364,6 +364,10 @@ pub struct Sequential<T: Scalar, B: Backend> {
     training: bool,
 }
 
+impl<T: Scalar, B: Backend> Default for Sequential<T, B> {
+    fn default() -> Self { Self::new() }
+}
+
 impl<T: Scalar, B: Backend> Sequential<T, B> {
     /// Create a new empty `Sequential`.
     #[must_use]
@@ -388,6 +392,7 @@ impl<T: Scalar, B: Backend> Sequential<T, B> {
 
     /// Append a module (auto-boxed) and return self for owned builder chains.
     #[must_use]
+    #[allow(clippy::should_implement_trait)]
     pub fn add(self, layer: impl Module<T, B> + 'static) -> Self {
         self.with(Box::new(layer))
     }
@@ -509,7 +514,7 @@ impl<T: Scalar, B: Backend> Module<T, B> for Sequential<T, B> {
     }
 
     fn children(&self) -> Vec<&dyn Module<T, B>> {
-        self.layers.iter().map(|l| l.as_ref()).collect()
+        self.layers.iter().map(AsRef::as_ref).collect()
     }
 
     fn named_children(&self) -> Vec<(String, &dyn Module<T, B>)> {

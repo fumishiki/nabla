@@ -128,7 +128,7 @@ fn main() {
             let _ = loss.backward();
             let g1 = w1_var.grad().ok().unwrap();
             let g2 = w2_var.grad().ok().unwrap();
-            sgd.step(&mut vec![&mut w1, &mut w2], &vec![&g1, &g2]);
+            sgd.step(&mut [&mut w1, &mut w2], &[&g1, &g2]);
         }
         let converged = losses.last().unwrap() < &(losses[0] * 0.5);
         println!("  initial={:.6} final={:.6}  {}", losses[0], losses.last().unwrap(),
@@ -165,7 +165,7 @@ fn main() {
             let g1 = w1_var.grad().ok().unwrap();
             let g2 = w2_var.grad().ok().unwrap();
             let g3 = w3_var.grad().ok().unwrap();
-            sgd.step(&mut vec![&mut w1, &mut w2, &mut w3], &vec![&g1, &g2, &g3]);
+            sgd.step(&mut [&mut w1, &mut w2, &mut w3], &[&g1, &g2, &g3]);
         }
         let converged = losses.last().unwrap() < &(losses[0] * 0.5);
         println!("  initial={:.6} final={:.6}  {}", losses[0], losses.last().unwrap(),

@@ -27,7 +27,7 @@ fn main() {
 
     println!("Steps: {}", sol.len());
     let final_state = sol.final_state().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::Other, "non-empty solution expected")
+        std::io::Error::other("non-empty solution expected")
     })?;
     vec_unpack!(final_state, fx, fy, fz);
     println!("Final (x, y, z) = ({fx:.4}, {fy:.4}, {fz:.4})");

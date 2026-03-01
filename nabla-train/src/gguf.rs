@@ -148,7 +148,7 @@ fn write_gguf_string<W: Write>(w: &mut W, s: &str) -> io::Result<()> {
 
 // ── Legacy quantization (P6-GGUF-03) ──────────────────────────────────────
 
-/// Q4_0: 4-bit symmetric, QK=32 → delta(f16) + qs(u8[16]) = 18B
+/// Q4_0: 4-bit symmetric, QK=32 → delta(f16) + qs(u8×16) = 18B
 pub fn quantize_q4_0(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK;
     out.reserve(nb * 18);
@@ -182,7 +182,7 @@ pub fn dequantize_q4_0(data: &[u8], n: usize, out: &mut Vec<f32>) {
     }
 }
 
-/// Q4_1: 4-bit asymmetric, QK=32 → delta+min(f16×2) + qs(u8[16]) = 20B
+/// Q4_1: 4-bit asymmetric, QK=32 → delta+min(f16×2) + qs(u8×16) = 20B
 pub fn quantize_q4_1(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK;
     out.reserve(nb * 20);
@@ -218,7 +218,7 @@ pub fn dequantize_q4_1(data: &[u8], n: usize, out: &mut Vec<f32>) {
     }
 }
 
-/// Q5_0: 5-bit symmetric, QK=32 → delta(f16) + qh(u8[4]) + qs(u8[16]) = 22B
+/// Q5_0: 5-bit symmetric, QK=32 → delta(f16) + qh(u8×4) + qs(u8×16) = 22B
 pub fn quantize_q5_0(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK;
     out.reserve(nb * 22);
@@ -258,7 +258,7 @@ pub fn dequantize_q5_0(data: &[u8], n: usize, out: &mut Vec<f32>) {
     }
 }
 
-/// Q5_1: 5-bit asymmetric, QK=32 → delta+min(f16×2) + qh(u8[4]) + qs(u8[16]) = 24B
+/// Q5_1: 5-bit asymmetric, QK=32 → delta+min(f16×2) + qh(u8×4) + qs(u8×16) = 24B
 pub fn quantize_q5_1(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK;
     out.reserve(nb * 24);
@@ -300,7 +300,7 @@ pub fn dequantize_q5_1(data: &[u8], n: usize, out: &mut Vec<f32>) {
     }
 }
 
-/// Q8_0: 8-bit symmetric, QK=32 → delta(f16) + qs(i8[32]) = 34B
+/// Q8_0: 8-bit symmetric, QK=32 → delta(f16) + qs(i8×32) = 34B
 pub fn quantize_q8_0(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK;
     out.reserve(nb * 34);
@@ -332,7 +332,7 @@ pub fn dequantize_q8_0(data: &[u8], n: usize, out: &mut Vec<f32>) {
 
 // ── K-quant quantization (P6-GGUF-04) ────────────────────────────────────
 
-/// Q2_K: 2-bit, QK_K=256 → scales(u8[16]) + qs(u8[64]) + d+dmin(f16×2) = 84B
+/// Q2_K: 2-bit, QK_K=256 → scales(u8×16) + qs(u8×64) + d+dmin(f16×2) = 84B
 pub fn quantize_q2_k(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK_K;
     out.reserve(nb * 84);
@@ -392,7 +392,7 @@ pub fn dequantize_q2_k(data: &[u8], n: usize, out: &mut Vec<f32>) {
     }
 }
 
-/// Q4_K: 4-bit K-quant, QK_K=256 → d+dmin(f16×2) + scales(u8[12]) + qs(u8[128]) = 144B
+/// Q4_K: 4-bit K-quant, QK_K=256 → d+dmin(f16×2) + scales(u8×12) + qs(u8×128) = 144B
 pub fn quantize_q4_k(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK_K;
     out.reserve(nb * 144);
@@ -468,7 +468,7 @@ pub fn dequantize_q4_k(data: &[u8], n: usize, out: &mut Vec<f32>) {
     }
 }
 
-/// Q6_K: 6-bit K-quant, QK_K=256 → ql(u8[128]) + qh(u8[64]) + scales(i8[16]) + d(f16) = 210B
+/// Q6_K: 6-bit K-quant, QK_K=256 → ql(u8×128) + qh(u8×64) + scales(i8×16) + d(f16) = 210B
 pub fn quantize_q6_k(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK_K;
     out.reserve(nb * 210);
@@ -536,7 +536,7 @@ const IQ4_NL_LUT: [i8; 16] = [
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
 ];
 
-/// Quantize to IQ4_NL (non-linear 4-bit, QK=32). delta(f16) + qs(u8[16]) = 18B
+/// Quantize to IQ4_NL (non-linear 4-bit, QK=32). delta(f16) + qs(u8×16) = 18B
 pub fn quantize_iq4_nl(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK;
     out.reserve(nb * 18);
@@ -581,7 +581,7 @@ pub fn dequantize_iq4_nl(data: &[u8], n: usize, out: &mut Vec<f32>) {
 
 // ── Ternary quantization (P6-GGUF-06) ────────────────────────────────────
 
-/// TQ2_0: 2-bit 3-value, QK_K=256 → d(f16) + qs(u8[64]) = 66B
+/// TQ2_0: 2-bit 3-value, QK_K=256 → d(f16) + qs(u8×64) = 66B
 /// Values: 00=0, 01=+1, 10=-1 (2 bits per weight, 4 weights per byte)
 pub fn quantize_tq2_0(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK_K;
@@ -618,9 +618,9 @@ pub fn dequantize_tq2_0(data: &[u8], n: usize, out: &mut Vec<f32>) {
     }
 }
 
-/// TQ1_0: trit packing (5^5 = 3125), QK_K=256 → qs(u8[51]) + qh(u8[4]) + d(f16) = 58B
+/// TQ1_0: trit packing (5^5 = 3125), QK_K=256 → qs(u8×51) + qh(u8×4) + d(f16) = 58B
 /// Packs 5 trits into one byte (0..3124 < 256 won't fit — uses 5^5 = 3125 per u16 pair).
-/// Simplified: we pack 5 trits as a single value in [0,242] stored in a byte (base-3: 3^5=243).
+/// Simplified: we pack 5 trits as a single value in `0..=242` stored in a byte (base-3: 3^5=243).
 pub fn quantize_tq1_0(data: &[f32], out: &mut Vec<u8>) {
     let nb = data.len() / QK_K;
     out.reserve(nb * 58);

@@ -516,7 +516,7 @@ pub mod svd {
                     .collect();
                 Self::bidiag_qr_svd(&mut d, &mut e, None, None, m, n, k, params)?;
                 d.sort_by(|a, b| b.abs().partial_cmp(&a.abs()).unwrap_or(core::cmp::Ordering::Equal));
-                Ok(d.into_iter().map(|x| x.abs()).collect())
+                Ok(d.into_iter().map(f64::abs).collect())
             } else {
                 let at = a.t();
                 Self::singular_values_with_params(&at, params)
@@ -537,6 +537,7 @@ pub mod svd {
             Self::randomized_with_params(a, rank, &params)
         }
 
+        #[allow(clippy::too_many_lines)]
         pub fn randomized_with_params(
             a: &Tensor<f64, Cpu>,
             rank: usize,
@@ -741,6 +742,7 @@ pub mod svd {
         /// Golub-Reinsch implicit QR sweep on bidiagonal matrix.
         #[allow(clippy::many_single_char_names)]
         #[allow(clippy::too_many_lines)]
+        #[allow(clippy::too_many_arguments)]
         fn bidiag_qr_svd(
             d: &mut [f64],
             e: &mut [f64],

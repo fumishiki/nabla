@@ -273,7 +273,7 @@ pub mod qr {
 
     use super::super::{buf_get, buf_set, from_f64_buf, householder_apply_left, householder_vec, to_f64_buf};
 
-    #[allow(clippy::many_single_char_names)]
+    #[allow(clippy::many_single_char_names, clippy::needless_range_loop)]
     fn apply_qt_in_place(
         qr_buf: &[f64],
         taus: &[f64],
@@ -313,7 +313,7 @@ pub mod qr {
         }
     }
 
-    #[allow(clippy::many_single_char_names)]
+    #[allow(clippy::many_single_char_names, clippy::needless_range_loop)]
     fn apply_q_in_place(
         qr_buf: &[f64],
         taus: &[f64],

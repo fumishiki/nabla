@@ -179,24 +179,23 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     /// Access the underlying tensor data.
     #[must_use]
     pub fn data(&self) -> &Tensor<T, B> {
-        &*self.data
+        &self.data
     }
 
     /// Gradient accumulated after [`Variable::backward`].
     ///
-    /// Returns the leaf gradient, or the retained gradient if [`retain_grad`]
+    /// Returns the leaf gradient, or the retained gradient if [`Variable::retain_grad`]
     /// was called on an intermediate variable.
     /// Returns `Err` if no gradient is available.
     pub fn grad(&self) -> Result<Tensor<T, B>> {
         if let Some(g) = self.grad_slot.as_ref().and_then(|s| s.borrow().clone()) {
             return Ok(g);
         }
-        if self.retained.get() {
-            if let Some(entry) = &self.tape_entry {
-                if let Some(g) = entry.grad.borrow().clone() {
-                    return Ok(g);
-                }
-            }
+        if self.retained.get()
+            && let Some(entry) = &self.tape_entry
+            && let Some(g) = entry.grad.borrow().clone()
+        {
+            return Ok(g);
         }
         Err(nabla_core::error::Error::NoGradient)
     }
@@ -212,15 +211,15 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
                 }));
             }
         }
-        if self.retained.get() {
-            if let Some(entry) = &self.tape_entry {
-                let borrow = entry.grad.borrow();
-                if borrow.is_some() {
-                    return Ok(std::cell::Ref::map(borrow, |opt| {
-                        // SAFETY: guarded by is_some() check above
-                        opt.as_ref().unwrap_or_else(|| unreachable!())
-                    }));
-                }
+        if self.retained.get()
+            && let Some(entry) = &self.tape_entry
+        {
+            let borrow = entry.grad.borrow();
+            if borrow.is_some() {
+                return Ok(std::cell::Ref::map(borrow, |opt| {
+                    // SAFETY: guarded by is_some() check above
+                    opt.as_ref().unwrap_or_else(|| unreachable!())
+                }));
             }
         }
         Err(nabla_core::error::Error::NoGradient)
@@ -229,8 +228,8 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     /// Mark this intermediate variable to retain its gradient after backward.
     ///
     /// By default only leaf variables store gradients. Call this on an
-    /// intermediate variable so that [`grad`] returns its gradient after
-    /// [`backward`] completes.
+    /// intermediate variable so that [`Variable::grad`] returns its gradient after
+    /// [`Variable::backward`] completes.
     pub fn retain_grad(&self) {
         self.retained.set(true);
     }

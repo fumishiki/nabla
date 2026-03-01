@@ -98,7 +98,7 @@ fn exp3_train_step() {
                         let g1 = w2v.grad_ref().ok();
                         let g2 = w3v.grad_ref().ok();
                         if let (Some(r0), Some(r1), Some(r2)) = (&g0, &g1, &g2) {
-                            sgd.step(&mut vec![w1, w2, w3], &[&**r0, &**r1, &**r2]);
+                            sgd.step(&mut [w1, w2, w3], &[&**r0, &**r1, &**r2]);
                         }
                     }
                 }

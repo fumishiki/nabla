@@ -36,7 +36,7 @@ fn main() {
             let g1 = must!(w1v.grad_ref());
             let g2 = must!(w2v.grad_ref());
             let g3 = must!(w3v.grad_ref());
-            sgd.step(&mut vec![&mut w1, &mut w2, &mut w3], &vec![&*g1, &*g2, &*g3]);
+            sgd.step(&mut [&mut w1, &mut w2, &mut w3], &[&*g1, &*g2, &*g3]);
         }
 
         let steps = if batch <= 1 { 20 } else if batch <= 32 { 10 } else { 5 };
@@ -68,7 +68,7 @@ fn main() {
             let g3 = must!(w3v.grad_ref());
             gpu_sync(); let t4 = Instant::now(); t_grad += (t4 - t3).as_nanos();
 
-            sgd.step(&mut vec![&mut w1, &mut w2, &mut w3], &vec![&*g1, &*g2, &*g3]);
+            sgd.step(&mut [&mut w1, &mut w2, &mut w3], &[&*g1, &*g2, &*g3]);
             gpu_sync(); let t5 = Instant::now(); t_sgd += (t5 - t4).as_nanos();
         }
 

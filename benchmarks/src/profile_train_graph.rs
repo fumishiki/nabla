@@ -28,7 +28,7 @@ fn train_step(
     let g1 = must!(w1v.grad_ref());
     let g2 = must!(w2v.grad_ref());
     let g3 = must!(w3v.grad_ref());
-    sgd.step(&mut vec![w1, w2, w3], &vec![&*g1, &*g2, &*g3]);
+    sgd.step(&mut [w1, w2, w3], &[&*g1, &*g2, &*g3]);
 }
 
 const WARMUP: usize = 10;

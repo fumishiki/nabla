@@ -47,15 +47,15 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         Self::derived(&self.tape, out, entry)
     }
 
-    /// Alias for [`sum_all_var`].
+    /// Alias for [`Variable::sum_all_var`].
     #[must_use]
     pub fn sum(&self) -> Self { self.sum_all_var() }
 
-    /// Alias for [`mean_var`].
+    /// Alias for [`Variable::mean_var`].
     #[must_use]
     pub fn mean(&self) -> Self { self.mean_var() }
 
-    /// Alias for [`sum_axis_var`].
+    /// Alias for [`Variable::sum_axis_var`].
     #[must_use]
     pub fn sum_axis(&self, axis: usize) -> Self { self.sum_axis_var(axis) }
 
@@ -77,7 +77,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         Self::derived(&self.tape, out, entry)
     }
 
-    /// Alias for [`mean_axis_var`].
+    /// Alias for [`Variable::mean_axis_var`].
     #[must_use]
     pub fn mean_axis(&self, axis: usize) -> Self { self.mean_axis_var(axis) }
 
@@ -184,7 +184,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         Self::derived(&self.tape, out, entry)
     }
 
-    /// Short alias for [`transpose`].
+    /// Short alias for [`Variable::transpose`].
     #[must_use]
     pub fn t(&self) -> Self { self.transpose() }
 
@@ -266,7 +266,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
 
     /// Cross-entropy with integer class indices (as `T` values cast to usize).
     ///
-    /// Converts indices to one-hot internally, then delegates to [`cross_entropy`].
+    /// Converts indices to one-hot internally, then delegates to [`Variable::cross_entropy`].
     ///
     /// # Errors
     ///
@@ -967,7 +967,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     /// # Errors
     ///
     /// Returns `Err` if the output is not scalar `(1,1)` or any gradient
-    /// contains NaN or Inf. For non-scalar outputs, use [`backward_with`].
+    /// contains NaN or Inf. For non-scalar outputs, use [`Variable::backward_with`].
     pub fn backward(&self) -> Result<()> {
         let (nrows, ncols) = self.data.shape();
         if nrows != 1 || ncols != 1 {
@@ -981,7 +981,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     /// Run reverse-mode AD without NaN/Inf gradient validation.
     ///
     /// Skips the O(n) per-element check, useful in hot loops where inputs are
-    /// known to be well-behaved. Prefer [`backward`] for safety.
+    /// known to be well-behaved. Prefer [`Variable::backward`] for safety.
     ///
     /// # Errors
     ///

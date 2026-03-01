@@ -417,6 +417,7 @@ impl LinalgExt for Tensor<f64, Cpu> {
         Ok(result)
     }
 
+    #[allow(clippy::manual_midpoint)]
     fn eig_into(&self) -> Result<(Vec<(f64, f64)>, Tensor<f64, Cpu>, Tensor<f64, Cpu>)> {
         let n = self.nrows();
         require_square(self.shape(), "eig_into")?;

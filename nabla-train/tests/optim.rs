@@ -148,7 +148,7 @@ fn group_optimizer_weight_decay_exclusion() {
     };
 
     let mut params = module.parameters_mut();
-    let grads = vec![Tensor::zeros(1, 1), Tensor::zeros(1, 1)];
+    let grads = [Tensor::zeros(1, 1), Tensor::zeros(1, 1)];
     let grad_refs: Vec<&Tensor<f64, DefaultBackend>> = grads.iter().collect();
     opt.step(&mut params, &grad_refs);
 

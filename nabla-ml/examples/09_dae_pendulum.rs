@@ -41,7 +41,7 @@ fn main() {
 
     let final_v = sol
         .final_state()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "non-empty"))?
+        .ok_or_else(|| std::io::Error::other("non-empty"))?
         .get(0, 0);
     println!("Final V = {final_v:.6} (target: 1.0)");
 }

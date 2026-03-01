@@ -130,10 +130,11 @@ pub(crate) fn householder_apply_left(
     v: &[f64],
     tau: f64,
 ) {
+    const BLOCK: usize = 32;
     let len = v.len();
     let base = buf.as_mut_ptr() as usize;
-    const BLOCK: usize = 32;
     let blocks: Vec<usize> = (col_start..col_end).step_by(BLOCK).collect();
+    #[allow(clippy::needless_range_loop)]
     let apply_block = |jb: usize| {
             let jend = (jb + BLOCK).min(col_end);
             let width = jend - jb;
@@ -180,6 +181,7 @@ pub(crate) fn householder_apply_right(
     let len = v.len();
     let base = buf.as_mut_ptr() as usize;
     let rows = row_end.saturating_sub(row_start);
+    #[allow(clippy::needless_range_loop)]
     let apply_row = |ii: usize| {
         let mut dot = 0.0f64;
         // SAFETY: each row updates disjoint memory locations; ptr is valid.
