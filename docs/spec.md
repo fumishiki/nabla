@@ -47,7 +47,7 @@ a.slice(0..3, 1..4) // owned copy via .slice() (Index<Range> impossible — must
 // Error handling: Result<T, NablaError> — no silent NaN
 a.solve(&b)?       // ? propagates NablaError
 
-// Kernel naming convention (CUDA/HIP C strings in kernels_cu.rs)
+// Kernel naming convention (CUDA/HIP C strings in cuda_hip/kernels.rs)
 k_{op_name}_f32    // e.g. k_conv2d_f32, k_max_pool2d_f32
 k_{op_name}_f64    // f64 variant (CUDA/HIP only; not wgpu)
 
@@ -61,67 +61,67 @@ k_{op_name}_f64    // f64 variant (CUDA/HIP only; not wgpu)
 
 | Phase | REQ-ID | MUST / MUST NOT | 制約（1行） | 実装ファイル |
 |---|---|---|---|---|
-| 0 | REQ-B01 | MUST | Exactly one of {cpu,wgpu,cuda,hip} active per build | `nabla-core/src/backend.rs` |
+| 0 | REQ-B01 | MUST | Exactly one of {cpu,wgpu,cuda,hip} active per build | `nabla-core/src/common/backend.rs` |
 | 0 | REQ-B02 | MUST NOT | Multiple features active — `compile_error!` on all 6 pairwise combinations | `nabla-core/src/lib.rs` |
-| 0 | REQ-B03 | MUST NOT | CPU fallback path exist for GPU backends | `nabla-core/src/gpu.rs` |
+| 0 | REQ-B03 | MUST NOT | CPU fallback path exist for GPU backends | `nabla-core/src/wgpu/ops.rs` |
 | 0 | REQ-T01 | MUST | `use nabla::prelude::*;` imports all public types/traits/macros/free-fns | `nabla/src/lib.rs` |
-| 0 | REQ-T02 | MUST | `Tensor<T>` aliases to `Tensor<T, DefaultBackend>` | `nabla-core/src/tensor.rs` |
-| 0 | REQ-T03 | MUST NOT | wgpu backend accept f64 scalar (compile_error!) | `nabla-core/src/backend.rs` |
-| 0 | REQ-T04 | MUST NOT | Any GPU backend accept c32/c64 scalar (compile_error!) | `nabla-core/src/backend.rs` |
-| 0 | REQ-T05 | MUST | Backend trait: Phase 0 methods are required (no defaults); Phase 3+ methods have CPU defaults that GPU backends override | `nabla-core/src/backend.rs` |
+| 0 | REQ-T02 | MUST | `Tensor<T>` aliases to `Tensor<T, DefaultBackend>` | `nabla-core/src/common/tensor/mod.rs` |
+| 0 | REQ-T03 | MUST NOT | wgpu backend accept f64 scalar (compile_error!) | `nabla-core/src/common/backend.rs` |
+| 0 | REQ-T04 | MUST NOT | Any GPU backend accept c32/c64 scalar (compile_error!) | `nabla-core/src/common/backend.rs` |
+| 0 | REQ-T05 | MUST | Backend trait: Phase 0 methods are required (no defaults); Phase 3+ methods have CPU defaults that GPU backends override | `nabla-core/src/common/backend.rs` |
 
 **Phase 3A — GPU Convolution (CUDA/HIP; cross-ref §14.1.A)**
 
 | Phase | REQ-ID | MUST / MUST NOT | 制約（1行） | 実装ファイル |
 |---|---|---|---|---|
-| 3A | REQ-G-CONV-01 | MUST | `conv2d(x,w,bias,stride,padding,dilation,groups)` dispatches to GPU im2col+GEMM kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3A | REQ-G-CONV-02 | MUST | conv2d im2col col shape: `[N, C_in*kH*kW, out_H*out_W]`; weight `[C_out, C_in*kH*kW]`; strided-batched GEMM with batch=N | `nabla-core/src/kernels_cu.rs` |
-| 3A | REQ-G-CONV-03 | SHOULD | f32 conv2d im2col kernel uses float4 (128-bit) loads (scalar reads currently; performance optimization) | `nabla-core/src/kernels_cu.rs` |
-| 3A | REQ-G-CONV-04 | MUST | `conv1d(x,w,bias,stride,padding,dilation,groups)` dispatches to GPU kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3A | REQ-G-CONV-05 | MUST | `conv3d(x,w,bias,stride,padding,dilation,groups)` dispatches to GPU kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3A | REQ-G-CONV-06 | MUST | `conv_transpose2d(x,w,bias,stride,padding,output_padding,groups)` dispatches to GPU kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3A | REQ-G-CONV-07 | MUST NOT | conv GPU kernels accept f64 on wgpu backend | `nabla-core/src/backend.rs` (wgpu uses CPU default) |
+| 3A | REQ-G-CONV-01 | MUST | `conv2d(x,w,bias,stride,padding,dilation,groups)` dispatches to GPU im2col+GEMM kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3A | REQ-G-CONV-02 | MUST | conv2d im2col col shape: `[N, C_in*kH*kW, out_H*out_W]`; weight `[C_out, C_in*kH*kW]`; strided-batched GEMM with batch=N | `cuda_hip/kernels.rs` |
+| 3A | REQ-G-CONV-03 | SHOULD | f32 conv2d im2col kernel uses float4 (128-bit) loads (scalar reads currently; performance optimization) | `cuda_hip/kernels.rs` |
+| 3A | REQ-G-CONV-04 | MUST | `conv1d(x,w,bias,stride,padding,dilation,groups)` dispatches to GPU kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3A | REQ-G-CONV-05 | MUST | `conv3d(x,w,bias,stride,padding,dilation,groups)` dispatches to GPU kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3A | REQ-G-CONV-06 | MUST | `conv_transpose2d(x,w,bias,stride,padding,output_padding,groups)` dispatches to GPU kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3A | REQ-G-CONV-07 | MUST NOT | conv GPU kernels accept f64 on wgpu backend | `nabla-core/src/common/backend.rs` (wgpu uses CPU default) |
 
 **Phase 3B — GPU Pooling (CUDA/HIP; cross-ref §14.1.B)**
 
 | Phase | REQ-ID | MUST / MUST NOT | 制約（1行） | 実装ファイル |
 |---|---|---|---|---|
-| 3B | REQ-G-POOL-01 | MUST | `max_pool2d(x,kernel_size,stride,padding)` dispatches to GPU kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3B | REQ-G-POOL-02 | MUST | `avg_pool2d(x,kernel_size,stride,padding)` dispatches to GPU kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3B | REQ-G-POOL-03 | MUST | `adaptive_avg_pool2d(x,output_size:[usize;2])` dispatches to GPU kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3B | REQ-G-POOL-04 | MUST | `max_pool2d` kernel stores argmax indices alongside output for backward | `nabla-core/src/kernels_cu.rs` |
-| 3B | REQ-G-POOL-05 | MUST | All pooling kernels use one-thread-per-output-element parallelism | `nabla-core/src/kernels_cu.rs` |
+| 3B | REQ-G-POOL-01 | MUST | `max_pool2d(x,kernel_size,stride,padding)` dispatches to GPU kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3B | REQ-G-POOL-02 | MUST | `avg_pool2d(x,kernel_size,stride,padding)` dispatches to GPU kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3B | REQ-G-POOL-03 | MUST | `adaptive_avg_pool2d(x,output_size:[usize;2])` dispatches to GPU kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3B | REQ-G-POOL-04 | MUST | `max_pool2d` kernel stores argmax indices alongside output for backward | `cuda_hip/kernels.rs` |
+| 3B | REQ-G-POOL-05 | MUST | All pooling kernels use one-thread-per-output-element parallelism | `cuda_hip/kernels.rs` |
 
 **Phase 3C — GPU Attention & Batched GEMM (CUDA/HIP; cross-ref §14.1.F, §14.1.H)**
 
 | Phase | REQ-ID | MUST / MUST NOT | 制約（1行） | 実装ファイル |
 |---|---|---|---|---|
-| 3C | REQ-G-ATTN-01 | MUST | `sdpa(q,k,v,mask,dropout_p)` dispatches to FlashAttention-2 tiled GPU kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3C | REQ-G-ATTN-02 | MUST | FlashAttention-2 implements online softmax with O(seq_len) HBM memory | `nabla-core/src/kernels_cu.rs` |
-| 3C | REQ-G-ATTN-03 | MUST NOT | FlashAttention kernel materialise full QK^T matrix in HBM | `nabla-core/src/kernels_cu.rs` |
-| 3C | REQ-G-ATTN-04 | MUST | `bmm(a,b)` f32 dispatches to `cublasSgemmStridedBatched` on CUDA backend | `nabla-core/src/cuda_backend.rs` |
-| 3C | REQ-G-ATTN-05 | MUST | `baddbmm(c,a,b,beta,alpha)` dispatches to cuBLAS fused op on CUDA | `nabla-core/src/cuda_backend.rs` |
-| 3C | REQ-G-ATTN-06 | MUST | `addmm(c,a,b,beta,alpha)` dispatches to cuBLAS fused op on CUDA | `nabla-core/src/cuda_backend.rs` |
-| 3C | REQ-G-ATTN-07 | MUST | bmm/baddbmm/addmm on HIP/wgpu use native tiled matmul loop (no cuBLAS) | `nabla-core/src/hip_backend.rs`, `gpu_wgpu.rs` |
+| 3C | REQ-G-ATTN-01 | MUST | `sdpa(q,k,v,mask,dropout_p)` dispatches to FlashAttention-2 tiled GPU kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3C | REQ-G-ATTN-02 | MUST | FlashAttention-2 implements online softmax with O(seq_len) HBM memory | `cuda_hip/kernels.rs` |
+| 3C | REQ-G-ATTN-03 | MUST NOT | FlashAttention kernel materialise full QK^T matrix in HBM | `cuda_hip/kernels.rs` |
+| 3C | REQ-G-ATTN-04 | MUST | `bmm(a,b)` f32 dispatches to `cublasSgemmStridedBatched` on CUDA backend | `cuda_hip/cuda.rs` |
+| 3C | REQ-G-ATTN-05 | MUST | `baddbmm(c,a,b,beta,alpha)` dispatches to cuBLAS fused op on CUDA | `cuda_hip/cuda.rs` |
+| 3C | REQ-G-ATTN-06 | MUST | `addmm(c,a,b,beta,alpha)` dispatches to cuBLAS fused op on CUDA | `cuda_hip/cuda.rs` |
+| 3C | REQ-G-ATTN-07 | MUST | bmm/baddbmm/addmm on HIP/wgpu use native tiled matmul loop (no cuBLAS) | `cuda_hip/hip.rs`, `wgpu/ops.rs` |
 
 **Phase 3D — GPU Reductions (CUDA/HIP; cross-ref §14.1.J)**
 
 | Phase | REQ-ID | MUST / MUST NOT | 制約（1行） | 実装ファイル |
 |---|---|---|---|---|
-| 3D | REQ-G-RED-01 | MUST | `cumsum(x,dim)` dispatches to GPU parallel prefix sum (Blelloch scan) kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3D | REQ-G-RED-02 | MUST | `cumprod(x,dim)` dispatches to GPU parallel prefix (Blelloch scan) kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3D | REQ-G-RED-03 | MUST | `prod_all(x)` dispatches to GPU warp-shuffle reduction kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3D | REQ-G-RED-04 | MUST | `norm(x,p,dim)` Lp-norm dispatches to GPU kernel for p∈{1,2,inf} | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3D | REQ-G-RED-05 | MUST | `count_nonzero(x)` dispatches to GPU reduction kernel | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3D | REQ-G-RED-06 | MUST | cumsum/cumprod kernel output: `out[i,j] == sum/prod(x[i,0..=j])` for dim=1 | `nabla-core/src/kernels_cu.rs` |
+| 3D | REQ-G-RED-01 | MUST | `cumsum(x,dim)` dispatches to GPU parallel prefix sum (Blelloch scan) kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3D | REQ-G-RED-02 | MUST | `cumprod(x,dim)` dispatches to GPU parallel prefix (Blelloch scan) kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3D | REQ-G-RED-03 | MUST | `prod_all(x)` dispatches to GPU warp-shuffle reduction kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3D | REQ-G-RED-04 | MUST | `norm(x,p,dim)` Lp-norm dispatches to GPU kernel for p∈{1,2,inf} | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3D | REQ-G-RED-05 | MUST | `count_nonzero(x)` dispatches to GPU reduction kernel | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3D | REQ-G-RED-06 | MUST | cumsum/cumprod kernel output: `out[i,j] == sum/prod(x[i,0..=j])` for dim=1 | `cuda_hip/kernels.rs` |
 
 **Phase 3E — GPU Normalization & Loss (CUDA/HIP; cross-ref §14.1.C, §14.1.E)**
 
 | Phase | REQ-ID | MUST / MUST NOT | 制約（1行） | 実装ファイル |
 |---|---|---|---|---|
-| 3E | REQ-G-NORM-01 | MUST | `batch_norm` GPU kernel updates running_mean/running_var in-place with momentum | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3E | REQ-G-LOSS-01 | MUST | `cross_entropy_loss` GPU: fused log_softmax + nll_loss in single kernel pass | `nabla-core/src/cuda_backend.rs`, `kernels_cu.rs` |
-| 3E | REQ-G-LOSS-02 | MUST | `cross_entropy_loss` fused kernel uses online-softmax (numerically stable) | `nabla-core/src/kernels_cu.rs` |
+| 3E | REQ-G-NORM-01 | MUST | `batch_norm` GPU kernel updates running_mean/running_var in-place with momentum | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3E | REQ-G-LOSS-01 | MUST | `cross_entropy_loss` GPU: fused log_softmax + nll_loss in single kernel pass | `cuda_hip/cuda.rs`, `cuda_hip/kernels.rs` |
+| 3E | REQ-G-LOSS-02 | MUST | `cross_entropy_loss` fused kernel uses online-softmax (numerically stable) | `cuda_hip/kernels.rs` |
 
 ### §0.3 受け入れテスト（Acceptance Tests）
 
@@ -351,38 +351,39 @@ nabla/                       [workspace root]
 │
 ├── nabla-core/              ━━ Layer 2: Compute ━━
 │   └── src/
-│       ├── lib.rs
-│       ├── tensor/
-│       │   ├── mod.rs       Tensor<T,B> core struct + trait impls
-│       │   ├── constructors.rs  zeros/ones/identity/rand/from_fn/fill/linspace
-│       │   ├── ops.rs       arithmetic + element-wise + reductions + broadcast
-│       │   ├── shape.rs     shape/reshape/broadcast helpers
-│       │   ├── view.rs      TensorView zero-copy borrow
-│       │   ├── iter.rs      RowIter/ColIter/IntoIterator/eachrow/eachcol
-│       │   ├── display.rs   Debug/Display + pretty print truncation
-│       │   ├── reductions.rs  sum/max/min/argmax/argmin axis-wise
-│       │   ├── ndtensor.rs  NdTensor<T> N-dimensional CPU tensor
-│       │   ├── static_matrix.rs  StaticMatrix<T,R,C> stack-allocated
-│       │   ├── dyntensor.rs DynTensor runtime-typed dispatch
-│       │   └── nn.rs        conv1d/2d/3d/transpose + pooling + norms + losses + attention (re-exports nn/)
-│       ├── backend/
-│       │   ├── mod.rs       Backend trait (sealed) + DefaultBackend aliases
-│       │   └── cpu.rs       CpuStorage<T> + Cpu struct + impl Backend for Cpu
-│       ├── scalar/
-│       │   ├── mod.rs       Scalar/MathOps/ReductionOps traits + f32/f64 impls + macros
-│       │   ├── complex.rs   Complex<T>, c32/c64 (400+ lines — kept separate)
-│       │   ├── dual.rs      Dual<T> forward-mode AD (550+ lines — kept separate)
-│       │   ├── multi_dual.rs MultiDual<T,N> (400+ lines — kept separate)
-│       │   └── half_impl.rs f16/bf16 impls + scalar/utils (merged, ≤400 lines)
-│       ├── matrix_like.rs   MatrixLike<T> trait
-│       ├── gpu.rs           GpuStorage<T> + GpuContext trait + wgpu/CUDA/HIP dispatch
-│       ├── gpu_common.rs    RtcStorage + MemoryPool + gpu_unary_ops!/gpu_binary_ops!/rtc_backend_impl!
-│       ├── cuda_backend.rs  CUDA backend — intentionally monolithic (CudaCtx singleton coupling)
-│       ├── hip_backend.rs   HIP backend (hiprtc) — mirrors CUDA structure
-│       ├── kernels_cu.rs    CUDA/HIP C kernel source strings (NVRTC/hiprtc JIT)
-│       ├── wgsl.rs          WGSL register-tile MMA codegen + WGSL kernel strings
-│       ├── error.rs         NablaError + Result alias
-│       └── layout.rs        LinearLayout<N> F₂ binary matrix swizzle
+│       ├── lib.rs            #[path] routing + feature-gate compile_error!
+│       ├── common/           shared code (cpu + gpu)
+│       │   ├── backend.rs    Backend trait (sealed) + DefaultBackend + NablaError + Result (~1179L)
+│       │   ├── layout.rs     LinearLayout<N> F₂ binary matrix swizzle (164L)
+│       │   ├── scalar/
+│       │   │   ├── mod.rs    Scalar/MathOps/ReductionOps traits + f32/f64/half impls (450L)
+│       │   │   ├── complex.rs  Complex<T>, c32/c64 (408L)
+│       │   │   ├── dual.rs   Dual<T> forward-mode AD (591L)
+│       │   │   └── multi_dual.rs  MultiDual<T,N> (420L)
+│       │   └── tensor/
+│       │       ├── mod.rs    Tensor<T,B> core struct + MatrixLike + trait impls (574L)
+│       │       ├── constructors.rs  zeros/ones/identity/rand/from_fn/fill/linspace (449L)
+│       │       ├── ops.rs    arithmetic + element-wise + broadcast + operator overloads (781L)
+│       │       ├── shape.rs  shape/reshape/broadcast/TensorView/iter/display (639L)
+│       │       ├── reductions.rs  sum/max/min/argmax/argmin/norm axis-wise (528L)
+│       │       ├── variants.rs  NdTensor/StaticMatrix/DynTensor (769L)
+│       │       ├── nn_conv.rs   conv1d/2d/3d/transpose + pooling + config builders (538L)
+│       │       └── nn_ops.rs    activations + batch_norm + losses + attention (546L)
+│       ├── cpu/
+│       │   └── mod.rs        CpuStorage<T> + Cpu struct + impl Backend for Cpu (566L)
+│       ├── wgpu/             wgpu backend (feature = "wgpu")
+│       │   ├── mod.rs        re-exports
+│       │   ├── storage.rs    GpuStorage<T> + GpuContext + wgpu dispatch helpers (338L)
+│       │   ├── shaders.rs    WGSL register-tile MMA codegen + kernel strings (898L)
+│       │   └── ops.rs        impl Backend for Gpu (wgpu) + all gpu_* fns (1103L)
+│       └── cuda_hip/         CUDA + HIP backends (feature = "cuda" | "hip")
+│           ├── mod.rs        re-exports
+│           ├── rtc.rs        RtcStorage + MemoryPool + rtc_backend_impl! macro (520L)
+│           ├── pool.rs       CUDA/HIP pooling kernels dispatch (585L)
+│           ├── fuse.rs       fuse! kernel codegen dispatch (537L)
+│           ├── cuda.rs       CUDA backend — intentionally monolithic (5574L, CudaCtx singleton)
+│           ├── hip.rs        HIP backend — mirrors CUDA structure (2386L)
+│           └── kernels.rs    CUDA/HIP C kernel source strings (NVRTC/hiprtc JIT) (2251L, data file)
 │
 ├── nabla/                   ━━ Layer 3: Application ━━
 │   ├── src/
@@ -456,6 +457,13 @@ Dependencies:
 - `activations.rs` (75 lines) — too fine; merge into `nn.rs`
 - `utils.rs` (45 lines) — too fine; inline into the calling module
 - One type per file (e.g. `complex.rs`, `dual.rs` as separate files) — merge into one `scalar.rs` unless each exceeds 400 lines independently
+
+**Exemptions (400-800L rule does not apply)**:
+- `cuda_hip/cuda.rs` (5574L) — intentionally monolithic; `CudaCtx` singleton creates deep coupling. Do NOT split.
+- `cuda_hip/hip.rs` (2386L) — mirrors CUDA structure; same reason.
+- `cuda_hip/kernels.rs` (2251L) — data file (kernel source strings only); splitting adds no value.
+- `wgpu/ops.rs` (1103L) — all `impl Backend for Gpu` methods; splitting would scatter a single trait impl.
+- `wgpu/shaders.rs` (898L) — WGSL codegen + shader strings tightly coupled; acceptable overshoot.
 
 ---
 
@@ -806,9 +814,9 @@ All tensors use `Tensor<T>` = `Tensor<T, DefaultBackend>`.
 | Module | cpu | wgpu | cuda | hip |
 |---|---|---|---|---|
 | `tensor` / `backend` | ✅ | ✅ | ✅ | ✅ |
-| `gpu` / `gpu_wgpu` | — | ✅ | — | — |
-| `gpu` / `gpu_cuda` | — | — | ✅ | — |
-| `gpu` / `gpu_hip` | — | — | — | ✅ |
+| `wgpu/` | — | ✅ | — | — |
+| `cuda_hip/` (cuda) | — | — | ✅ | — |
+| `cuda_hip/` (hip) | — | — | — | ✅ |
 | `linalg` / `sparse` | ✅ | ❌ | ❌ | ❌ |
 | `cas` / `ode` | ✅ | ✅ | ✅ | ✅ |
 | `autograd` | ✅ | ✅ | ✅ | ✅ |
@@ -821,19 +829,19 @@ All tensors use `Tensor<T>` = `Tensor<T, DefaultBackend>`.
 
 ```
                     ┌─────────────────────────────────┐
-                    │        gpu.rs (dispatch)         │
+                    │      wgpu/storage.rs (dispatch)   │
                     │  GpuContext trait + GpuStorage<T> │
                     └──────────┬──────────────────────┘
                                │
               ┌────────────────┼────────────────┐
               ▼                ▼                 ▼
-        wgsl.rs / gpu.rs   cuda_backend.rs   hip_backend.rs
+      wgpu/shaders.rs  cuda_hip/cuda.rs  cuda_hip/hip.rs
         WGSL shaders     CUDA driver API   HIP runtime
         wgpu::Buffer     CUdeviceptr       hipDeviceptr_t
         pollster sync    cuLaunchKernel    hipLaunchKernelGGL
               │                │                 │
               ▼                ▼                 ▼
-        kernels_wgsl.rs       kernels_cu.rs (shared)
+       wgpu/shaders.rs   cuda_hip/kernels.rs (shared)
         const &str WGSL       const &str CUDA/HIP C
 ```
 
@@ -876,7 +884,7 @@ Implementations: wgpu (`ComputePipeline` cache), CUDA (`CUmodule` + nvrtc), HIP 
 
 WGSL shaders: embedded as `const &str` in `kernels_wgsl.rs`. Workgroup size: 256.
 
-CUDA/HIP C kernels: embedded as `const &str` in `kernels_cu.rs`. Block size: 256 (tunable). Compiled at runtime via `nvrtc` / `hiprtc`. **Single source** — HIP C is source-compatible with CUDA C for standard math kernels.
+CUDA/HIP C kernels: embedded as `const &str` in `cuda_hip/kernels.rs`. Block size: 256 (tunable). Compiled at runtime via `nvrtc` / `hiprtc`. **Single source** — HIP C is source-compatible with CUDA C for standard math kernels.
 
 **f32 vectorized memory access** — all f32 unary/binary/scalar kernels use `float4` (128-bit) loads/stores via `LDG.E.128`. Each thread processes 4 elements + scalar tail loop. f32 unary math uses CUDA fast-math intrinsics (`__expf`, `__logf` etc). f64 kernels remain scalar (1 element/thread).
 
