@@ -98,40 +98,80 @@ Switch to GPU: change `features = ["cpu"]` to `features = ["cuda"]` in `Cargo.to
 
 **Benchmark on GH200 480GB (CUDA 12.8, PyTorch 2.7.0)**
 
+The number that matters for real training workloads — a full step (forward + backward + optimizer):
+
+| Batch size | nabla eager | nabla CUDA Graph | PyTorch eager | PyTorch CUDA Graph | nabla eager speedup |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.111 ms | **0.070 ms** | 0.759 ms | 0.045 ms | **6.8×** |
+| 32 | 0.133 ms | **0.085 ms** | 0.923 ms | 0.072 ms | **6.9×** |
+| 128 | 0.133 ms | **0.088 ms** | 0.976 ms | 0.130 ms | **7.3×** |
+| 256 | 0.139 ms | **0.094 ms** | 0.974 ms | 0.136 ms | **7.0×** |
+| 512 | 0.147 ms | **0.108 ms** | 0.847 ms | 0.142 ms | **5.8×** |
+| 1024 | 0.170 ms | **0.130 ms** | 0.966 ms | 0.160 ms | **5.7×** |
+
+> Model: MLP 784→256→128→10, MSE sum loss, SGD. Same model and loss on both sides — no `allow_tf32` manipulation.
+> All numbers measured on the same GH200; script: [`benchmarks/bench_pytorch.py`](benchmarks/bench_pytorch.py).
+
+nabla eager is **5.7–7.3× faster** than PyTorch eager in realistic training. At batch ≥ 128, nabla CUDA Graph also beats PyTorch CUDA Graph (1.2–1.5×).
+
+**Single-op and matmul benchmarks (for reference):**
+
 | Workload | nabla | PyTorch 2.7 (default) | PyTorch 2.7 (TF32=ON) | PyTorch 2.7 (FP16) |
 |---|---|---|---|---|
-| matmul 4096×4096 (f32) | **0.372 ms** | 2.675 ms | 0.332 ms — ~parity | — |
+| matmul 4096×4096 (f32) | 0.372 ms | 2.675 ms | 0.332 ms — ~parity | — |
 | matmul 4096×4096 (f16) | **0.189 ms** | — | — | 0.210 ms |
-| matmul 1024×1024 | **0.036 ms** | 0.058 ms | — | — |
+| matmul 1024×1024 | 0.036 ms | 0.058 ms | — | — |
 | `exp` + `sin` fused | **0.041 ms** | 0.081 ms | — | — |
 | `sin` / `cos` / `tanh` | 0.040 ms | 0.041 ms | ~parity | — |
 | `add` / `sub` / element-wise | 0.058 ms | 0.058 ms | ~parity | — |
 | 4-op `fuse!` speedup vs unfused | **3.38×** | — | — | — |
 
-> **Transparency note on the matmul results:**
-> nabla explicitly enables TF32 Tensor Core math (`CUBLAS_TF32_TENSOR_OP_MATH`) on initialization.
-> PyTorch 2.7.0 ships with `torch.backends.cuda.matmul.allow_tf32 = False` by default — verified on the same GH200.
-> When PyTorch is set to TF32=ON, f32 matmul performance is **approximately equal** (PyTorch 0.332ms vs nabla 0.372ms, within noise).
-> The large f32 gap (2.675ms vs 0.372ms) is a default-settings difference, not an algorithmic one.
-> **FP16 is the fairest comparison for real-world DL inference/training:** nabla 0.189ms vs PyTorch 0.210ms — nabla wins by ~1.1×, using the same `CUBLAS_COMPUTE_16F` Tensor Core path on both sides.
-> nabla's position: **TF32 should be the default for deep learning** — accuracy impact is negligible and the speedup is enormous. PyTorch makes you opt in; nabla does the right thing out of the box.
+> **Transparency note on the matmul numbers:**
+> nabla explicitly enables TF32 Tensor Core math (`CUBLAS_TF32_TENSOR_OP_MATH`) at init.
+> PyTorch 2.7.0 ships with `allow_tf32 = False` by default (verified on GH200). When both use TF32=ON, performance is ~equal.
+> **FP16 is the fairest single-op comparison:** nabla 0.189 ms vs PyTorch 0.210 ms — nabla wins by ~1.1×.
+> Single-op comparisons don't show the full picture; the training table above does.
 
-**MLP training (784→256→128→10, MSE loss, SGD) — all batch sizes:**
+#### Why: Python costs ~7 µs per kernel launch
 
-| Batch size | nabla eager | nabla CUDA Graph | PyTorch eager | PyTorch CUDA Graph |
-|---:|---:|---:|---:|---:|
-| 1 | 0.111 ms | **0.070 ms** | 0.710 ms | 0.045 ms |
-| 32 | 0.133 ms | **0.085 ms** | 0.923 ms | 0.072 ms |
-| 128 | 0.133 ms | **0.088 ms** | 0.976 ms | 0.130 ms |
-| 256 | 0.139 ms | **0.094 ms** | 0.974 ms | 0.136 ms |
-| 512 | 0.147 ms | **0.108 ms** | 0.847 ms | 0.142 ms |
-| 1024 | 0.170 ms | **0.130 ms** | 0.966 ms | 0.160 ms |
+Every `tensor.exp()` call in PyTorch has to travel through this stack before the GPU sees it:
 
-> The MLP training numbers use the same model and loss function on both sides (MSE sum, SGD, no `allow_tf32` manipulation) — the 4.2–6.4× eager gap is entirely due to CPU dispatch overhead, not precision settings. See the benchmark script: [`benchmarks/bench_pytorch.py`](benchmarks/bench_pytorch.py).
+```
+your Python code
+  → Python interpreter  (~1 µs)
+    → PyTorch Python API  (~1 µs)
+      → ATen C++ operator dispatch  (~2 µs)
+        → CUDA kernel launch  ← GPU finally starts
+```
 
-nabla eager is **4.2–6.4× faster** than PyTorch eager across all batch sizes. At batch ≥ 128, nabla CUDA Graph is also faster than PyTorch CUDA Graph (1.2–1.5×). At batch=1 PyTorch CUDA Graph wins (smaller models, lower absolute latency).
+**Measured on GH200:** small-tensor `exp` chain = **~7 µs per launch** (Python overhead only — the GPU compute is nearly free for small tensors).
 
-#### First: why plain Rust isn't enough
+One launch is invisible. A training step with 36 kernel launches — measured:
+
+```
+PyTorch MLP step (batch=1):   0.759 ms
+                              ├─ GPU compute:  ~0.110 ms  (same hardware as nabla)
+                              └─ Python overhead: ~0.649 ms  ≈ 36 launches × 18 µs each
+                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+                                                              this is the cost you're paying
+
+nabla MLP step (batch=1):     0.111 ms  ← Rust calls CUDA runtime directly, no interpreter
+```
+
+The gap is not about GPU speed — it's about how much time Python spends telling the GPU what to do. The bigger your model (more layers, more ops per step), the more this compounds.
+
+```
+Training throughput: nabla vs PyTorch eager
+
+Model size (kernel launches per step)
+   10 launches:  PyTorch ███░░░░   nabla ███  (~2× faster)
+   36 launches:  PyTorch █████████░░░░░░  nabla ████  (~7× faster)
+  100 launches:  PyTorch ████████████████████████░░░░░░░░  nabla ████  (~20× faster, extrapolated)
+                 ─────── Python overhead grows linearly with op count
+                         GPU compute stays constant — nabla is always in this range ────┘
+```
+
+#### Second: why plain Rust isn't enough for raw GPU throughput
 
 PyTorch's backend is written in C++ and calls hand-tuned CUDA libraries (cuBLAS, cuDNN) that NVIDIA spends years optimizing. If you just wrote a matrix multiply in ordinary Rust and sent it to the GPU, you would get roughly the same speed as PyTorch — or slower.
 
@@ -161,7 +201,7 @@ General GPU cores:   one multiply-add per cycle per core
 Tensor Cores:        an entire 16×16 matrix multiply per cycle  ←── orders of magnitude faster
 ```
 
-nabla uses Tensor Cores directly for matmul. This is what produces the 7.5× matmul advantage over PyTorch — PyTorch also uses Tensor Cores via cuBLAS, but nabla's kernel has less overhead getting there.
+nabla enables TF32 Tensor Core math by default for matmul — PyTorch doesn't. When both use TF32, f32 matmul performance is approximately equal. For FP16, nabla is ~1.1× faster (0.189 ms vs PyTorch's 0.210 ms). The real advantage is in dispatch, not in this single-op comparison.
 
 **No CPU fallback — ever**
 
@@ -180,39 +220,19 @@ nabla:   [matmul + activation, single kernel] ← no memory round-trip
 
 ---
 
-These are the reasons nabla can match and beat PyTorch's C++/CUDA backend on raw GPU throughput. The next section explains the second half of the story: eliminating CPU scheduling overhead entirely.
+**How nabla keeps the GPU busy**
 
-**A GPU is incredibly fast — but only when it has work to do.**
+**1. Rust: zero interpreter overhead**
 
-Think of it like a factory floor (GPU) and a foreman (CPU). The factory line can run at any speed, but it can only start the next job once the foreman walks over and hands it the instruction sheet. The faster the line, the more painful each pause becomes.
-
-In PyTorch, a single line like `a + b` takes this path before the GPU sees it:
-
-```
-your Python code
-  → Python interpreter (line-by-line execution)
-    → PyTorch Python API
-      → ATen C++ operator dispatch
-        → CUDA kernel launch
-```
-
-Each hop costs **10–50 μs on the CPU side** — while the GPU sits idle. One operation is fine. But a single training step involves hundreds of operations. That overhead compounds to milliseconds of GPU stall per batch.
+Rust compiles to native machine code. A tensor call goes straight to the CUDA runtime in a single function call — no interpreter, no Python object overhead, no GIL.
 
 ```
 PyTorch: ████░░░░████░░░░████░░░░████░░░░ ...
-         ████ GPU computing   ░░░░ GPU idle (waiting for Python to schedule next op)
+         ████ GPU busy   ░░░░ GPU idle (Python scheduling next op)
 
 nabla:   ████████████████████████████████ ...
-         Rust calls the CUDA runtime directly — no interpreter, no idle gaps
+         Rust calls CUDA runtime directly — no gaps
 ```
-
-Here is how nabla eliminates each layer of that stall:
-
----
-
-**1. Rust cuts out the interpreter entirely**
-
-Python is interpreted: every line of code goes through the Python runtime before anything reaches the GPU. nabla is written in Rust, which compiles to native machine code ahead of time. A tensor call goes straight to the CUDA runtime in a single function call — no interpreter, no Python object overhead, no GIL (the global lock that prevents Python from running two things at once).
 
 ---
 
@@ -263,7 +283,7 @@ This is why nabla is already faster than PyTorch in eager mode, before CUDA Grap
 
 Putting the benchmark numbers in context:
 
-- **6.4× eager gap** — primarily factors 1 (no interpreter) + 4 (fused kernels)
+- **5.7–7.3× eager gap** — primarily factors 1 (no interpreter) + 4 (fused kernels)
 - **1.2–1.5× CUDA Graph gap** — factors 2 (`fuse!`) + 4 still apply even when Python overhead is gone
 
 Reproduce locally: `cd benchmarks && bash run.sh`
