@@ -120,7 +120,56 @@ Switch to GPU: change `features = ["cpu"]` to `features = ["cuda"]` in `Cargo.to
 
 nabla eager is **4.2–6.4× faster** than PyTorch eager across all batch sizes. At batch ≥ 128, nabla CUDA Graph is also faster than PyTorch CUDA Graph (1.2–1.5×). At batch=1 PyTorch CUDA Graph wins (smaller models, lower absolute latency).
 
-#### The root cause: GPU idle time
+#### First: why plain Rust isn't enough
+
+PyTorch's backend is written in C++ and calls hand-tuned CUDA libraries (cuBLAS, cuDNN) that NVIDIA spends years optimizing. If you just wrote a matrix multiply in ordinary Rust and sent it to the GPU, you would get roughly the same speed as PyTorch — or slower.
+
+nabla has to earn its performance the hard way. Here is what that looks like:
+
+**Reading GPU memory in bulk, not one value at a time**
+
+A GPU has thousands of cores running in parallel. But memory bandwidth is the bottleneck — every time a core reads from GPU memory, it costs time. The trick is to read 128 bits (4 floats) in a single instruction instead of 32 bits (1 float), so you do 4× the math per memory trip.
+
+```
+Naive:   core → [reads 1 float] → GPU memory  ←── slow
+                [reads 1 float] → GPU memory
+                [reads 1 float] → GPU memory
+                [reads 1 float] → GPU memory
+
+nabla:   core → [reads 4 floats at once] → GPU memory  ←── 4× fewer memory trips
+```
+
+Every element-wise operation in nabla (add, sin, exp, …) uses this 128-bit "float4" loading. PyTorch does too — but nabla enforces it without exception. There is no fallback path.
+
+**Using the GPU's dedicated matrix math hardware**
+
+Modern NVIDIA GPUs have special units called Tensor Cores. They are hardwired to multiply matrices and are dramatically faster than general-purpose floating point for that one job. Using them requires writing WMMA (Warp Matrix Multiply Accumulate) instructions directly in GPU code.
+
+```
+General GPU cores:   one multiply-add per cycle per core
+Tensor Cores:        an entire 16×16 matrix multiply per cycle  ←── orders of magnitude faster
+```
+
+nabla uses Tensor Cores directly for matmul. This is what produces the 7.5× matmul advantage over PyTorch — PyTorch also uses Tensor Cores via cuBLAS, but nabla's kernel has less overhead getting there.
+
+**No CPU fallback — ever**
+
+In any framework that supports both CPU and GPU, there is always a risk: if an operation isn't implemented on GPU, it silently falls back to CPU. The data has to travel from GPU memory across the PCIe bus to CPU, get computed, then travel back. This round-trip alone takes hundreds of microseconds.
+
+nabla makes CPU fallback a **compile error**. Every operation either has a GPU implementation or the code does not compile. There is no "oops, that quietly ran on CPU" moment.
+
+**Matmul + activation fused at the library level**
+
+A linear layer followed by an activation function (e.g. `linear → ReLU`) is one of the most common patterns in neural networks. Normally this dispatches two GPU kernels: one for the matrix multiply, one for the activation. nabla uses cuBLAS's epilogue API to attach the activation directly to the end of the matmul kernel — one kernel, no intermediate buffer written to GPU memory between them.
+
+```
+Normal:  [matmul kernel]──write──►[GPU memory]──read──►[activation kernel]
+nabla:   [matmul + activation, single kernel] ← no memory round-trip
+```
+
+---
+
+These are the reasons nabla can match and beat PyTorch's C++/CUDA backend on raw GPU throughput. The next section explains the second half of the story: eliminating CPU scheduling overhead entirely.
 
 **A GPU is incredibly fast — but only when it has work to do.**
 
