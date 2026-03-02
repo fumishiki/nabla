@@ -20,20 +20,7 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn std::error::Error
     use std::sync::Arc;
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!(
-            "Usage: nabla serve <MODEL_PATH> [OPTIONS]\n\n\
-            Options:\n  \
-            --port       <N>    Listen port (default: 8080)\n  \
-            --host       <ADDR> Listen address (default: 0.0.0.0)\n  \
-            --ctx        <N>    Context length (default: 2048)\n  \
-            --temp       <F>    Sampling temperature (default: 0.8)\n  \
-            --max-tokens <N>    Max output tokens (default: 512)\n\n\
-            Endpoints:\n  \
-            GET  /health\n  \
-            GET  /v1/models\n  \
-            POST /v1/completions\n  \
-            POST /v1/chat/completions"
-        );
+        print_help();
         return Ok(());
     }
 
@@ -256,8 +243,25 @@ fn extract_last_user_message(json: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 #[cfg(not(feature = "llama"))]
-pub fn run(_args: &[String]) -> std::result::Result<(), Box<dyn std::error::Error>> {
+pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
     Err("`nabla serve` requires `--features llama` (link llama.cpp)".into())
+}
+
+fn print_help() {
+    println!(
+        "Usage: nabla serve <MODEL_PATH> [OPTIONS]\n\n\
+        Options:\n  \
+        --port       <N>    Listen port (default: 8080)\n  \
+        --host       <ADDR> Listen address (default: 0.0.0.0)\n  \
+        --ctx        <N>    Context length (default: 2048)\n  \
+        --temp       <F>    Sampling temperature (default: 0.8)\n  \
+        --max-tokens <N>    Max output tokens (default: 512)\n\n\
+        Requires: --features llama"
+    );
 }
 
 // ---------------------------------------------------------------------------
