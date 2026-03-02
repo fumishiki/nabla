@@ -105,9 +105,6 @@ Recent implementation scope update:
 
 ### Faster Than PyTorch, and Why
 
-<p align="center">
-  <img src="assets/demo_benchmark.gif" alt="nabla vs PyTorch benchmark" width="800">
-</p>
 
 **Benchmark on GH200 480GB (CUDA 12.8, PyTorch 2.7.0)**
 
