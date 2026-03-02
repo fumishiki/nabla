@@ -56,7 +56,7 @@ Exactly one of `{cpu, wgpu, cuda, hip}` via feature flag. All 6 pairwise conflic
 | Feature | Backend | Scalar Types | Special Capabilities |
 |---|---|---|---|
 | `cpu` (default) | `Cpu` (pure Rust + rayon) | f32, f64, f16, bf16, c32, c64, Dual | Full linalg, sparse, CAS eval |
-| `gpu` | `Gpu` (wgpu/WGSL) | f32 | BCSR SpMM, register-tile MMA |
+| `gpu` | `Gpu` (wgpu/WGSL) | f32 *(f64 unsupported — WGSL core spec has no f64 type)* | BCSR SpMM, register-tile MMA |
 | `cuda` | `Cuda` (cuBLAS/nvrtc) | f32, f64 | Tensor cores (WMMA f16 matmul), Graph capture, cublasLt epilogue |
 | `hip` | `Hip` (hipBLAS/hiprtc) | f32, f64 | CDNA support, rocWMMA f16 matmul |
 
@@ -268,7 +268,7 @@ NN ops: softmax, reshape, transpose, linear_forward, dropout, clamp, loss ops. M
 
 | Limitation | Mitigation |
 |---|---|
-| No wgpu f64 | Use `cuda`/`hip` backend |
+| No wgpu f64 | WGSL core spec does not define `f64`; all storage buffers are `f32` only. Use `cuda`/`hip` backend |
 | No GPU c32/c64 | Compile error (by design) |
 | GPU linalg: TRSM only | Full LU/Cholesky/QR CPU only |
 | `from_fn` requires host | Use `fuse!` for GPU |

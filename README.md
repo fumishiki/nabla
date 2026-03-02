@@ -553,6 +553,8 @@ Switching from CPU to GPU requires **no code changes** — only the feature flag
 | `hip` | AMD GPU | ✅ | ✅ |
 | `wgpu` | Vulkan / Metal / DX12 (cross-platform) | ✅ | ❌ |
 
+> **wgpu f64:** WGSL (WebGPU Shading Language) does not include `f64` in its core specification — all storage buffers and arithmetic are `f32` only. Use `cuda`, `hip`, or `cpu` for `f64` workloads.
+
 Complex number support is CPU-only. No CUDA or Vulkan SDK installation required — GPU libraries are loaded at runtime.
 
 ---
