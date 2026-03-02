@@ -1,6 +1,7 @@
 #[cfg(feature = "cuda")]
 mod cuda_fp_cast {
     use half::f16;
+    use nabla::backend::Cuda;
     use nabla::prelude::*;
     use nabla::scalar::{Fp4E2M1, Fp8E4M3, Fp8E5M2};
 

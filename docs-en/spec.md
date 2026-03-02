@@ -192,7 +192,7 @@ nabla covers the mathematically fixed computations provided by PyTorch's `torch.
 | Category | Count | Key ops | GPU |
 |---|---|---|---|
 | **A. Convolution** | 4 | conv1d/2d/3d, conv_transpose2d | ✅ im2col+cuBLAS |
-| **B. Pooling** | 4 | max/avg/adaptive_avg pool2d, max_pool1d | ✅ (2d), 🔲 (1d) |
+| **B. Pooling** | 4 | max/avg/adaptive_avg pool2d, max_pool1d | ✅ (2d/1d) |
 | **C. Normalization** | 4 | layer/rms/batch/group_norm | ✅ GPU kernels |
 | **D. Activation** | 10 | relu, gelu, sigmoid, softmax, silu, mish, leaky_relu, elu, hardswish, log_softmax | ✅ float4 + fuse! |
 | **E. Loss** | 9 | cross_entropy, mse, mse_sum (fused), l1, smooth_l1, bce_logits, nll, kl_div, cosine_embedding | ✅ fused GPU |
@@ -399,3 +399,28 @@ Acceptance tests:
 - `nabla-interface/tests/convert.rs`: nabla Tensor → GGUF file output → file size and metadata verification (5 tests)
 - `nabla-interface/tests/llama_load.rs`: GGUF → llama.cpp load → tokenize/detokenize (1 test, requires llama.cpp)
 - `nabla-interface/tests/llama_inference.rs`: GGUF load → generate → text generation + perf stats (1 test, requires llama.cpp)
+
+---
+
+## §8 Phase 8 — CUDA Dtype Coverage (Done ✅)
+
+Scope expanded to full CUDA dtype coverage for `f32`, `f16`, `fp8` (`E4M3`, `E5M2`), and `fp4` (`E2M1`) across the Feature Catalog in §3, with no implicit CPU fallback in the CUDA path.
+
+### 8.1 Implemented coverage
+
+- Construction / cast / quantization: `fp32↔fp16↔fp8↔fp4`, blockwise fp4 quant/dequant
+- Core math and reductions: unary/binary ops, `sum/max/min`, axis reductions, `cumsum/cumprod`, `prod`
+- NN ops: activations, softmax/log-softmax, layer/rms/batch/group norm, losses
+- Convolution and attention: im2col family, conv transpose 2d, SDPA
+- Tensor manipulation helpers and regularization kernels used by CUDA backend dispatch
+- Pooling parity: `max_pool1d` is now GPU-path compatible via backend pooling dispatch
+
+### 8.2 Kernel source layout update
+
+CUDA/HIP kernel sources were split into focused `.cuh` units and wired through `common/kernels/mod.rs`:
+
+- `k_basic_core.cuh`, `k_basic_math.cuh`, `k_basic_red32.cuh`, `k_basic_red64.cuh`
+- `k_norm_softmax.cuh`, `k_norm_group.cuh`, `k_norm_reduce.cuh`, `k_norm_pool.cuh`
+- `k_conv_bn_loss.cuh`, `k_attn.cuh`, `k_conv_misc.cuh`
+
+This replaces prior monolithic kernel files and keeps each kernel source in a manageable size range.

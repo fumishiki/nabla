@@ -15,6 +15,8 @@ pub mod reductions;
 pub mod shape;
 /// Tensor variants: `NdTensor`, `StaticMatrix`, `DynTensor`, and related traits.
 pub mod variants;
+/// Low-precision (fp8/fp4) quantize/dequantize helpers.
+pub mod lowp;
 
 pub use constructors::{ColIter, RowIter, TensorView};
 pub use variants::{Array, NdTensor, StaticMatrix};

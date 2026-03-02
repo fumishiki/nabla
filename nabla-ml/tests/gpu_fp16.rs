@@ -1,6 +1,7 @@
 #[cfg(feature = "cuda")]
 mod cuda_fp16 {
     use half::f16;
+    use nabla::backend::Cuda;
     use nabla::prelude::*;
 
     fn make_base(rows: usize, cols: usize) -> Tensor<f32, Cuda> {
@@ -26,7 +27,7 @@ mod cuda_fp16 {
 
         let z = Tensor::<T, Cuda>::zeros(2, 3);
         let o = Tensor::<T, Cuda>::ones(2, 3);
-        let f = Tensor::<T, Cuda>::full(2, 3, T::from_f64(2.0));
+        let f = Tensor::<T, Cuda>::fill(2, 3, T::from_f64(2.0));
         let e = Tensor::<T, Cuda>::identity(3);
         let ar = Tensor::<T, Cuda>::arange(T::zero(), T::one(), 4);
         let lin = Tensor::<T, Cuda>::linspace(T::zero(), T::one(), 4);
@@ -58,7 +59,7 @@ mod cuda_fp16 {
         assert_shape(&y2, (1, 4));
 
         let x3 = make::<T>(1, 8);
-        let w3 = Tensor::<T, Cuda>::full(1, 8, T::one());
+        let w3 = Tensor::<T, Cuda>::fill(1, 8, T::one());
         let y3 = x3.conv3d(
             &w3,
             None,
@@ -114,7 +115,7 @@ mod cuda_fp16 {
         let _ = a.hardswish();
         let _ = a.log_softmax(1);
 
-        let ce_targets = Tensor::full(2, 3, T::from_f64(1.0 / 3.0));
+        let ce_targets = Tensor::fill(2, 3, T::from_f64(1.0 / 3.0));
         let _ = a.log_softmax(1).cross_entropy_loss(&ce_targets);
         let _ = a.mse_loss(&b);
         let _ = a.l1_loss(&b);

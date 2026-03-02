@@ -109,10 +109,18 @@ nabla/                       [workspace root]
 │           │   ├── fuse.rs   fuse! kernel codegen dispatch (537L)
 │           │   └── kernels/  CUDA/HIP C kernel sources (NVRTC/hiprtc JIT)
 │           │       ├── mod.rs
-│           │       ├── kernels_basic_ops.cuh
+│           │       ├── k_basic_core.cuh
+│           │       ├── k_basic_math.cuh
+│           │       ├── k_basic_red32.cuh
+│           │       ├── k_basic_red64.cuh
+│           │       ├── k_norm_softmax.cuh
+│           │       ├── k_norm_group.cuh
+│           │       ├── k_norm_reduce.cuh
+│           │       ├── k_norm_pool.cuh
+│           │       ├── k_conv_bn_loss.cuh
+│           │       ├── k_attn.cuh
+│           │       ├── k_conv_misc.cuh
 │           │       ├── kernels_cond_set.cuh
-│           │       ├── kernels_im2col_conv.cuh
-│           │       ├── kernels_norm_pool.cuh
 │           │       ├── kernels_wmma_cuda.cuh
 │           │       └── kernels_wmma_hip.cuh
 │           ├── cuda/         CUDA backend (split by feature)

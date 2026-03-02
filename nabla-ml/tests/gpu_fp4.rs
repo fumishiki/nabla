@@ -1,5 +1,6 @@
 #[cfg(feature = "cuda")]
 mod cuda_fp4 {
+    use nabla::backend::Cuda;
     use nabla::prelude::*;
     use nabla::scalar::Fp4E2M1;
 
@@ -29,7 +30,7 @@ mod cuda_fp4 {
 
         let y1 = make::<T>(1, 5).conv1d(&make::<T>(1, 3), None, 1, 1, 5, 1, 3, 1, 0, 1, 1);
         let y2 = make::<T>(1, 9).conv2d(&make::<T>(1, 4), None, 1, 1, 3, 3, 1, 2, 2, (1, 1), (0, 0), (1, 1), 1);
-        let y3 = make::<T>(1, 8).conv3d(&Tensor::<T, Cuda>::full(1, 8, T::one()), None, 1, 1, 2, 2, 2, 1, 2, 2, 2, (1, 1, 1), (0, 0, 0), (1, 1, 1), 1);
+        let y3 = make::<T>(1, 8).conv3d(&Tensor::<T, Cuda>::fill(1, 8, T::one()), None, 1, 1, 2, 2, 2, 1, 2, 2, 2, (1, 1, 1), (0, 0, 0), (1, 1, 1), 1);
         let yt = make::<T>(1, 4).conv_transpose2d(&make::<T>(1, 4), None, 1, 1, 2, 2, 1, 2, 2, (1, 1), (0, 0), (0, 0));
         assert_shape(&y1, (1, 3));
         assert_shape(&y2, (1, 4));
@@ -65,7 +66,7 @@ mod cuda_fp4 {
         let _ = a.hardswish();
         let _ = a.log_softmax(1);
 
-        let ce_targets = Tensor::full(2, 3, T::from_f64(1.0 / 3.0));
+        let ce_targets = Tensor::fill(2, 3, T::from_f64(1.0 / 3.0));
         let _ = a.log_softmax(1).cross_entropy_loss(&ce_targets);
         let _ = a.mse_loss(&b);
         let _ = a.l1_loss(&b);

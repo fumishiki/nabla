@@ -69,6 +69,31 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         self.sum_all() / count
     }
 
+
+    /// Variance of all elements (population variance, ddof=0).
+    #[must_use]
+    #[inline]
+    pub fn var(&self) -> T {
+        let (m, n) = self.shape();
+        let count = T::from_f64((m * n) as f64);
+        let mu = self.mean();
+        let mut sq_sum = T::zero();
+        for r in 0..m {
+            for c in 0..n {
+                let diff = self.get(r, c) - mu;
+                sq_sum = sq_sum + diff * diff;
+            }
+        }
+        sq_sum / count
+    }
+
+    /// Standard deviation of all elements (population std, ddof=0).
+    #[must_use]
+    #[inline]
+    pub fn std(&self) -> T {
+        self.var().math_sqrt()
+    }
+
     /// Product of all elements (alias for [`prod_all`](Self::prod_all)).
     #[must_use]
     #[inline]

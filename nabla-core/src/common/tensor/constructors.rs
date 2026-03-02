@@ -63,6 +63,12 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::from_storage(B::zeros(nrows, ncols))
     }
 
+    /// Tensor filled with ones.
+    #[must_use]
+    pub fn ones(nrows: usize, ncols: usize) -> Self {
+        Self::fill(nrows, ncols, T::one())
+    }
+
     /// Allocate an `nrows x ncols` matrix filled with `val`.
     #[must_use]
     pub fn fill(nrows: usize, ncols: usize, val: T) -> Self {

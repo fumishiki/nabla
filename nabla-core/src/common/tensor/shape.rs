@@ -208,25 +208,27 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         })
     }
 
-    /// Split into `n` equal chunks along `axis`. Panics if not evenly divisible.
+    /// Split into at most `n` chunks along `axis` (last chunk may be smaller).
     #[must_use]
     pub fn chunk(&self, n: usize, axis: usize) -> Vec<Self> {
         match axis {
             0 => {
                 let r = self.nrows();
-                assert_eq!(r % n, 0, "nabla: chunk nrows ({r}) not divisible by {n}");
-                let chunk_size = r / n;
-                (0..n)
-                    .map(|i| self.slice_rows(i * chunk_size..(i + 1) * chunk_size))
-                    .collect()
+                let chunk_size = r.div_ceil(n);
+                (0..n).filter_map(|i| {
+                    let start = i * chunk_size;
+                    if start >= r { return None; }
+                    Some(self.slice_rows(start..((i + 1) * chunk_size).min(r)))
+                }).collect()
             }
             1 => {
                 let c = self.ncols();
-                assert_eq!(c % n, 0, "nabla: chunk ncols ({c}) not divisible by {n}");
-                let chunk_size = c / n;
-                (0..n)
-                    .map(|i| self.slice_cols(i * chunk_size..(i + 1) * chunk_size))
-                    .collect()
+                let chunk_size = c.div_ceil(n);
+                (0..n).filter_map(|i| {
+                    let start = i * chunk_size;
+                    if start >= c { return None; }
+                    Some(self.slice_cols(start..((i + 1) * chunk_size).min(c)))
+                }).collect()
             }
             _ => panic!("nabla: chunk axis {axis} out of bounds for 2-D tensor"),
         }

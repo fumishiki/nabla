@@ -98,6 +98,11 @@ let out = Tensor::sdpa(&q, &k, &v, mask.as_ref(), seq_q, seq_k, head_dim, batch_
 
 Switch to GPU: change `features = ["cpu"]` to `features = ["cuda"]` in `Cargo.toml`. No other changes.
 
+Recent implementation scope update:
+- CUDA dtype coverage expanded across the core feature catalog for `f32`, `f16`, `fp8` (`E4M3`/`E5M2`), and `fp4` (`E2M1`)
+- CUDA/HIP kernel sources were split from monolithic files into focused `k_*.cuh` units for maintainability
+- 1D pooling GPU-path parity updated (`max_pool1d` now routes through backend pooling dispatch)
+
 ### Faster Than PyTorch, and Why
 
 <p align="center">
