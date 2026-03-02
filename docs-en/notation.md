@@ -164,32 +164,50 @@ CPU: CSC. GPU: `BcsrMatrix<T>` BCSR + `WGSL_BCSR_SPMM` kernel + `mixed_spmm_f64`
 
 ## §6 Macros
 
-| Macro | Purpose | GPU | Example |
-|---|---|---|---|
-| `math!` | Auto-borrow idents/fields/indices | ✅ | `math!(a * b + self.bias)` |
-| `fuse!` | Element-wise fusion → 1 GPU kernel | ✅ | `fuse!(x.sin().powf(2.0))` |
-| `mega_fuse!` | Multi-output DAG fusion | ✅ | `mega_fuse!(a+b; prev.exp(); inputs: a, b)` |
-| `einsum!` | Einstein summation (7 patterns) | ✅ | `einsum!(c[i,j] = a[i,k] * b[k,j])` |
-| `stencil!` | Finite difference (auto bounds) | ❌ CPU | `stencil!(out[i,j] = -4*u[i,j] + ...)` |
-| `map!` / `map_!` | Closure map / in-place | ❌ CPU | `map!(\|x\| f(x), &a)` |
-| `par_map!` | Rayon parallel map | ❌ CPU | `par_map!(\|x\| x * 2.0, &a)` |
-| `mat!` | Matrix literal | ✅ | `mat![[1,2],[3,4]]` |
-| `ad!` | Autograd forward+backward+grad | — | `ad!(Cpu; w=init => \|tape\| { ... })` |
-| `vcat!` / `hcat!` / `block!` | Concatenation | ✅ | `vcat!(a, b)` |
-| `named!` | Named tuple construction | — | `named!(x: f64 = 1.0, y: f64 = 2.0)` |
-| `vars!` | Batch-create tracked Variables | — | `vars!(tape; w1 = expr1, w2 = expr2)` |
-| `sequential!` | Build Sequential from layers | — | `sequential!(layer1, layer2)` |
-| `sym!` | Symbolic expression | ✅ | `sym!(sin(x^2) + cos(y))` |
-| `cas_vars!` | CAS variable bindings | — | `cas_vars!{ x: 1.0, y: 2.0 }` |
-| `impl_layer!` | Module impl from params + forward | — | `impl_layer! { Linear { weight; bias } forward(x) { ... } }` |
-| `impl_module_params!` | Module boilerplate (7 methods) | — | `impl_module_params!(weight; bias)` |
-| `vec_unpack!` | Column vector destructure | — | `vec_unpack!(y, x, y_val, z)` |
-| `axis!` | Zero-sized marker types for named axes | — | `axis!(Batch, Seq, Hidden)` |
-| `generated!` | Const-generic specialization | — | `generated!(fn_name, T, R, C)` |
-| `named_zeros!` | Typed axis tensor constructor | — | `named_zeros!(Batch, Seq; 4, 8)` |
-| `train_step!` | Training ceremony absorption | — | `train_step!(model, optimizer, tape, \|x, out\| loss_expr)` |
-| `#[derive(Module)]` | Auto-generate Module trait methods | — | `#[derive(Module)] struct MyLayer { #[param] weight: Tensor<T,B>, ... }` |
-| `#[nabla::main]` | Example entry point | — | `#[nabla::main(cpu)] fn main() { ... }` |
+### GPU-accelerated
+
+These macros generate GPU kernels or compile to GPU-capable operations:
+
+| Macro | Purpose | Example |
+|---|---|---|
+| `math!` | Auto-borrow idents/fields/indices | `math!(a * b + self.bias)` |
+| `fuse!` | Element-wise fusion → 1 GPU kernel | `fuse!(x.sin().powf(2.0))` |
+| `mega_fuse!` | Multi-output DAG fusion | `mega_fuse!(a+b; prev.exp(); inputs: a, b)` |
+| `einsum!` | Einstein summation (7 patterns) | `einsum!(c[i,j] = a[i,k] * b[k,j])` |
+| `mat!` | Matrix literal | `mat![[1,2],[3,4]]` |
+| `vcat!` / `hcat!` / `block!` | Concatenation | `vcat!(a, b)` |
+| `sym!` | Symbolic expression | `sym!(sin(x^2) + cos(y))` |
+
+### CPU-only
+
+These macros run on CPU via closure/loop — no GPU kernel:
+
+| Macro | Purpose | Example |
+|---|---|---|
+| `stencil!` | Finite difference (auto bounds) | `stencil!(out[i,j] = -4*u[i,j] + ...)` |
+| `map!` / `map_!` | Closure map / in-place | `map!(\|x\| f(x), &a)` |
+| `par_map!` | Rayon parallel map | `par_map!(\|x\| x * 2.0, &a)` |
+
+### Utility / meta
+
+No GPU/CPU distinction — these handle code generation, module wiring, and training ceremony:
+
+| Macro | Purpose | Example |
+|---|---|---|
+| `ad!` | Autograd forward+backward+grad | `ad!(Cpu; w=init => \|tape\| { ... })` |
+| `named!` | Named tuple construction | `named!(x: f64 = 1.0, y: f64 = 2.0)` |
+| `vars!` | Batch-create tracked Variables | `vars!(tape; w1 = expr1, w2 = expr2)` |
+| `sequential!` | Build Sequential from layers | `sequential!(layer1, layer2)` |
+| `cas_vars!` | CAS variable bindings | `cas_vars!{ x: 1.0, y: 2.0 }` |
+| `impl_layer!` | Module impl from params + forward | `impl_layer! { Linear { weight; bias } forward(x) { ... } }` |
+| `impl_module_params!` | Module boilerplate (7 methods) | `impl_module_params!(weight; bias)` |
+| `vec_unpack!` | Column vector destructure | `vec_unpack!(y, x, y_val, z)` |
+| `axis!` | Zero-sized marker types for named axes | `axis!(Batch, Seq, Hidden)` |
+| `generated!` | Const-generic specialization | `generated!(fn_name, T, R, C)` |
+| `named_zeros!` | Typed axis tensor constructor | `named_zeros!(Batch, Seq; 4, 8)` |
+| `train_step!` | Training ceremony absorption | `train_step!(model, optimizer, tape, \|x, out\| loss_expr)` |
+| `#[derive(Module)]` | Auto-generate Module trait methods | `#[derive(Module)] struct MyLayer { #[param] weight: Tensor<T,B>, ... }` |
+| `#[nabla::main]` | Example entry point | `#[nabla::main(cpu)] fn main() { ... }` |
 
 ### einsum! pattern classification
 

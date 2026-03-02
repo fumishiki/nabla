@@ -10,162 +10,571 @@
 
 # ∇ nabla
 
-**PyTorch-familiar GPU math for Rust — one pure-Rust ecosystem, zero C++ dependencies.**
+nabla is a Rust library that provides two things:
+- **GPU-accelerated tensor math** — the operations you know from NumPy/PyTorch, running natively on NVIDIA, AMD, or Vulkan/Metal GPUs
+- **A complete ML training stack** — model building, autodiff, optimizers, and model export, all in pure Rust with no C++ required
 
-**Who is this for**: Researchers and engineers doing ML training, scientific simulation, or numerical computing in Rust who want native GPU acceleration *without* wrestling with `libtorch` or C++ FFI. nabla provides `loss.backward()`, `einsum!`, `fuse!`, Symbolic CAS, ODE solvers, and GGUF export across 4 hardware backends in a tightly integrated suite.
+If you know PyTorch, nabla will feel immediately familiar. The difference: you get Rust's safety guarantees, no garbage collector, and in many cases faster GPU execution than PyTorch.
 
-<p align="center">
-  <img src="assets/demo_quickstart.gif" alt="nabla demo — solve, SVD, einsum, autodiff, CAS in 30 lines" width="800">
-</p>
+<!-- toc -->
 
-## The Five-Layer Ecosystem
+- [More About nabla](#more-about-nabla)
+  - [GPU-Ready Tensor Library](#gpu-ready-tensor-library)
+  - [Faster Than PyTorch, and Why](#faster-than-pytorch-and-why)
+  - [Autodiff: loss.backward() in Rust](#autodiff-lossbackward-in-rust)
+  - [Training Stack: nabla-train](#training-stack-nabla-train)
+  - [Model Inference: nabla-interface](#model-inference-nabla-interface)
+  - [Symbolic CAS and ODE Solvers](#symbolic-cas-and-ode-solvers)
+  - [No Silent Errors](#no-silent-errors)
+  - [Macro DSL: Write Math, Not Boilerplate](#macro-dsl-write-math-not-boilerplate)
+- [Installation](#installation)
+- [Getting Started](#getting-started)
+- [Resources](#resources)
+- [Contributing](#contributing)
+- [License](#license)
 
-nabla is more than a tensor library—it's a comprehensive next-generation computation engine.
+<!-- tocstop -->
 
-1. **Layer 1: Notation** (`nabla-macros`) — Python/Julia-level ergonomics via `einsum!`, `fuse!`, `math!`, and `sym!`. 
-2. **Layer 2: Compute** (`nabla-core`) — 190+ tensor operations running on CPU, wgpu (Vulkan/Metal), CUDA, and HIP. No implicit CPU fallback; performance is strictly predictable.
-3. **Layer 3: Application** (`nabla-ml`) — Reverse/Forward AutoDiff, E-graph based Symbolic CAS, dense/sparse linear algebra, and ODE/SDE solvers.
-4. **Layer 4: Training** (`nabla-train`) — Optimizers (AdamW/SGD), LR Schedules, DataLoaders, and AMP for full neural network training.
-5. **Layer 5: Interface** (`nabla-interface`) — 34-type GGUF v3 quantization and export + `llama.cpp` inference bridge.
+## More About nabla
 
-## The pain nabla solves
+nabla is split into focused packages — use only what you need:
 
-Write clean math without sacrificing Rust's safety. Nabla turns runtime panics into compile-time checks and recoverable `Result`s.
+| Package | What it does |
+|---|---|
+| [**`nabla-core`**](docs-en/spec.md) | The tensor engine. 190+ operations — slicing, broadcasting, linear algebra, convolutions — on CPU, NVIDIA, AMD, or Vulkan/Metal GPU. Switch GPU with one line in `Cargo.toml`. |
+| [**`nabla-macros`**](docs-en/notation.md) | Write math as code. `einsum!` for concise tensor contractions, `fuse!` to merge multiple operations into one GPU kernel automatically, `sym!` for symbolic algebra. |
+| [**`nabla-ml`**](docs-en/notation.md) | Automatic gradients (the core of neural-network training), 45+ linear algebra routines, symbolic math, and ODE solvers. |
+| [**`nabla-train`**](docs-en/quick_start.md) | Everything you need to train a model: optimizers, learning-rate schedules, data loading, checkpointing, quantization, and ONNX export. |
+| [**`nabla-interface`**](docs-en/quick_start.md) | Export a trained model to GGUF and run it locally with llama.cpp, Ollama, or LM Studio — including GPU offload on Apple Silicon. |
 
-| Operation | Python / PyTorch / SymPy | nabla (Rust) | Advantage |
-|---|---|---|---|
-| **GPU Fusion** | `torch.sin(x)**2` (Often 2 kernels) | `fuse!(x.sin().powf(2.0))` | **1 JIT GPU Kernel** via AST EqSat |
-| **Solve Ax=b** | `np.linalg.solve(A, b)` | `a.solve(&b)?` | **No silent NaNs** via `Result` |
-| **Autodiff** | `loss.backward()` | `loss.backward()?; let dw = w.grad()?;` | Explicit error handling, Zero GC |
-| **Einsum** | `np.einsum('ik,kj->ij', a, b)` | `einsum!(c[i,j] = a[i,k] * b[k,j])` | Compile-time pattern matching |
-| **SVD** | `np.linalg.svd(A)` | `a.svd()?` | Complete pure-Rust factorization |
-| **Symbolic diff**| `diff(x**2 * sin(x), x)` | `diff(&sym!(x^2 * sin(x)), "x")` | Seamless CAS integration |
+### GPU-Ready Tensor Library
 
-## Benchmark (GH200 480GB)
+If you use NumPy, you have used tensors.
 
-**Why is it faster than PyTorch?**
-* **Zero FFI Overhead**: PyTorch routes through Python -> ATen C++ -> CUDA. nabla goes straight from native Rust to GPU shaders.
-* **Mega-kernel Fusion**: The `fuse!` macro traces the AST and conditionally emits highly optimized NVRTC/hiprtc JIT kernels (e.g., fusing loss + sq + reduce into a single kernel).
-* **Graph Replay**: Training networks bypass dispatch latency completely using CUDA Graphs.
+nabla provides tensors that run on CPU or GPU with no code changes — the backend is a compile-time feature flag, so there is no `model.to("cuda")` and no accidental CPU fallback. 190+ operations including:
 
-**Reproduce locally**: `cd benchmarks && bash run.sh`
+```rust
+use nabla::prelude::*;
+
+let a: Tensor<f64> = mat![[1.0, 2.0, 3.0],
+                           [4.0, 5.0, 6.0]];
+
+let b = a.t();                              // transpose
+let c = &a * &b;                            // matmul (tensor cores on NVIDIA/AMD)
+let d = a.emul(&b);                         // element-wise multiply
+let s = a.sum_axis(0);                      // reduce along axis
+let (u, sigma, vt) = a.svd()?;             // SVD
+let x = a.solve(&rhs)?;                    // Ax = b, returns Err on singular
+```
+
+**Convolutions** — conv1d/2d/3d and transposed convolution, GPU-accelerated via im2col + cuBLAS:
+
+```rust
+let out = input.conv2d(&weight, &bias, stride, padding, dilation)?;   // NCHW layout
+let up  = input.conv_transpose2d(&weight, &bias, stride, padding)?;   // upsampling
+let out = input.max_pool2d(kernel_size, stride, padding)?;
+let out = input.avg_pool2d(kernel_size, stride, padding)?;
+let out = input.adaptive_avg_pool2d((target_h, target_w))?;
+```
+
+**Attention / FlashAttention-2** — for transformer models, nabla implements scaled dot-product attention using the FlashAttention-2 algorithm. This avoids materializing the full N×N attention matrix in memory, making it practical for long sequences:
+
+```rust
+// Scaled dot-product attention — O(N) memory instead of O(N²)
+let out = scaled_dot_product_attention(&q, &k, &v, mask.as_ref())?;
+
+// Multi-head attention module
+let attn = MultiHeadAttention::new(embed_dim, num_heads, dropout);
+let out  = attn.forward_var(&x)?;
+```
+
+Switch to GPU: change `features = ["cpu"]` to `features = ["cuda"]` in `Cargo.toml`. No other changes.
+
+### Faster Than PyTorch, and Why
 
 <p align="center">
   <img src="assets/demo_benchmark.gif" alt="nabla vs PyTorch benchmark" width="800">
 </p>
 
-### MLP training end-to-end — 784→256→128→10, SGD, f32
+**Benchmark on GH200 480GB (CUDA 12.8, PyTorch 2.7.0)**
 
-| Batch | nabla eager | nabla graph | PT eager | PT graph |
-|------:|------------:|------------:|---------:|---------:|
-| 1     | 0.111 ms    | **0.070 ms**| 0.710 ms | 0.045 ms |
-| 128   | 0.133 ms    | **0.088 ms**| 0.976 ms | 0.130 ms |
-| 1024  | 0.170 ms    | **0.130 ms**| 0.966 ms | 0.160 ms |
+| Workload | nabla | PyTorch 2.7 |
+|---|---|---|
+| matmul 4096×4096 (f32, tensor cores) | 0.358 ms | 2.675 ms — **7.5× slower** |
+| matmul 1024×1024 (f32) | 0.036 ms | 0.058 ms — **1.6× slower** |
+| `exp` + `sin` fused | 0.041 ms | 0.081 ms — **2.0× slower** |
+| `sin` / `cos` / `tanh` | 0.040 ms | 0.041 ms | ~parity |
+| `add` / `sub` / element-wise | 0.058 ms | 0.058 ms | ~parity |
+| 4-op `fuse!` speedup vs unfused | **3.38×** | — |
 
-> *nabla eager is 4-6× faster than PyTorch eager. With CUDA Graph (default in `train_step!`), nabla overtakes PyTorch at batch sizes ≥ 128.*
+**MLP training (784→256→128→10, MSE loss, SGD) — all batch sizes:**
 
-## Install
+| Batch size | nabla eager | nabla CUDA Graph | PyTorch eager | PyTorch CUDA Graph |
+|---:|---:|---:|---:|---:|
+| 1 | 0.111 ms | **0.070 ms** | 0.710 ms | 0.045 ms |
+| 32 | 0.133 ms | **0.085 ms** | 0.923 ms | 0.072 ms |
+| 128 | 0.133 ms | **0.088 ms** | 0.976 ms | 0.130 ms |
+| 256 | 0.139 ms | **0.094 ms** | 0.974 ms | 0.136 ms |
+| 512 | 0.147 ms | **0.108 ms** | 0.847 ms | 0.142 ms |
+| 1024 | 0.170 ms | **0.130 ms** | 0.966 ms | 0.160 ms |
 
-Backends are **mutually exclusive** at build time to prevent accidental and slow CPU fallbacks. No CUDA or Vulkan SDKs are required to compile nabla (uses dynamic `libloading`).
+nabla eager is **4.2–6.4× faster** than PyTorch eager across all batch sizes. At batch ≥ 128, nabla CUDA Graph is also faster than PyTorch CUDA Graph (1.2–1.5×). At batch=1 PyTorch CUDA Graph wins (smaller models, lower absolute latency).
+
+#### The root cause: GPU idle time
+
+A GPU is extremely fast — but it can only do work when the CPU tells it to start. In PyTorch, every single tensor operation triggers this chain:
+
+```
+Python bytecode
+  → Python object dispatch
+    → ATen C++ operator
+      → CUDA kernel launch
+```
+
+Each step takes time — typically 10–50 μs per operation on the CPU side — while the GPU sits completely idle waiting for the next instruction. For a training step with hundreds of operations, this CPU overhead adds up to milliseconds of GPU stall per batch.
+
+```
+PyTorch: [GPU work][GPU idle][GPU work][GPU idle][GPU work][GPU idle] ...
+                    ^^^^^^^^             ^^^^^^^^             ^^^^^^^^
+              waiting for Python to                 waiting for Python to
+              schedule next kernel                  schedule next kernel
+
+nabla:    [GPU work][GPU work][GPU work][GPU work][GPU work] ...
+          ← no idle gaps: Rust calls go directly to the CUDA runtime →
+```
+
+nabla eliminates this in three layers:
+
+**1. Rust removes the Python→C++ hop.** Rust compiles directly to native code. A nabla tensor call reaches the CUDA runtime in one function call with no interpreter overhead, no reference counting across a language boundary, no Python GIL.
+
+**2. `fuse!` reduces the total number of kernel launches.** Each GPU kernel launch has a fixed scheduling cost. `a.sin().powf(2.0)` in PyTorch launches 2 kernels and allocates a temporary buffer between them. `fuse!` in nabla traces the expression at compile time, algebraically simplifies it, and emits a single JIT-compiled kernel — no intermediate buffer, one launch instead of two.
+
+```rust
+let y = fuse!(a.sin().powf(2.0));          // 1 kernel, no intermediate buffer
+let (y, z) = mega_fuse!(a+b; prev.exp(); inputs: a, b);  // multi-output, still 1 kernel
+```
+
+**3. CUDA Graph replay eliminates CPU scheduling entirely for repeated workloads.** A training loop runs the same sequence of kernels every iteration. With CUDA Graph, nabla records the full forward + backward + optimizer kernel sequence once, then replays it on every subsequent step — the CPU does essentially nothing, and the GPU runs continuously.
+
+```rust
+// train_step! uses CUDA Graph automatically.
+// Explicit API if you need control:
+let graph = TrainingGraph::new();
+graph.warmup(|| { /* one forward+backward pass */ });
+graph.capture(|| { /* same pass — now recorded */ })?;
+for _ in 0..10_000 {
+    graph.replay()?;   // CPU cost: ~1 μs. GPU runs the full step uninterrupted.
+}
+```
+
+**4. Fused loss and optimizer kernels.** A naive MSE training step is: `sub` → `square` → `sum` (3 kernels). nabla's `k_mse_sum_fwd` fuses these into one kernel, then `k_multi_axpy3` updates all parameters in a single vectorized pass instead of one kernel per parameter. These are the kernels that make the MLP eager numbers so fast, even before CUDA Graph.
+
+The eager vs CUDA Graph numbers above show the remaining gap: even without Python overhead, the CPU still has to schedule each kernel per step. CUDA Graph removes that last bottleneck.
+
+Reproduce locally: `cd benchmarks && bash run.sh`
+
+### Autodiff: loss.backward() in Rust
+
+Training a neural network means computing gradients — nabla does this automatically. You write a forward pass normally, call `backward()`, and read the gradients. No manual math required.
+
+```rust
+let tape = Tape::new();
+let w = tape.var(weights)?;
+let b = tape.var(bias)?;
+
+let logits = (&x * &w) + &b;
+let loss = logits.cross_entropy_indices(&targets)?;
+loss.backward()?;
+
+let dw = w.grad()?;   // Err(NoGradient) if backward wasn't called — no silent None
+let db = b.grad()?;
+// tape, grads, and intermediates are freed here by Drop
+```
+
+All gradient memory is freed immediately when it goes out of scope — no garbage collector, no memory spikes between batches.
+
+For computing how sensitive an output is to each input (Jacobians, sensitivity analysis), **forward-mode AD** is available. You wrap your input in `Dual<T>` and the derivative flows through automatically with zero changes to the math:
+
+```rust
+let x = Dual::new(2.0, 1.0);    // value=2, derivative seed=1
+let y = (x * x).sin();           // evaluates sin(x²) and d/dx sin(x²) simultaneously
+println!("dy/dx = {}", y.dual);  // 2x·cos(x²) ≈ -2.615
+```
+
+### Training Stack: nabla-train
+
+`nabla-train` has everything you need to go from a model definition to saved, deployable weights. It is a separate crate so it only adds to your build when you need it.
+
+| Feature | What it does |
+|---|---|
+| **Optimizers** | AdamW, Adam, SGD — the standard optimizers for deep learning. Set different learning rates per layer group. |
+| **LR schedules** | Gradually reduce the learning rate during training. Choose from cosine decay, linear warmup, one-cycle, or step. |
+| **DataLoader** | Shuffle, batch, and stream your training data in parallel across CPU threads. |
+| **Checkpointing** | Save and restore the full training state — weights plus optimizer momentum — so you can resume after interruption. |
+| **Mixed precision** | Train with 16-bit floats for up to 2× speed and half the GPU memory. Automatic overflow detection. |
+| **Gradient utilities** | Gradient clipping to prevent exploding gradients; efficient zero-grad across all parameters. |
+| **AWQ quantization** | Compress model weights to 4 bits using activation-aware scaling — reduces GPU memory by ~4× with minimal accuracy loss. |
+| **GGUF export** | Export trained weights to GGUF with any of the 34 quantization formats (F32/F16/BF16, Q2_K–Q8_0, IQ1–IQ4, TQ1/TQ2). Load directly in llama.cpp, Ollama, or LM Studio. |
+| **ONNX export** | Export your trained model to the standard format accepted by TensorFlow, Core ML, ONNX Runtime, and more. |
+| **Profiler** | See exactly how long each layer takes, how much GPU memory it uses, and whether it's bottlenecked on compute or memory bandwidth. |
+
+**Training loop** — `train_step!` handles the boilerplate (zero grad, forward, backward, optimizer step) in one call:
+
+```rust
+use nabla_train::prelude::*;
+
+let mut optimizer = AdamW::from_params(1e-3, &model.parameters());
+for epoch in 0..100 {
+    for (x, targets) in &loader {
+        let loss = train_step!(model, optimizer, tape, |x, out| {
+            out.cross_entropy_indices(&targets)
+        })?;
+        println!("loss: {:.4}", loss);
+    }
+}
+```
+
+**DataLoader** — wraps any `Dataset` impl, handles shuffling and batching automatically:
+
+```rust
+let dataset = CsvDataset::load("data/train.csv")?;
+let loader = DataLoader::new(dataset)
+    .batch_size(64)
+    .shuffle(true)
+    .num_workers(4)   // parallel CPU prefetch
+    .build();
+
+for (x, y) in &loader {
+    // x: Tensor<f32>, y: Tensor<i64> — already batched and on device
+}
+```
+
+**Checkpointing** — saves weights and optimizer state together so training can resume exactly where it stopped:
+
+```rust
+// Save after each epoch
+save_checkpoint(&model, &optimizer, Path::new("ckpt.bin"))?;
+
+// Resume on next run — optimizer momentum is restored automatically
+load_checkpoint(&mut model, &mut optimizer, Path::new("ckpt.bin"))?;
+```
+
+**Profiler** — shows per-layer timing, GPU memory, and whether each layer is bottlenecked on compute or memory:
+
+```rust
+let mut prof = Profiler::new();
+prof.start();
+let _ = train_step!(model, optimizer, tape, |x, out| out.mse_loss(&target))?;
+let report = prof.stop();
+println!("{}", serde_json::to_string_pretty(&report)?);
+```
+
+Example output:
+```json
+{
+  "peak_vram_mb": 1847,
+  "total_ms": 0.133,
+  "layers": [
+    { "name": "Linear(512→256)", "forward_ms": 0.021, "backward_ms": 0.038, "vram_mb": 512, "tflops": 18.4, "bound": "compute" },
+    { "name": "LayerNorm",       "forward_ms": 0.004, "backward_ms": 0.006, "vram_mb": 8,   "tflops": 2.1,  "bound": "memory"  }
+  ]
+}
+```
+
+`bound: "memory"` means the layer is limited by how fast data moves between GPU memory and compute units — usually solvable by fusion or larger batch size.
+
+**GGUF export** — export to the format used by llama.cpp, Ollama, and LM Studio. Choose a quantization format to reduce model size:
+
+| Format | Bits/weight | 7B model size | Quality vs F32 |
+|---|---|---|---|
+| F32 | 32 | 26 GB | Baseline |
+| F16 | 16 | 13 GB | Identical |
+| Q8_0 | 9.0 | 7.2 GB | Near-identical |
+| **Q4_K_M** | **4.8** | **4.1 GB** | **Good — recommended** |
+| Q4_0 | 4.5 | 3.8 GB | Good |
+| Q3_K_M | 3.9 | 3.3 GB | Acceptable |
+| Q2_K | 2.6 | 2.2 GB | Noticeable degradation |
+
+All 34 formats are supported — see the full list in [notation.md](docs-en/notation.md).
+
+```rust
+use nabla_train::{export_gguf, GgufQuantType, GgufArchConfig, LayerOverride};
+
+let config = GgufArchConfig {
+    architecture: "llama".into(), name: "MyModel-7B".into(),
+    context_length: 4096, embedding_length: 4096, block_count: 32,
+    head_count: 32, head_count_kv: 8, vocab_size: 32000,
+};
+
+// Q4_K_M for all layers
+export_gguf(&model.state_dict(), Path::new("model.gguf"), GgufQuantType::Q4_K_M, &config, &[])?;
+
+// Override specific layers: keep embeddings in F16 for better token quality
+let overrides = [LayerOverride::new("token_embd", GgufQuantType::F16)];
+export_gguf(&model.state_dict(), Path::new("model.gguf"), GgufQuantType::Q4_K_M, &config, &overrides)?;
+```
+
+**ONNX export** — export to the standard interchange format, runnable in TensorFlow, Core ML, and ONNX Runtime:
+
+```rust
+export_onnx(&model, &dummy_input, Path::new("model.onnx"), dynamic_axes)?;
+```
+
+**AWQ quantization** — compresses model weights to INT4 before export, with activation-aware scaling to minimize accuracy loss:
+
+```rust
+let quant = awq_quantize(&model, &calibration_data, QuantConfig { group_size: 128 })?;
+// Then export the quantized model:
+export_gguf(&quant.state_dict(), Path::new("model.gguf"), GgufQuantType::Q4_K_M, &config, &[])?;
+```
+
+> **Note on IQ formats (IQ1–IQ4):** These ultra-low-bit formats require an importance matrix — a calibration score per weight that tells the quantizer which weights matter most. Pass a `&calibration_data` slice to `export_gguf` when using IQ types. For Q-formats and K-quants, no calibration data is needed.
+
+**Benchmark evaluation** — measure perplexity, accuracy, and top-k accuracy of an exported model against a test dataset:
+
+```rust
+let result = evaluate_model(
+    &engine,
+    &test_dataset,
+    EvalConfig { metric: EvalMetric::Perplexity, ..Default::default() },
+)?;
+println!("perplexity: {:.2}  accuracy: {:.1}%", result.perplexity, result.accuracy * 100.0);
+// JSON output: { perplexity, accuracy, top_k_accuracy, per_sample_scores, summary }
+println!("{}", serde_json::to_string_pretty(&result)?);
+```
+
+### Model Inference: nabla-interface
+
+`nabla-interface` loads GGUF files and runs inference via llama.cpp. On Apple Silicon, transformer layers are automatically offloaded to Metal GPU.
+
+```rust
+use nabla_interface::{InferenceEngine, InferenceConfig, SamplingConfig};
+
+let engine = InferenceEngine::new(
+    "model.gguf",
+    InferenceConfig {
+        n_ctx: 4096,       // context window size
+        n_gpu_layers: 32,  // how many transformer layers to run on GPU (set to 0 for CPU-only)
+        ..Default::default()
+    },
+)?;
+
+// One-shot generation
+let text = engine.generate(
+    "Explain backpropagation in simple terms:",
+    256,  // max tokens to generate
+    &SamplingConfig {
+        temperature: 0.7,   // higher = more creative, lower = more deterministic
+        top_p: 0.9,         // nucleus sampling: consider only top 90% probability mass
+        repeat_penalty: 1.1,
+        ..Default::default()
+    },
+)?;
+
+// Streaming — print tokens as they are generated
+for token in engine.generate_stream("Hello", 64, &SamplingConfig::default())? {
+    print!("{token}");
+    std::io::stdout().flush()?;
+}
+
+// Performance stats
+let stats = engine.perf();
+println!("prompt {:.1} tok/s  gen {:.1} tok/s", stats.prompt_tok_per_sec, stats.gen_tok_per_sec);
+```
+
+**Full end-to-end: train → export → run locally**
+
+```rust
+// 1. Train
+let mut optimizer = AdamW::from_params(1e-4, &model.parameters());
+for _ in 0..epochs { train_step!(model, optimizer, tape, |x, out| out.cross_entropy_indices(&y))?; }
+save_checkpoint(&model, &optimizer, Path::new("ckpt.bin"))?;
+
+// 2. (Optional) AWQ quantization before export for better accuracy/size tradeoff
+let quant = awq_quantize(&model, &calibration_data, QuantConfig { group_size: 128 })?;
+
+// 3. Export to GGUF from nabla-train
+use nabla_train::{export_gguf, GgufQuantType};
+export_gguf(&quant.state_dict(), Path::new("model.gguf"), GgufQuantType::Q4_K_M, &config, &[])?;
+
+// 4. Run with nabla-interface — or load in Ollama / LM Studio using the .gguf file
+let engine = InferenceEngine::new("model.gguf", InferenceConfig::default())?;
+let out = engine.generate("prompt", 128, &SamplingConfig::default())?;
+```
+
+### Symbolic Math and ODE Solvers
+
+Sometimes you need exact math, not numerical approximations. nabla includes a symbolic algebra system — you can define expressions with variables, differentiate them analytically, simplify the result, and then evaluate numerically. No need to reach for Python's SymPy.
+
+```rust
+use nabla::cas::*;
+
+let f = sym!(x^2 * sin(x));                 // ^ is exponentiation, not XOR
+let df = diff_simplify(&f, "x");            // → x²·cos(x) + 2x·sin(x)
+let val = eval(&df, &[("x", 1.5)].into())?; // domain-checked numeric evaluation
+
+let grad = gradient(&sym!(x^2 + y^2), &["x", "y"]);   // ∇f = [2x, 2y]
+let j = jacobian(&[sym!(x*y), sym!(x+y)], &["x","y"]); // 2×2 Jacobian
+```
+
+For simulating physical systems (oscillators, fluid dynamics, orbital mechanics), nabla includes ODE and SDE solvers from simple Euler to adaptive step-size and stiff-system solvers:
+
+| Solver | Good for | Order |
+|---|---|---|
+| `euler` / `rk4` | Quick experiments | 1 / 4 |
+| `dormand_prince` | General use (adaptive step size) | 5(4) |
+| `bdf1` / `bdf2` | Stiff systems (e.g. chemical kinetics) | 1 / 2 |
+| `stormer_verlet` | Energy-preserving systems (e.g. orbital mechanics) | 2 |
+| `parareal` | Long time horizons, parallel across time | — |
+| `euler_maruyama` / `milstein` | Stochastic ODEs (SDEs) | 0.5 / 1.0 |
+
+```rust
+// Lorenz attractor
+let sol = rk4(|_t, y| lorenz(y), &y0, (0.0, 50.0), 0.001)?;
+println!("{:.4}", sol.eval(25.0));   // interpolate at t=25
+```
+
+### No Silent Errors
+
+PyTorch returns `nan` silently when you invert a singular matrix or take a gradient that doesn't exist. nabla returns `Result`:
+
+| Operation | PyTorch | nabla |
+|---|---|---|
+| Singular matrix solve | returns `nan` | `Err(SingularMatrix)` |
+| Missing gradient | returns `None` | `Err(NoGradient)` |
+| Non-scalar `backward()` | raises Python exception | `Err(NonScalarOutput)` |
+| Shape mismatch in `einsum!` | runtime error | **compile error** |
+
+This means bugs surface immediately at the call site, with the full Rust error chain, not silently downstream.
+
+### Macro DSL: Write Math, Not Boilerplate
+
+These macros let you express mathematical operations directly in code without ceremony.
+
+**`einsum!`** — express any tensor contraction (matmul, dot product, trace, batched matmul) in one line using index notation. Shape mismatches are caught at **compile time**:
+
+```rust
+let c: Tensor<f64> = einsum!(c[i,j] = a[i,k] * b[k,j]);  // matmul
+let y: Tensor<f64> = einsum!(y[i]   = a[i,k] * x[k]);     // matrix-vector
+let s: f64         = einsum!(s      = a[i,i]);              // trace
+let r: Tensor<f64> = einsum!(r[b,i,j] = a[b,i,k] * m[b,k,j]); // batched matmul
+```
+
+**`math!`** — write `w * x + bias` without the `&` noise Rust normally requires for tensor operands:
+
+```rust
+let out = math!(w * x + bias);   // expands to: &w * &x + &bias
+```
+
+**`stencil!`** — write finite-difference stencils (e.g. for PDEs) as a single expression with automatic boundary handling:
+
+```rust
+stencil!(laplacian[i,j] = -4.0 * u[i,j] + u[i-1,j] + u[i+1,j] + u[i,j-1] + u[i,j+1]);
+```
+
+**`impl_layer!` and `#[derive(Module)]`** — define a custom neural network layer without writing boilerplate. `impl_layer!` takes a forward function body and generates the full `Module` trait implementation automatically. `#[derive(Module)]` generates `parameters()`, `state_dict()`, `load_state_dict()` from your struct fields:
+
+```rust
+impl_layer! {
+    MyLinear { weight; bias }
+    forward(x) {
+        match bias { Some(b) => x.tl_matmul(&weight.tl_t()).tl_add(b),
+                     None    => x.tl_matmul(&weight.tl_t()) }
+    }
+}
+
+#[derive(Module)]
+struct Attention<T: Scalar, B: Backend> {
+    #[param]           wq: Tensor<T, B>,
+    #[param]           wk: Tensor<T, B>,
+    #[param]           wv: Tensor<T, B>,
+    #[param(optional)] proj_bias: Option<Tensor<T, B>>,
+    training: bool,
+}
+```
+
+---
+
+## Installation
+
+Pick exactly one backend. No CUDA SDK or Vulkan SDK is required to compile nabla — GPU libraries are loaded dynamically at runtime via `libloading`.
 
 ```toml
 [dependencies]
+# CPU (default):
 nabla = { git = "https://github.com/fumishiki/nabla", features = ["cpu"] }
 
-# Or choose exactly ONE GPU backend (disabling default CPU):
-# nabla = { ..., default-features = false, features = ["cuda"] }  # NVIDIA GPU
-# nabla = { ..., default-features = false, features = ["wgpu"] }  # Vulkan/Metal/DX12
-# nabla = { ..., default-features = false, features = ["hip"] }   # AMD GPU
+# GPU — uncomment exactly one, remove the cpu line:
+# nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["cuda"] }  # NVIDIA
+# nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["wgpu"] }  # Vulkan/Metal/DX12
+# nabla = { git = "https://github.com/fumishiki/nabla", default-features = false, features = ["hip"] }   # AMD
+
+# Training stack:
+# nabla-train = { git = "https://github.com/fumishiki/nabla" }
+
+# Model export (GGUF) and inference:
+# nabla-interface = { git = "https://github.com/fumishiki/nabla" }
+# nabla-interface = { git = "https://github.com/fumishiki/nabla", features = ["llama"] }
 ```
 
-## Quick Start Highlights
+Switching from CPU to GPU requires **no code changes** — only the feature flag changes.
 
-### 1. Unified Math & Linear Algebra
-```rust
-use nabla::prelude::*;
+**CPU**
 
-let a = mat![[1.0, 2.0], [3.0, 4.0]];
-let b = mat![[5.0], [6.0]];
+| Feature | f32 | f64 | f16 / bf16 | Complex |
+|---|---|---|---|---|
+| `cpu` | ✅ | ✅ | ✅ | ✅ |
 
-let x = a.solve(&b)?;                                      // Ax = b
-let (u, s, vt) = a.svd()?;                                 // Pure Rust SVD
-let c: Tensor<f64> = einsum!(c[i,j] = a[i,k] * b[k,j]);    // Einstein summation
-```
+**GPU**
 
-### 2. AutoDiff & Deep Learning
-Build models with PyTorch-like semantics, but with Rust's type logic.
-```rust
-// Reverse-mode autodiff with deterministic memory (No GC)
-let tape = Tape::new();
-let w = tape.var(mat![[1.0, 2.0]])?;
-let loss = (&w * &x).norm_sq();
-loss.backward()?;
-let dw = w.grad()?;
+| Feature | Hardware | f32 | f64 |
+|---|---|---|---|
+| `cuda` | NVIDIA GPU | ✅ | ✅ |
+| `hip` | AMD GPU | ✅ | ✅ |
+| `wgpu` | Vulkan / Metal / DX12 (cross-platform) | ✅ | ❌ |
 
-// Full network training 
-let mut model = sequential!(
-    Linear::new(784, 128),
-    relu(),
-    Linear::new(128, 10)
-);
+Complex number support is CPU-only. No CUDA or Vulkan SDK installation required — GPU libraries are loaded at runtime.
 
-let mut opt = AdamW::from_params(1e-3, &model.parameters());
-let loss = train_step!(model, opt, tape, |x, out| {
-    out.cross_entropy_indices(&targets)
-})?;
-```
+---
 
-### 3. Symbolic CAS & ODE Solvers
-Don't switch to Python for SymPy or SciPy. Do it in the same engine.
-```rust
-use nabla::cas_prelude::*;
+## Getting Started
 
-// Computer Algebra System via E-graphs
-let f = sym!(x^2 * sin(x));
-let df = simplify(&diff(&f, "x")); // x^2 * cos(x) + x * 2 * sin(x)
+Three pointers to get you started:
+- [Quick Start](docs-en/quick_start.md) — full API walkthrough with runnable examples
+- [Notation reference](docs-en/notation.md) — every macro, type, and method in one place
+- [Spec](docs-en/spec.md) — architecture, performance bounds, and design decisions
 
-// ODE solvers (Euler, RK4, Dormand-Prince, BDF, Parareal)
-let f_ode = |t, y| -0.5 * y;
-let sol = dormand_prince(f_ode, &y0, (0.0, 10.0), &AdaptiveConfig::default())?;
-```
+Run the examples locally:
 
-### 4. GGUF Export & Quantization
-Export your trained `nabla` models to `llama.cpp` using 34 distinct quantization formats.
-```rust
-use nabla_interface::{export_gguf, GgufQuantType};
-
-// Quantize and export natively to GGUF
-export_gguf(
-    &model.state_dict(), 
-    Path::new("model.gguf"), 
-    GgufQuantType::Q4_K_M, 
-    &config, 
-    &overrides
-)?;
-```
-
-## Exploring Further
-
-Check out the detailed specs to see limits, performance bounds, and zero-GC principles:
-- [Spec](docs-en/spec.md) — Architectural principles & limits
-- [Notation](docs-en/notation.md) — DSL, API, and macro reference
-- [Quick Start](docs-en/quick_start.md) — Full feature crash course
-- [Directory](docs-en/directory.md) — 5-Layer codebase breakdown
-
-**Examples**:
 ```bash
-cargo run --example 01_matrix_ops --features cpu        # matrix ops + LU solve
-cargo run --example 04_autograd_mlp --features cpu      # reverse-mode AD
-cargo run --example 05_ode_lorenz --features cpu        # Lorenz attractor
-cargo run --example 07_einsum_attention --features cpu  # einsum! SDPA
-cargo run --example 08_cas_symbolic --features cpu      # symbolic diff
+cargo run --example 01_matrix_ops    --features cpu   # matrix ops and LU solve
+cargo run --example 04_autograd_mlp  --features cpu   # reverse-mode autodiff
+cargo run --example 05_ode_lorenz    --features cpu   # Lorenz attractor
+cargo run --example 07_einsum_attention --features cpu # self-attention via einsum!
+cargo run --example 08_cas_symbolic  --features cpu   # symbolic differentiation
 ```
+
+---
+
+## Resources
+
+- [Quick Start](docs-en/quick_start.md)
+- [Notation reference](docs-en/notation.md)
+- [Architecture spec](docs-en/spec.md)
+- [Codebase directory](docs-en/directory.md)
+
+---
 
 ## Contributing
+
 Fork → feature branch → `cargo test && cargo clippy && cargo fmt --check` → PR against `main`.
+
+Please open an issue before submitting large new features so we can discuss direction first.
 
 ---
 
 **fumishiki** — [GitHub](https://github.com/fumishiki) · [X](https://x.com/fumishiki) · [LinkedIn](https://linkedin.com/in/fumitakamurakami) · [Hugging Face](https://huggingface.co/fumishiki)
+
+## License
 
 [Apache-2.0](LICENSE-APACHE) OR [MIT](LICENSE-MIT), at your option.
