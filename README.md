@@ -29,8 +29,9 @@ If you know PyTorch, nabla will feel immediately familiar. The difference: you g
 | [**`nabla-core`**](docs-en/spec.md) | The tensor engine. 190+ operations — slicing, broadcasting, linear algebra, convolutions — on CPU, NVIDIA, AMD, or Vulkan/Metal GPU. |
 | [**`nabla-macros`**](docs-en/notation.md) | Write math as code. `einsum!`, `fuse!`, `sym!`, `math!` macros. |
 | [**`nabla-ml`**](docs-en/notation.md) | Automatic gradients, 45+ linear algebra routines, symbolic math, and ODE solvers. |
-| [**`nabla-train`**](docs-en/quick_start.md) | Optimizers, LR schedules, data loading, checkpointing, quantization, and GGUF/ONNX export. |
+| [**`nabla-train`**](docs-en/quick_start.md) | Optimizers, LR schedules, data loading, checkpointing, quantization, and ONNX export. |
 | [**`nabla-interface`**](docs-en/quick_start.md) | Export to GGUF and run locally with llama.cpp, Ollama, or LM Studio — including GPU offload on Apple Silicon. |
+| [**`nabla-cli`**](docs-en/spec.md) | A standalone binary providing hardware diagnostics, benchmarking, model export, and inference. |
 
 <!-- toc -->
 
@@ -42,6 +43,7 @@ If you know PyTorch, nabla will feel immediately familiar. The difference: you g
 - [Symbolic Math & ODE Solvers](#symbolic-math--ode-solvers)
 - [Macro DSL](#macro-dsl)
 - [No Silent Errors](#no-silent-errors)
+- [CLI Tool](#cli-tool)
 - [Installation](#installation)
 - [Getting Started](#getting-started)
 - [Contributing](#contributing)
@@ -390,6 +392,30 @@ struct Attention<T: Scalar, B: Backend> {
 | Shape mismatch in `einsum!` | runtime error | **compile error** |
 
 Bugs surface at the call site with the full Rust error chain — not silently downstream as `nan`.
+
+---
+
+## CLI Tool
+
+`nabla-cli` is a standalone binary providing hardware diagnostics, benchmarking, model export, and inference. No Python required.
+
+```bash
+cargo install nabla-cli
+```
+
+| Command | What it does |
+|---|---|
+| `nabla info` | Detects GPU backends, device properties, and VRAM. |
+| `nabla bench` | Runs matrix multiply and MLP training step benchmarks. |
+| `nabla export` | Converts a trained model to GGUF or ONNX with quantization options. |
+| `nabla run` | Runs text generation from a GGUF file via llama.cpp. |
+| `nabla inspect` | Loads a checkpoint and prints tensor statistics. |
+
+Example:
+```bash
+nabla bench --workload mlp --batch 128,512 --backend cuda
+nabla run ./model.Q4_K_M.gguf --prompt "Explain nabla in one sentence" --stream
+```
 
 ---
 
