@@ -388,8 +388,8 @@ RAM     : 251 GiB total / 228 GiB free
 | REQ-ID | Requirement | Status |
 |---|---|---|
 | CLI-INFO-01 | Detect CUDA devices via `cuDeviceGetCount` + `cuDeviceGetAttribute` | ✅ |
-| CLI-INFO-02 | Detect ROCm/HIP devices via `hipGetDeviceCount` + `hipDeviceGetAttribute` | 🔲 |
-| CLI-INFO-03 | Detect wgpu adapters (Metal/Vulkan/DX12) via `wgpu::Adapter::request_adapter` | 🔲 |
+| CLI-INFO-02 | Detect ROCm/HIP devices via `hipGetDeviceCount` + `hipDeviceGetAttribute` | ✅ |
+| CLI-INFO-03 | Detect wgpu adapters (Metal/Vulkan/DX12) via `wgpu::Adapter::request_adapter` | ✅ |
 | CLI-INFO-04 | Report VRAM total/free (CUDA: `cuMemGetInfo`; HIP: `hipMemGetInfo`) | ✅ |
 | CLI-INFO-05 | `--json` flag: emit structured JSON matching the human-readable fields | ✅ |
 | CLI-INFO-06 | Exit code 0 = GPU found; exit code 1 = CPU-only | ✅ |
@@ -434,7 +434,7 @@ nabla bench — MLP 784→256→128→10, leaky_relu, SGD, f32
 | CLI-BENCH-01 | `--workload matmul`: run square f32 GEMM at `--sizes` (default `1024,4096`), report µs ± σ | ✅ |
 | CLI-BENCH-02 | `--workload mlp`: run MLP training step at each `--batch` size, report µs ± σ | ✅ |
 | CLI-BENCH-03 | `--warmup N` / `--iters N` with CudaEvent timing (CUDA backend) or `std::time::Instant` (CPU) | ✅ |
-| CLI-BENCH-04 | `--backend` selects feature-gated backend; error if requested backend not compiled in | 🔲 |
+| CLI-BENCH-04 | `--backend` selects feature-gated backend; error if requested backend not compiled in | ✅ |
 | CLI-BENCH-05 | `--json` emits per-workload JSON array `[{workload, batch, eager_us, graph_us}, ...]` | ✅ |
 | CLI-BENCH-06 | Displayed table matches format of README benchmark table | ✅ |
 
@@ -467,7 +467,7 @@ nabla export ./checkpoints/model.bin --format gguf --quant IQ4_XS --imatrix cali
 | CLI-EXP-01 | Load nabla checkpoint via `load_tensors` + reconstruct `Module` graph | ✅ |
 | CLI-EXP-02 | GGUF export: delegate to `nabla-interface` `GgufWriter`; all 34 quant types supported | ✅ |
 | CLI-EXP-03 | ONNX export: delegate to `nabla-train` ONNX export; opset 21 | ✅ |
-| CLI-EXP-04 | `--imatrix` path loaded and passed to `GgufWriter` for IQ-type calibration | 🔲 |
+| CLI-EXP-04 | `--imatrix` path loaded and passed to `GgufWriter` for IQ-type calibration | ✅ |
 | CLI-EXP-05 | Print summary: format, quant type, output path, file size, tensor count | ✅ |
 | CLI-EXP-06 | Error on `--quant` with `--format onnx` (ONNX has no quant type arg) | ✅ |
 
