@@ -3,6 +3,8 @@
 mod bench;
 mod export;
 mod info;
+mod inspect;
+mod serve;
 #[cfg(feature = "llama")]
 mod run;
 
@@ -14,10 +16,12 @@ fn main() {
     let rest = if args.len() > 2 { &args[2..] } else { &[] };
 
     let result: Result<(), Box<dyn std::error::Error>> = match sub {
-        "info"          => info::run(rest),
-        "bench"         => bench::run(rest),
-        "export"        => export::run(rest),
-        "run"           => {
+        "info"    => info::run(rest),
+        "bench"   => bench::run(rest),
+        "export"  => export::run(rest),
+        "inspect" => inspect::run(rest),
+        "serve"   => serve::run(rest),
+        "run"     => {
             #[cfg(feature = "llama")]
             { run::run(rest) }
             #[cfg(not(feature = "llama"))]
@@ -40,10 +44,12 @@ fn print_usage() {
 Usage: nabla <SUBCOMMAND> [OPTIONS]
 
 Subcommands:
-  info    Detect hardware backends and display device info
-  bench   Run matmul / MLP training-step benchmarks
-  export  Export a trained nabla model to GGUF or ONNX
-  run     Run text generation from a GGUF file (requires --features llama)
+  info     Detect hardware backends and display device info
+  bench    Run matmul / MLP training-step benchmarks
+  inspect  Inspect a nabla checkpoint (tensor shapes, stats)
+  export   Export a trained nabla model to GGUF or ONNX
+  serve    OpenAI-compatible HTTP inference server (requires --features llama)
+  run      Run text generation from a GGUF file (requires --features llama)
 
 Run `nabla <SUBCOMMAND> --help` for subcommand options."#,
         version = env!("CARGO_PKG_VERSION"),
