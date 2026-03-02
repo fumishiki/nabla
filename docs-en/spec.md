@@ -342,3 +342,179 @@ CUDA/HIP kernel sources split into focused `.cuh` units, wired through `common/k
 - `k_basic_core.cuh`, `k_basic_math.cuh`, `k_basic_red32.cuh`, `k_basic_red64.cuh`
 - `k_norm_softmax.cuh`, `k_norm_group.cuh`, `k_norm_reduce.cuh`, `k_norm_pool.cuh`
 - `k_conv_bn_loss.cuh`, `k_attn.cuh`, `k_conv_misc.cuh`
+
+---
+
+## §8 CLI Tool — `nabla`
+
+A standalone binary (`nabla-cli` crate) providing four subcommands for hardware diagnostics, benchmarking, model export, and inference. No Python required.
+
+```
+nabla <SUBCOMMAND> [OPTIONS]
+```
+
+Install: `cargo install --path nabla-cli` or `cargo install nabla-cli` (crates.io).
+
+---
+
+### 8.1 `nabla info` — Hardware Diagnostics
+
+Detect and display available GPU backends, device properties, and VRAM.
+
+```
+nabla info [--json]
+```
+
+**Output (human-readable)**:
+```
+nabla hardware info
+───────────────────────────────────────────
+Backend : CUDA 12.8
+Device  : NVIDIA GH200 480GB (device 0)
+VRAM    : 476 GiB total / 473 GiB free
+Compute : sm_90 (Hopper)
+───────────────────────────────────────────
+Backend : CPU
+Cores   : 72 (logical)
+RAM     : 251 GiB total / 228 GiB free
+```
+
+**Behaviour**:
+- Probe in order: CUDA → ROCm/HIP → wgpu (Metal/Vulkan/DX12) → CPU
+- Print one block per detected backend; skip unavailable backends silently
+- `--json` outputs machine-readable JSON (suitable for CI / scripting)
+- Exit code 0 if at least one GPU backend is found; 1 if CPU-only
+
+| REQ-ID | Requirement | Status |
+|---|---|---|
+| CLI-INFO-01 | Detect CUDA devices via `cuDeviceGetCount` + `cuDeviceGetAttribute` | 🔲 |
+| CLI-INFO-02 | Detect ROCm/HIP devices via `hipGetDeviceCount` + `hipDeviceGetAttribute` | 🔲 |
+| CLI-INFO-03 | Detect wgpu adapters (Metal/Vulkan/DX12) via `wgpu::Adapter::request_adapter` | 🔲 |
+| CLI-INFO-04 | Report VRAM total/free (CUDA: `cuMemGetInfo`; HIP: `hipMemGetInfo`) | 🔲 |
+| CLI-INFO-05 | `--json` flag: emit structured JSON matching the human-readable fields | 🔲 |
+| CLI-INFO-06 | Exit code 0 = GPU found; exit code 1 = CPU-only | 🔲 |
+
+---
+
+### 8.2 `nabla bench` — Benchmark Runner
+
+Run matrix multiply and MLP training-step benchmarks matching the README figures.
+
+```
+nabla bench [--workload matmul|mlp|all] [--batch 128,512] [--backend cuda|cpu] [--iters 100] [--warmup 10] [--json]
+```
+
+**Examples**:
+```bash
+nabla bench --workload matmul                   # 4096x4096 f32 matmul, CUDA
+nabla bench --workload mlp --batch 1,32,128,512 # MLP training step, all batch sizes
+nabla bench --workload all --json               # full suite, JSON output
+```
+
+**Output**:
+```
+nabla bench — MLP 784→256→128→10, leaky_relu, SGD, f32
+─────────────────────────────────────────────────────────
+ batch │ nabla eager │ nabla graph │ vs PyTorch eager
+───────┼─────────────┼─────────────┼──────────────────
+   128 │      88 µs  │      65 µs  │ 9.8× faster
+   512 │      98 µs  │      77 µs  │ 8.9× faster
+```
+
+**Workloads**:
+
+| Workload | Description |
+|---|---|
+| `matmul` | Square f32 matmul; default sizes 1024, 4096; cuBLAS TF32 |
+| `mlp` | MLP 784→256→128→10, leaky_relu(0.01), MSE, SGD; training step time |
+| `all` | Both workloads in sequence |
+
+| REQ-ID | Requirement | Status |
+|---|---|---|
+| CLI-BENCH-01 | `--workload matmul`: run square f32 GEMM at `--sizes` (default `1024,4096`), report µs ± σ | 🔲 |
+| CLI-BENCH-02 | `--workload mlp`: run MLP training step at each `--batch` size, report µs ± σ | 🔲 |
+| CLI-BENCH-03 | `--warmup N` / `--iters N` with CudaEvent timing (CUDA backend) or `std::time::Instant` (CPU) | 🔲 |
+| CLI-BENCH-04 | `--backend` selects feature-gated backend; error if requested backend not compiled in | 🔲 |
+| CLI-BENCH-05 | `--json` emits per-workload JSON array `[{workload, batch, eager_us, graph_us}, ...]` | 🔲 |
+| CLI-BENCH-06 | Displayed table matches format of README benchmark table | 🔲 |
+
+---
+
+### 8.3 `nabla export` — Model Export & Quantization
+
+Convert a trained nabla model to GGUF or ONNX.
+
+```
+nabla export <MODEL_PATH> --format gguf|onnx [--quant Q4_K_M|Q8_0|F16|...] [--out <PATH>] [--imatrix <PATH>]
+```
+
+**Examples**:
+```bash
+nabla export ./checkpoints/model.bin --format gguf --quant Q4_K_M
+nabla export ./checkpoints/model.bin --format onnx --out model.onnx
+nabla export ./checkpoints/model.bin --format gguf --quant IQ4_XS --imatrix calib.imatrix
+```
+
+**Behaviour**:
+- `MODEL_PATH`: path to a nabla checkpoint written by `save_tensors` / `Trainer::save`
+- `--quant` is GGUF-only; ONNX always exports at the checkpoint's native precision
+- `--out` defaults to `<MODEL_PATH_STEM>.<format>` in the same directory
+- `--imatrix` enables importance-matrix quantization (required for `IQ*` types)
+- Prints export summary: format, quant type, output size, tensor count
+
+| REQ-ID | Requirement | Status |
+|---|---|---|
+| CLI-EXP-01 | Load nabla checkpoint via `load_tensors` + reconstruct `Module` graph | 🔲 |
+| CLI-EXP-02 | GGUF export: delegate to `nabla-interface` `GgufWriter`; all 34 quant types supported | 🔲 |
+| CLI-EXP-03 | ONNX export: delegate to `nabla-train` ONNX export; opset 21 | 🔲 |
+| CLI-EXP-04 | `--imatrix` path loaded and passed to `GgufWriter` for IQ-type calibration | 🔲 |
+| CLI-EXP-05 | Print summary: format, quant type, output path, file size, tensor count | 🔲 |
+| CLI-EXP-06 | Error on `--quant` with `--format onnx` (ONNX has no quant type arg) | 🔲 |
+
+---
+
+### 8.4 `nabla run` — GGUF Inference (Streaming)
+
+Run text generation from a GGUF file via `nabla-interface` + llama.cpp.
+
+```
+nabla run <GGUF_PATH> --prompt <TEXT> [--max-tokens 256] [--temp 0.8] [--ctx 2048] [--stream]
+```
+
+**Examples**:
+```bash
+nabla run ./model.Q4_K_M.gguf --prompt "Explain nabla in one sentence"
+nabla run ./model.gguf --prompt "Hello" --max-tokens 512 --stream
+```
+
+**Behaviour**:
+- Loads GGUF via `nabla-interface` llama.cpp FFI bridge
+- `--stream` (default on) prints tokens as they are generated; `--no-stream` collects and prints at end
+- Reports tok/s at completion
+- Requires `nabla-cli` compiled with `--features llama` (links `llama.cpp` via pkg-config)
+
+```
+> nabla run ./llama3-8b.Q4_K_M.gguf --prompt "What is nabla?"
+
+nabla is a zero-GC Rust tensor engine...
+─────────────────────────────────────────
+Generated 64 tokens in 1.2 s (53.3 tok/s)
+```
+
+| REQ-ID | Requirement | Status |
+|---|---|---|
+| CLI-RUN-01 | Load GGUF via `nabla-interface` `LlamaModel::from_gguf(path)` | 🔲 |
+| CLI-RUN-02 | Streaming output: print each token to stdout as generated (`\r\n` flush) | 🔲 |
+| CLI-RUN-03 | `--no-stream`: buffer all tokens, print complete response at end | 🔲 |
+| CLI-RUN-04 | Report total tokens and tok/s at completion | 🔲 |
+| CLI-RUN-05 | `--temp`, `--ctx`, `--max-tokens` forwarded to llama.cpp sampler config | 🔲 |
+| CLI-RUN-06 | Requires `features = ["llama"]`; error with clear message if llama.cpp not linked | 🔲 |
+
+---
+
+### Acceptance Tests
+
+- `nabla-cli/tests/info.rs`: `nabla info` exits 0 on CI (GPU available), JSON output parses correctly
+- `nabla-cli/tests/bench.rs`: `nabla bench --workload matmul --iters 5 --warmup 1` completes without error; JSON output schema matches
+- `nabla-cli/tests/export.rs`: export small Linear model to GGUF Q4_0 and ONNX; verify file exists and size > 0
+- `nabla-cli/tests/run.rs`: skipped unless `features = ["llama"]` and GGUF fixture present
