@@ -7,6 +7,16 @@ Modes: eager / torch.compile / CUDA Graph.
 Run: python3 benchmarks/bench_pytorch.py
 """
 import math
+
+# Patch triton < 3.5 API mismatch (triton_key removed in 3.x, PyTorch 2.7 still imports it)
+try:
+    import triton
+    import triton.compiler.compiler as _tcc
+    if not hasattr(_tcc, "triton_key"):
+        _tcc.triton_key = lambda: str(triton.__version__)
+except ImportError:
+    pass
+
 import torch
 import torch.nn as nn
 
