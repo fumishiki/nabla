@@ -11,13 +11,23 @@ use std::time::Duration;
 
 static USE_COLOR: OnceLock<bool> = OnceLock::new();
 
-/// True when the terminal supports ANSI color (respects NO_COLOR / TERM=dumb).
+/// True when the terminal supports ANSI color (respects NO_COLOR / TERM=dumb, checks isatty).
 pub fn use_color() -> bool {
     *USE_COLOR.get_or_init(|| {
         std::env::var_os("NO_COLOR").is_none()
             && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(true)
+            && is_tty(1)
     })
 }
+
+#[cfg(unix)]
+fn is_tty(fd: i32) -> bool {
+    unsafe extern "C" { fn isatty(fd: i32) -> i32; }
+    unsafe { isatty(fd) != 0 }
+}
+
+#[cfg(not(unix))]
+fn is_tty(_fd: i32) -> bool { false }
 
 macro_rules! paint {
     ($name:ident, $code:literal) => {
