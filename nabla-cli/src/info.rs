@@ -55,8 +55,8 @@ struct InfoEntry {
 #[cfg(feature = "cuda")]
 fn probe_cuda() -> Result<Vec<InfoEntry>, Box<dyn Error>> {
     use cudarc::driver::sys::{
-        CUdevice_attribute, cuDeviceGetAttribute, cuDeviceGetCount,
-        cuDeviceGetName, cuInit, cuMemGetInfo_v2,
+        CUdevice_attribute, cuCtxCreate_v2, cuCtxDestroy_v2, cuDeviceGetAttribute,
+        cuDeviceGetCount, cuDeviceGetName, cuInit, cuMemGetInfo_v2,
     };
 
     let mut entries = Vec::new();
@@ -96,7 +96,11 @@ fn probe_cuda() -> Result<Vec<InfoEntry>, Box<dyn Error>> {
 
         let mut free: usize = 0;
         let mut total: usize = 0;
+        // cuMemGetInfo_v2 requires an active context.
+        let mut ctx = std::ptr::null_mut();
+        unsafe { cuCtxCreate_v2(&mut ctx, 0, dev) };
         unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
+        unsafe { cuCtxDestroy_v2(ctx) };
 
         entries.push(InfoEntry {
             kind: "CUDA",
