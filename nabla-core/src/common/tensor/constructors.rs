@@ -137,7 +137,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Uninitialized tensor (actually zeroed -- Rust safety).
     #[must_use]
     pub fn empty(nrows: usize, ncols: usize) -> Self {
-        Self::zeros(nrows, ncols)
+        Self::from_storage(B::empty(nrows, ncols))
     }
 
     /// Generate a 1-D tensor: `[start, start+step, start+2*step, ...]` with length `n`.

@@ -23,3 +23,5 @@ Thumbs.db
 # Environment
 .env
 .env.*
+nabla_bench/target/
+nabla-ml/target/

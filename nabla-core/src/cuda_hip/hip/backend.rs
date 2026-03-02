@@ -356,6 +356,9 @@ impl crate::backend::BackendCore for crate::backend::Hip {
     fn zeros<T: Scalar>(nrows: usize, ncols: usize) -> HipStorage<T> {
         hip_zeros(nrows, ncols)
     }
+    fn empty<T: Scalar>(nrows: usize, ncols: usize) -> HipStorage<T> {
+        hip_empty(nrows, ncols)
+    }
 
     gpu_common::rtc_core_impl! {
         HipStorage; fill=hip_fill, from_fn=hip_from_fn, from_vec_async=hip_from_vec_async,
@@ -367,14 +370,6 @@ impl crate::backend::BackendCore for crate::backend::Hip {
     fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> HipStorage<T> {
         let buf = hip_or_panic(HipBuffer::from_host(&data), "HIP upload");
         HipStorage::new_cached(nrows, ncols, buf, data)
-    }
-
-    #[inline]
-    fn reshape<T: Scalar>(a: &HipStorage<T>, nrows: usize, ncols: usize) -> HipStorage<T> {
-        let mut out = hip_clone(a);
-        out.nrows = nrows;
-        out.ncols = ncols;
-        out
     }
 
     #[inline]

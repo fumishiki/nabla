@@ -1,0 +1,7 @@
+batch_size,nabla_eager_us,nabla_graph_us,pytorch_eager_us,pytorch_graph_us
+1,66,48,767,46
+32,96,62,863,72
+128,88,65,867,128
+256,92,69,855,136
+512,98,77,872,143
+1024,108,86,897,160

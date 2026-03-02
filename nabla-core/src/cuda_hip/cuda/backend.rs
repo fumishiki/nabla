@@ -523,6 +523,9 @@ impl crate::backend::BackendCore for crate::backend::Cuda {
     fn zeros<T: Scalar>(nrows: usize, ncols: usize) -> CudaStorage<T> {
         cuda_zeros(nrows, ncols)
     }
+    fn empty<T: Scalar>(nrows: usize, ncols: usize) -> CudaStorage<T> {
+        cuda_empty(nrows, ncols)
+    }
 
     gpu_common::rtc_core_impl! {
         CudaStorage; fill=cuda_fill, from_fn=cuda_from_fn, from_vec_async=cuda_from_vec_async,
@@ -545,14 +548,6 @@ impl crate::backend::BackendCore for crate::backend::Cuda {
     #[inline]
     fn cast<T: Scalar, U: Scalar>(a: &CudaStorage<T>) -> CudaStorage<U> {
         cuda_cast(a)
-    }
-
-    #[inline]
-    fn reshape<T: Scalar>(a: &CudaStorage<T>, nrows: usize, ncols: usize) -> CudaStorage<T> {
-        let mut out = cuda_clone(a);
-        out.nrows = nrows;
-        out.ncols = ncols;
-        out
     }
 
     #[inline]

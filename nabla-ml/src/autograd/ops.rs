@@ -396,8 +396,9 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
                 let grad_storage =
                     B::mse_sum_bwd(pred_data.storage(), target_data.storage(), g.storage());
                 let delta = Tensor::from_storage(grad_storage);
-                Self::prop(&lr, &delta);
-                Self::prop(&rr, &(-&delta));
+                let neg_delta = -&delta;
+                Self::prop_owned(&lr, delta);
+                Self::prop_owned(&rr, neg_delta);
             },
             deps,
             "mse_sum_loss",
@@ -837,7 +838,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let input = Rc::clone(&self.data);
         let entry = TapeEntry::new(
             move |g| {
-                Self::prop(&lr, &g.leaky_relu_backward(&*input, alpha_t));
+                Self::prop_owned(&lr, g.leaky_relu_backward(&*input, alpha_t));
             },
             deps,
             "leaky_relu",

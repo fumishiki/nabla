@@ -20,6 +20,15 @@ pub(crate) fn cuda_zeros<T: Scalar>(nrows: usize, ncols: usize) -> CudaStorage<T
     CudaStorage::new(nrows, ncols, buf)
 }
 
+pub(crate) fn cuda_empty<T: Scalar>(nrows: usize, ncols: usize) -> CudaStorage<T> {
+    let ctx = get_ctx();
+    let buf = expect_ok(
+        CuBuffer::alloc_async(&ctx.stream, nrows * ncols * std::mem::size_of::<T>()),
+        "CUDA alloc",
+    );
+    CudaStorage::new(nrows, ncols, buf)
+}
+
 pub(crate) fn cuda_fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> CudaStorage<T> {
     let ctx = get_ctx();
     let n = nrows * ncols;
@@ -500,6 +509,19 @@ pub(super) fn cublas_gemm<T: Scalar>(
     // SAFETY: pointers are valid GPU buffers; alpha/beta are on host stack (cuBLAS copies them).
     unsafe {
         if TypeId::of::<T>() == TypeId::of::<f32>() {
+            if m == 1 {
+                // GEMV: out[1,n] = a[1,k] @ b[k,n] (b row-major = col-major B^T, so OP_N computes B^T^T=B)
+                let (alpha, beta) = (1.0f32, 0.0f32);
+                cublas_result::sgemv(
+                    ctx.blas.0,
+                    cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                    n, k, &alpha,
+                    b.buf.ptr as *const f32, n,
+                    a.buf.ptr as *const f32, 1,
+                    &beta, out.buf.ptr as *mut f32, 1,
+                ).or_panic("cuBLAS sgemv");
+                return;
+            }
             let alpha = 1.0f32;
             let beta = 0.0f32;
             cublas_result::gemm_ex(
@@ -629,6 +651,19 @@ pub(super) fn cublas_gemm_tn<T: Scalar>(
     // SAFETY: pointers are valid GPU buffers; alpha/beta on host stack.
     unsafe {
         if TypeId::of::<T>() == TypeId::of::<f32>() {
+            if m == 1 {
+                // GEMV: out[1,n] = a^T[1,k] @ b[k,n]; a is [k,1] col-vector
+                let (alpha, beta) = (1.0f32, 0.0f32);
+                cublas_result::sgemv(
+                    ctx.blas.0,
+                    cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                    n, k, &alpha,
+                    b.buf.ptr as *const f32, n,
+                    a.buf.ptr as *const f32, 1,
+                    &beta, out.buf.ptr as *mut f32, 1,
+                ).or_panic("cuBLAS sgemv tn");
+                return;
+            }
             let (alpha, beta) = (1.0f32, 0.0f32);
             cublas_result::gemm_ex(
                 ctx.blas.0,
@@ -745,6 +780,19 @@ pub(super) fn cublas_gemm_nt<T: Scalar>(
     // SAFETY: pointers are valid GPU buffers; alpha/beta on host stack.
     unsafe {
         if TypeId::of::<T>() == TypeId::of::<f32>() {
+            if m == 1 {
+                // GEMV: out[1,n] = a[1,k] @ b^T[k,n]; b is [n,k] row-major = [k,n] col-major
+                let (alpha, beta) = (1.0f32, 0.0f32);
+                cublas_result::sgemv(
+                    ctx.blas.0,
+                    cublas_sys::cublasOperation_t::CUBLAS_OP_T,
+                    k, n, &alpha,
+                    b.buf.ptr as *const f32, k,
+                    a.buf.ptr as *const f32, 1,
+                    &beta, out.buf.ptr as *mut f32, 1,
+                ).or_panic("cuBLAS sgemv nt");
+                return;
+            }
             let (alpha, beta) = (1.0f32, 0.0f32);
             cublas_result::gemm_ex(
                 ctx.blas.0,
@@ -874,7 +922,7 @@ pub(crate) fn cuda_matmul_epilogue_fallback<T: Scalar>(
     b: &CudaStorage<T>,
     epilogue_id: u8,
 ) -> CudaStorage<T> {
-    let mut gemm_out = cuda_zeros::<T>(a.nrows, b.ncols);
+    let mut gemm_out = cuda_empty::<T>(a.nrows, b.ncols);
     cuda_matmul(&mut gemm_out, a, b);
     let m = gemm_out.nrows;
     let n = gemm_out.ncols;
@@ -1168,7 +1216,7 @@ pub(crate) fn cuda_bmm<T: Scalar>(
     n: usize,
 ) -> CudaStorage<T> {
     let ctx = get_ctx();
-    let mut out = cuda_zeros::<T>(batch * m, n);
+    let mut out = cuda_empty::<T>(batch * m, n);
     cublas_gemm_strided_batched(ctx, &mut out, a, b, batch, m, k, n, T::one(), T::zero());
     out
 }

@@ -25,12 +25,33 @@ pub(crate) fn accum_cell<T: Scalar, B: Backend>(
     });
 }
 
+/// Like `accum_cell` but takes ownership of `delta` — avoids a D2D memcpy on first accumulation.
+pub(crate) fn accum_cell_owned<T: Scalar, B: Backend>(
+    cell: &RefCell<Option<Tensor<T, B>>>,
+    delta: Tensor<T, B>,
+) {
+    let mut borrow = cell.borrow_mut();
+    *borrow = Some(match borrow.take() {
+        None => delta,
+        Some(existing) => &existing + &delta,
+    });
+}
+
 fn accum_weak_slot<T: Scalar, B: Backend>(
     slot_weak: &Weak<RefCell<Option<Tensor<T, B>>>>,
     delta: &Tensor<T, B>,
 ) {
     if let Some(slot) = slot_weak.upgrade() {
         accum_cell(&slot, delta);
+    }
+}
+
+fn accum_weak_slot_owned<T: Scalar, B: Backend>(
+    slot_weak: &Weak<RefCell<Option<Tensor<T, B>>>>,
+    delta: Tensor<T, B>,
+) {
+    if let Some(slot) = slot_weak.upgrade() {
+        accum_cell_owned(&slot, delta);
     }
 }
 
@@ -297,6 +318,23 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         }
     }
 
+    /// Like `propagate` but takes ownership of `delta` — avoids D2D memcpy on first accumulation.
+    pub(crate) fn propagate_owned(
+        entry: Option<&Weak<TapeEntry<T, B>>>,
+        slot: Option<&WeakSlot<T, B>>,
+        delta: Tensor<T, B>,
+    ) {
+        if let Some(w) = entry
+            && let Some(e) = w.upgrade()
+        {
+            accum_cell_owned(&e.grad, delta);
+            return;
+        }
+        if let Some(w) = slot {
+            accum_weak_slot_owned(w, delta);
+        }
+    }
+
     /// Shorthand: propagate using a (entry, slot) tuple.
     #[inline]
     pub(crate) fn prop(
@@ -304,6 +342,15 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         delta: &Tensor<T, B>,
     ) {
         Self::propagate(refs.0.as_ref(), refs.1.as_ref(), delta);
+    }
+
+    /// Shorthand: propagate with ownership — avoids D2D memcpy clone.
+    #[inline]
+    pub(crate) fn prop_owned(
+        refs: &(Option<Weak<TapeEntry<T, B>>>, Option<WeakSlot<T, B>>),
+        delta: Tensor<T, B>,
+    ) {
+        Self::propagate_owned(refs.0.as_ref(), refs.1.as_ref(), delta);
     }
 
     // -----------------------------------------------------------------------
@@ -430,8 +477,8 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let (a_data, b_data) = (Rc::clone(&self.data), Rc::clone(&rhs.data));
         let entry = TapeEntry::new(
             move |g| {
-                Self::prop(&lr, &g.matmul_nt(&*b_data));
-                Self::prop(&rr, &(*a_data).matmul_tn(g));
+                Self::prop_owned(&lr, g.matmul_nt(&*b_data));
+                Self::prop_owned(&rr, (*a_data).matmul_tn(g));
             },
             deps,
             "matmul",

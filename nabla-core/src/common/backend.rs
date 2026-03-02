@@ -86,6 +86,12 @@ pub trait BackendCore: private::Sealed + Send + Sync + 'static {
     /// Allocate a zero-filled matrix.
     fn zeros<T: Scalar>(nrows: usize, ncols: usize) -> Self::Storage<T>;
 
+    /// Allocate an uninitialized matrix — caller **must** overwrite every element
+    /// before reading (e.g. cuBLAS beta=0). Default falls back to `zeros` (safe).
+    fn empty<T: Scalar>(nrows: usize, ncols: usize) -> Self::Storage<T> {
+        Self::zeros(nrows, ncols)
+    }
+
     /// Allocate a matrix filled with a constant scalar value.
     fn fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> Self::Storage<T> {
         Self::from_fn(nrows, ncols, |_, _| val)
@@ -103,16 +109,6 @@ pub trait BackendCore: private::Sealed + Send + Sync + 'static {
         ncols: usize,
         f: impl FnMut(usize, usize) -> T,
     ) -> Self::Storage<T>;
-
-    /// Reshape storage into a new `(nrows, ncols)` buffer layout.
-    /// Default: allocate + copy via `get` (CPU fallback for GPU backends).
-    fn reshape<T: Scalar>(a: &Self::Storage<T>, nrows: usize, ncols: usize) -> Self::Storage<T> {
-        Self::from_fn(nrows, ncols, |r, c| {
-            let flat = r * ncols + c;
-            let cols = Self::ncols(a);
-            Self::get(a, flat / cols, flat % cols)
-        })
-    }
 
     /// Build storage from a pre-allocated row-major `Vec<T>` (zero-copy when possible).
     #[must_use]

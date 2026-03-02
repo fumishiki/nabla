@@ -176,7 +176,7 @@ Pipeline: `fuse!` AST -> egg EqSat simplify -> `cuda_expr()` -> NVRTC/hiprtc JIT
 | Linear Layouts F2 swizzle | all | Bank-conflict-free for any tile size |
 | Caching memory allocator | cuda/hip | Best-fit dual-pool, 512B-aligned, GC 0.9 |
 | Async execution pipeline | cuda/hip | Defer sync until readback only |
-| CUDA Graph capture/replay | cuda | `cuda_graph_capture` API, 1.3–1.6x speedup (MLP training) |
+| CUDA Graph capture/replay | cuda | `cuda_graph_capture` API, 1.4–1.6x speedup (MLP training) |
 | Fused loss/optimizer kernels | cuda | `k_mse_sum_fwd` (sub+sq+reduce→1), `k_mse_sum_bwd`, `k_multi_axpy3` |
 | cuBLAS workspace pre-alloc | cuda | `cublasSetWorkspace_v2` 32MiB |
 | Mega-kernel tiled fusion | cuda/hip | Shared memory tile reuse (>=2 ops, >=64K elements) |
@@ -283,12 +283,12 @@ NN ops: softmax, reshape, transpose, linear_forward, dropout, clamp, loss ops. M
 
 | Workload | nabla | PyTorch 2.7 | Notes |
 |---|---|---|---|
-| matmul 4096 (cuBLAS TF32) | 0.358 ms | 2.675 ms | **nabla 7.5x faster** |
-| matmul 1024 | 0.036 ms | 0.058 ms | **nabla 1.6x faster** |
-| fuse exp+sin | 0.041 ms | 0.081 ms (eager) | **nabla 2.0x faster** |
-| sin / cos / tanh | 0.040 ms | 0.041 ms | ~parity |
-| add / sub / emul | 0.058 ms | 0.058 ms | ~parity |
-| sum_all / max_all | 0.028 ms | 0.026 ms | PyTorch 1.08x |
+| matmul 4096 (cuBLAS TF32) | 358 µs | 2675 µs | **nabla 7.5x faster** |
+| matmul 1024 | 36 µs | 58 µs | **nabla 1.6x faster** |
+| fuse exp+sin | 41 µs | 81 µs (eager) | **nabla 2.0x faster** |
+| sin / cos / tanh | 40 µs | 41 µs | ~parity |
+| add / sub / emul | 58 µs | 58 µs | ~parity |
+| sum_all / max_all | 28 µs | 26 µs | PyTorch 1.08x |
 | fuse 4-op speedup | 3.38x | 1.0x (torch.compile N/A) | nabla fused vs unfused |
 | dispatch latency | 42-58 us/op | 40-58 us/op | ~parity |
 
@@ -298,14 +298,14 @@ MLP 784→256→128→10, leaky_relu(0.01), MSE sum loss, SGD lr=0.001, f32. War
 
 | Batch | nabla eager | nabla graph | PyTorch eager | PyTorch graph |
 |------:|------------:|------------:|--------------:|--------------:|
-| 1     | 0.111 ms    | **0.070 ms** | 0.710 ms     | 0.045 ms      |
-| 32    | 0.133 ms    | **0.085 ms** | 0.923 ms     | 0.072 ms      |
-| 128   | 0.133 ms    | **0.088 ms** | 0.976 ms     | 0.130 ms      |
-| 256   | 0.139 ms    | **0.094 ms** | 0.974 ms     | 0.136 ms      |
-| 512   | 0.147 ms    | **0.108 ms** | 0.847 ms     | 0.142 ms      |
-| 1024  | 0.170 ms    | **0.130 ms** | 0.966 ms     | 0.160 ms      |
+| 1     | 66 µs    | **48 µs** | 767 µs     | 46 µs      |
+| 32    | 96 µs    | **62 µs** | 863 µs     | 72 µs      |
+| 128   | 88 µs    | **65 µs** | 867 µs     | 128 µs      |
+| 256   | 92 µs    | **69 µs** | 855 µs     | 136 µs      |
+| 512   | 98 µs    | **77 µs** | 872 µs     | 143 µs      |
+| 1024  | 108 µs    | **86 µs** | 897 µs     | 160 µs      |
 
-**Key results**: nabla eager 4.2–6.4× faster than PyTorch eager. nabla CUDA Graph wins batch≥128 (1.2–1.5× over PyTorch CUDA Graph). Fused `k_mse_sum_fwd` kernel eliminates 3 kernel launches (sub + emul + sum_axis×2 → 1). Pool bypass during capture + device-only reduction (zero D2H).
+**Key results**: nabla eager 8.3–11.6× faster than PyTorch eager. nabla CUDA Graph wins batch≥32 (1.5–2.0× over PyTorch CUDA Graph), matches at batch=1. Optimizations: (1) eliminated redundant memset CUDA graph nodes via `Tensor::empty` for BLAS outputs, (2) GEMV dispatch for batch=1 matmul, (3) owned gradient propagation (`prop_owned`) eliminates D2D memcpy nodes in backward pass.
 
 Reproducible via `benchmarks/` (Rust + Python side-by-side).
 

@@ -443,7 +443,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let (k, m) = self.shape();
         let (k2, n) = rhs.shape();
         assert_eq!(k, k2, "matmul_tn: a rows {k} != b rows {k2}");
-        let mut out = Self::zeros(m, n);
+        let mut out = Self::empty(m, n);
         B::matmul_tn_into(&mut out.storage, &self.storage, &rhs.storage);
         out
     }
@@ -454,7 +454,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let (m, k) = self.shape();
         let (n, k2) = rhs.shape();
         assert_eq!(k, k2, "matmul_nt: a cols {k} != b cols {k2}");
-        let mut out = Self::zeros(m, n);
+        let mut out = Self::empty(m, n);
         B::matmul_nt_into(&mut out.storage, &self.storage, &rhs.storage);
         out
     }
@@ -612,7 +612,7 @@ impl<T: Scalar, B: Backend> Mul for &Tensor<T, B> {
             k_a, k_b,
             "nabla: matmul ({m}x{k_a}) x ({k_b}x{n}) -- inner dims {k_a} != {k_b}"
         );
-        let mut out = Tensor::<T, B>::zeros(m, n);
+        let mut out = Tensor::<T, B>::empty(m, n);
         B::matmul_into(&mut out.storage, &self.storage, &rhs.storage);
         out
     }

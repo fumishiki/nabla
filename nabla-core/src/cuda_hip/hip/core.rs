@@ -109,6 +109,14 @@ impl HipBuffer {
         Ok((ptr, alloc_sz))
     }
 
+    fn alloc_no_zero(size_bytes: usize) -> HipResult<Self> {
+        if let Some(buf) = Self::empty(size_bytes) {
+            return Ok(buf);
+        }
+        let (ptr, alloc_size) = Self::alloc_from_pool(size_bytes)?;
+        Ok(Self { ptr, size: size_bytes, alloc_size, pooled: true })
+    }
+
     fn alloc_zeros(size_bytes: usize) -> HipResult<Self> {
         if let Some(buf) = Self::empty(size_bytes) {
             return Ok(buf);
@@ -339,6 +347,14 @@ fn get_ctx() -> &'static HipCtx {
 pub(crate) fn hip_zeros<T: Scalar>(nrows: usize, ncols: usize) -> HipStorage<T> {
     let buf = hip_or_panic(
         HipBuffer::alloc_zeros(nrows * ncols * core::mem::size_of::<T>()),
+        "HIP alloc",
+    );
+    HipStorage::new(nrows, ncols, buf)
+}
+
+pub(crate) fn hip_empty<T: Scalar>(nrows: usize, ncols: usize) -> HipStorage<T> {
+    let buf = hip_or_panic(
+        HipBuffer::alloc_no_zero(nrows * ncols * core::mem::size_of::<T>()),
         "HIP alloc",
     );
     HipStorage::new(nrows, ncols, buf)

@@ -21,10 +21,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             rows * cols,
             "reshape: {rows}x{cols} cannot reshape to {m}x{n}"
         );
-        Self {
-            storage: B::reshape(&self.storage, m, n),
-            _axes: PhantomData,
-        }
+        Self::from_fn(m, n, |r, c| {
+            let flat = r * n + c;
+            self.get(flat / cols, flat % cols)
+        })
     }
 
     /// Flatten to `(1, nrows*ncols)`.
@@ -66,10 +66,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Return a contiguous copy of the tensor (forces row-major layout).
     #[must_use]
     pub fn contiguous(&self) -> Self {
-        Self {
-            storage: B::clone_storage(&self.storage),
-            _axes: PhantomData,
-        }
+        let (m, n) = self.shape();
+        Self::from_fn(m, n, |r, c| self.get(r, c))
     }
 
     /// Detach from the computation graph: returns a clone with no gradient tracking.
