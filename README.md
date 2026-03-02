@@ -80,12 +80,12 @@ let out = input.adaptive_avg_pool2d((target_h, target_w))?;
 **Attention / FlashAttention-2** — for transformer models, nabla implements scaled dot-product attention using the FlashAttention-2 algorithm. This avoids materializing the full N×N attention matrix in memory, making it practical for long sequences:
 
 ```rust
-// Scaled dot-product attention — O(N) memory instead of O(N²)
-let out = scaled_dot_product_attention(&q, &k, &v, mask.as_ref())?;
+// Multi-head attention — splits into heads, calls FlashAttention-2 per head, concatenates
+// q, k, v: (seq_len, d_model)
+let out = Tensor::multi_head_attention(&q, &k, &v, num_heads, mask.as_ref());
 
-// Multi-head attention module
-let attn = MultiHeadAttention::new(embed_dim, num_heads, dropout);
-let out  = attn.forward_var(&x)?;
+// Low-level FlashAttention-2 with explicit shapes (head_dim must be ≤ 128)
+let out = Tensor::sdpa(&q, &k, &v, mask.as_ref(), seq_q, seq_k, head_dim, batch_heads);
 ```
 
 Switch to GPU: change `features = ["cpu"]` to `features = ["cuda"]` in `Cargo.toml`. No other changes.
@@ -158,12 +158,16 @@ let (y, z) = mega_fuse!(a+b; prev.exp(); inputs: a, b);  // multi-output, still 
 
 ```rust
 // train_step! uses CUDA Graph automatically.
-// Explicit API if you need control:
-let graph = TrainingGraph::new();
-graph.warmup(|| { /* one forward+backward pass */ });
-graph.capture(|| { /* same pass — now recorded */ })?;
+// Explicit API with PyGraphTrainingGraph — warms up for 5 iterations then auto-captures:
+use nabla_core::cuda::PyGraphTrainingGraph;
+let mut graph = PyGraphTrainingGraph::new();  // default: 5 warmup iterations
 for _ in 0..10_000 {
-    graph.replay()?;   // CPU cost: ~1 μs. GPU runs the full step uninterrupted.
+    graph.step(&mut || {
+        // forward + backward + optimizer — same closure every step
+    })?;
+    // iterations 1-5: normal execution (warmup)
+    // iteration 6:    CUDA Graph captured automatically
+    // iterations 7+:  graph.launch() — CPU cost ~1 μs per step
 }
 ```
 
@@ -234,18 +238,14 @@ for epoch in 0..100 {
 }
 ```
 
-**DataLoader** — wraps any `Dataset` impl, handles shuffling and batching automatically:
+**DataLoader** — wraps any `Dataset` impl, handles shuffling and batching:
 
 ```rust
-let dataset = CsvDataset::load("data/train.csv")?;
-let loader = DataLoader::new(dataset)
-    .batch_size(64)
-    .shuffle(true)
-    .num_workers(4)   // parallel CPU prefetch
-    .build();
+let loader = DataLoader::new(dataset, VecBatcher::default(), 64)
+    .shuffle_seed(42);   // shuffle with fixed seed
 
 for (x, y) in &loader {
-    // x: Tensor<f32>, y: Tensor<i64> — already batched and on device
+    // x: Tensor<f32>, y: Tensor<i64> — already batched
 }
 ```
 
@@ -298,49 +298,61 @@ Example output:
 All 34 formats are supported — see the full list in [notation.md](docs-en/notation.md).
 
 ```rust
-use nabla_train::{export_gguf, GgufQuantType, GgufArchConfig, LayerOverride};
+use nabla_train::gguf::{GgufExportConfig, GgufQuantType, export_gguf};
+use std::fs::File;
 
-let config = GgufArchConfig {
-    architecture: "llama".into(), name: "MyModel-7B".into(),
-    context_length: 4096, embedding_length: 4096, block_count: 32,
-    head_count: 32, head_count_kv: 8, vocab_size: 32000,
+let config = GgufExportConfig {
+    base_quant: GgufQuantType::Q4KM,
+    model_arch: "llama".into(),
+    mixing: None,    // or Some(MixingPreset::...) for per-layer precision
+    imatrix: None,   // required for IQ formats — provide calibration importance matrix
+    extra_metadata: vec![],
 };
 
-// Q4_K_M for all layers
-export_gguf(&model.state_dict(), Path::new("model.gguf"), GgufQuantType::Q4_K_M, &config, &[])?;
+// Collect weights as (name, shape, f32_data) tuples
+let weights: Vec<_> = model.named_parameters()
+    .into_iter()
+    .map(|(name, t)| (name, t.shape().to_vec(), t.to_vec()))
+    .collect();
+let weight_refs: Vec<(&str, &[u64], &[f32])> = weights
+    .iter()
+    .map(|(n, s, d)| (n.as_str(), s.as_slice(), d.as_slice()))
+    .collect();
 
-// Override specific layers: keep embeddings in F16 for better token quality
-let overrides = [LayerOverride::new("token_embd", GgufQuantType::F16)];
-export_gguf(&model.state_dict(), Path::new("model.gguf"), GgufQuantType::Q4_K_M, &config, &overrides)?;
+let mut file = File::create("model.gguf")?;
+export_gguf(&mut file, &weight_refs, &config)?;
 ```
 
 **ONNX export** — export to the standard interchange format, runnable in TensorFlow, Core ML, and ONNX Runtime:
 
 ```rust
-export_onnx(&model, &dummy_input, Path::new("model.onnx"), dynamic_axes)?;
+use nabla_train::onnx::export_sequential;
+let onnx = export_sequential(&model, input_features as i64, output_features as i64);
+onnx.save(Path::new("model.onnx"))?;
 ```
 
 **AWQ quantization** — compresses model weights to INT4 before export, with activation-aware scaling to minimize accuracy loss:
 
 ```rust
-let quant = awq_quantize(&model, &calibration_data, QuantConfig { group_size: 128 })?;
-// Then export the quantized model:
-export_gguf(&quant.state_dict(), Path::new("model.gguf"), GgufQuantType::Q4_K_M, &config, &[])?;
+use nabla_train::quantize::{CalibrationStats, quantize_awq};
+
+// Build calibration stats from a small representative dataset
+let mut calib = CalibrationStats::new(num_channels);
+for batch in &calib_loader {
+    calib.update(&batch.activations);  // feed activation batches
+}
+// Quantize individual weight matrix with group_size=128
+let qw = quantize_awq(&weight_tensor, &calib, 128);
 ```
 
-> **Note on IQ formats (IQ1–IQ4):** These ultra-low-bit formats require an importance matrix — a calibration score per weight that tells the quantizer which weights matter most. Pass a `&calibration_data` slice to `export_gguf` when using IQ types. For Q-formats and K-quants, no calibration data is needed.
-
-**Benchmark evaluation** — measure perplexity, accuracy, and top-k accuracy of an exported model against a test dataset:
+**Benchmark evaluation** — measure perplexity and accuracy of a model against a test dataset:
 
 ```rust
-let result = evaluate_model(
-    &engine,
-    &test_dataset,
-    EvalConfig { metric: EvalMetric::Perplexity, ..Default::default() },
-)?;
-println!("perplexity: {:.2}  accuracy: {:.1}%", result.perplexity, result.accuracy * 100.0);
-// JSON output: { perplexity, accuracy, top_k_accuracy, per_sample_scores, summary }
-println!("{}", serde_json::to_string_pretty(&result)?);
+use nabla_train::benchmark::{compute_perplexity, compute_accuracy};
+
+let perp = compute_perplexity(&model, &test_dataset, forward_fn)?;
+let acc  = compute_accuracy(&model, &test_dataset, forward_fn)?;
+println!("perplexity: {:.2}  accuracy: {:.1}%", perp.perplexity, acc.accuracy * 100.0);
 ```
 
 ### Model Inference: nabla-interface
@@ -385,19 +397,27 @@ println!("prompt {:.1} tok/s  gen {:.1} tok/s", stats.prompt_tok_per_sec, stats.
 **Full end-to-end: train → export → run locally**
 
 ```rust
+use nabla_train::prelude::*;
+use nabla_train::gguf::{GgufExportConfig, GgufQuantType, export_gguf};
+use nabla_train::quantize::{CalibrationStats, quantize_awq};
+use nabla_interface::{InferenceEngine, InferenceConfig, SamplingConfig};
+use std::fs::File;
+
 // 1. Train
 let mut optimizer = AdamW::from_params(1e-4, &model.parameters());
 for _ in 0..epochs { train_step!(model, optimizer, tape, |x, out| out.cross_entropy_indices(&y))?; }
 save_checkpoint(&model, &optimizer, Path::new("ckpt.bin"))?;
 
-// 2. (Optional) AWQ quantization before export for better accuracy/size tradeoff
-let quant = awq_quantize(&model, &calibration_data, QuantConfig { group_size: 128 })?;
+// 2. Export to GGUF (Q4_K_M = recommended quality/size tradeoff)
+let weights: Vec<_> = model.named_parameters()
+    .into_iter()
+    .map(|(n, t)| (n, t.shape().to_vec(), t.to_vec()))
+    .collect();
+let weight_refs: Vec<_> = weights.iter().map(|(n,s,d)| (n.as_str(), s.as_slice(), d.as_slice())).collect();
+let config = GgufExportConfig { base_quant: GgufQuantType::Q4KM, model_arch: "llama".into(), mixing: None, imatrix: None, extra_metadata: vec![] };
+export_gguf(&mut File::create("model.gguf")?, &weight_refs, &config)?;
 
-// 3. Export to GGUF from nabla-train
-use nabla_train::{export_gguf, GgufQuantType};
-export_gguf(&quant.state_dict(), Path::new("model.gguf"), GgufQuantType::Q4_K_M, &config, &[])?;
-
-// 4. Run with nabla-interface — or load in Ollama / LM Studio using the .gguf file
+// 3. Run with nabla-interface — or load the .gguf in Ollama / LM Studio
 let engine = InferenceEngine::new("model.gguf", InferenceConfig::default())?;
 let out = engine.generate("prompt", 128, &SamplingConfig::default())?;
 ```
