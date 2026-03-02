@@ -104,6 +104,16 @@ pub trait BackendCore: private::Sealed + Send + Sync + 'static {
         f: impl FnMut(usize, usize) -> T,
     ) -> Self::Storage<T>;
 
+    /// Reshape storage into a new `(nrows, ncols)` buffer layout.
+    /// Default: allocate + copy via `get` (CPU fallback for GPU backends).
+    fn reshape<T: Scalar>(a: &Self::Storage<T>, nrows: usize, ncols: usize) -> Self::Storage<T> {
+        Self::from_fn(nrows, ncols, |r, c| {
+            let flat = r * ncols + c;
+            let cols = Self::ncols(a);
+            Self::get(a, flat / cols, flat % cols)
+        })
+    }
+
     /// Build storage from a pre-allocated row-major `Vec<T>` (zero-copy when possible).
     #[must_use]
     fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> Self::Storage<T> {
@@ -140,6 +150,19 @@ pub trait BackendCore: private::Sealed + Send + Sync + 'static {
             }
         }
         out
+    }
+
+    /// Cast storage element type using `f64` as an intermediate (default: host loop).
+    fn cast<T: Scalar, U: Scalar>(a: &Self::Storage<T>) -> Self::Storage<U> {
+        let rows = Self::nrows(a);
+        let cols = Self::ncols(a);
+        let mut data = Vec::with_capacity(rows * cols);
+        for r in 0..rows {
+            for c in 0..cols {
+                data.push(U::from_f64(Self::get(a, r, c).to_f64()));
+            }
+        }
+        Self::from_vec(rows, cols, data)
     }
 
     /// Row count of `storage`.
@@ -255,6 +278,50 @@ pub trait BackendMath: BackendCore {
     fn emul<T: Scalar>(a: &Self::Storage<T>, b: &Self::Storage<T>) -> Self::Storage<T>;
     /// Element-wise division `a[i,j] / b[i,j]`.
     fn ediv<T: Scalar>(a: &Self::Storage<T>, b: &Self::Storage<T>) -> Self::Storage<T>;
+
+    /// Replace elements where `mask` is non-zero with `value`.
+    fn masked_fill<T: Scalar>(
+        a: &Self::Storage<T>,
+        mask: &Self::Storage<T>,
+        value: T,
+    ) -> Self::Storage<T> {
+        let (rows, cols) = (Self::nrows(a), Self::ncols(a));
+        let mut data = Vec::with_capacity(rows * cols);
+        for r in 0..rows {
+            for c in 0..cols {
+                let m = Self::get(mask, r, c);
+                let v = if m.to_f64() == 0.0 {
+                    Self::get(a, r, c)
+                } else {
+                    value
+                };
+                data.push(v);
+            }
+        }
+        Self::from_vec(rows, cols, data)
+    }
+
+    /// Element-wise conditional: `where cond != 0, pick a, else pick b`.
+    fn where_cond<T: Scalar>(
+        a: &Self::Storage<T>,
+        cond: &Self::Storage<T>,
+        b: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
+        let (rows, cols) = (Self::nrows(a), Self::ncols(a));
+        let mut data = Vec::with_capacity(rows * cols);
+        for r in 0..rows {
+            for c in 0..cols {
+                let cnd = Self::get(cond, r, c);
+                let v = if cnd.to_f64() == 0.0 {
+                    Self::get(b, r, c)
+                } else {
+                    Self::get(a, r, c)
+                };
+                data.push(v);
+            }
+        }
+        Self::from_vec(rows, cols, data)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +524,21 @@ pub trait BackendBlas: BackendCore {
         }
     }
 
+    /// Fused GEMM + bias add: `out[i,j] = (a * b)[i,j] + bias[0,j]`.
+    /// Default: matmul then element-wise row broadcast.
+    /// CUDA backend overrides with a single cublasLt `CUBLASLT_EPILOGUE_BIAS` call.
+    fn matmul_bias<T: Scalar>(
+        a: &Self::Storage<T>,
+        b: &Self::Storage<T>,
+        bias: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
+        let m = Self::nrows(a);
+        let n = Self::ncols(b);
+        let mut out = Self::zeros(m, n);
+        Self::matmul_into(&mut out, a, b);
+        Self::from_fn(m, n, |r, c| Self::get(&out, r, c) + Self::get(bias, 0, c))
+    }
+
     /// Batched matrix multiply: `C[b] = A[b] @ B[b]`.
     fn bmm<T: Scalar>(
         a: &Self::Storage<T>,
@@ -551,6 +633,30 @@ pub trait BackendNN: BackendCore {
         gamma: &Self::Storage<T>,
         eps: T,
     ) -> Self::Storage<T>;
+    /// Group normalization: normalize within channel groups.
+    fn group_norm<T: Scalar>(
+        a: &Self::Storage<T>,
+        gamma: &Self::Storage<T>,
+        beta: &Self::Storage<T>,
+        groups: usize,
+        eps: T,
+    ) -> Self::Storage<T> {
+        let rows = Self::nrows(a);
+        let cols = Self::ncols(a);
+        let g_size = cols / groups;
+        Self::from_fn(rows, cols, |r, c| {
+            let g = c / g_size;
+            let g_start = g * g_size;
+            let mean = (0..g_size).fold(T::zero(), |acc, j| acc + Self::get(a, r, g_start + j))
+                / T::from_f64(g_size as f64);
+            let var = (0..g_size).fold(T::zero(), |acc, j| {
+                let d = Self::get(a, r, g_start + j) - mean;
+                acc + d * d
+            }) / T::from_f64(g_size as f64);
+            let x = Self::get(a, r, c);
+            (x - mean) / (var + eps).math_sqrt() * Self::get(gamma, 0, c) + Self::get(beta, 0, c)
+        })
+    }
 
     // --- Training ---
     /// Batch normalization (training mode).

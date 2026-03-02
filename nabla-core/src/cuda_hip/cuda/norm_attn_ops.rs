@@ -126,6 +126,71 @@ pub(super) fn cuda_rms_norm<T: Scalar>(
     CudaStorage::new(rows, cols, out_buf)
 }
 
+pub(super) fn cuda_group_norm<T: Scalar>(
+    a: &CudaStorage<T>,
+    gamma: &CudaStorage<T>,
+    beta: &CudaStorage<T>,
+    groups: usize,
+    eps: T,
+) -> CudaStorage<T> {
+    let ctx = get_ctx();
+    let rows = a.nrows;
+    let cols = a.ncols;
+    let n = rows * cols;
+    let name = format!("k_group_norm_{}", type_suffix::<T>());
+    let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
+    let out_buf =
+        CuBuffer::alloc_async(&ctx.stream, n * std::mem::size_of::<T>()).or_panic("CUDA alloc");
+    let rows_u32 = rows as u32;
+    let cols_u32 = cols as u32;
+    let groups_u32 = groups as u32;
+    let eps_f = eps.to_f64();
+    let grid_x = (rows * groups) as u32;
+    unsafe {
+        if type_suffix::<T>() == "f32" {
+            let eps_val = eps_f as f32;
+            result::launch_kernel(
+                func,
+                (grid_x, 1, 1),
+                (BLOCK_SIZE, 1, 1),
+                0,
+                ctx.stream.cu_stream(),
+                &mut [
+                    &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &gamma.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &beta.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &out_buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &rows_u32 as *const u32 as *mut c_void,
+                    &cols_u32 as *const u32 as *mut c_void,
+                    &groups_u32 as *const u32 as *mut c_void,
+                    &eps_val as *const f32 as *mut c_void,
+                ],
+            )
+            .or_panic("CUDA launch {name}");
+        } else {
+            result::launch_kernel(
+                func,
+                (grid_x, 1, 1),
+                (BLOCK_SIZE, 1, 1),
+                0,
+                ctx.stream.cu_stream(),
+                &mut [
+                    &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &gamma.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &beta.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &out_buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &rows_u32 as *const u32 as *mut c_void,
+                    &cols_u32 as *const u32 as *mut c_void,
+                    &groups_u32 as *const u32 as *mut c_void,
+                    &eps_f as *const f64 as *mut c_void,
+                ],
+            )
+            .or_panic("CUDA launch {name}");
+        }
+    }
+    CudaStorage::new(rows, cols, out_buf)
+}
+
 pub(super) fn cuda_batch_norm_train<T: Scalar>(
     a: &CudaStorage<T>,
     gamma: &CudaStorage<T>,
@@ -343,14 +408,18 @@ pub(super) fn cuda_sdpa<T: Scalar>(
     let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
     let num_q_tiles = seq_q.div_ceil(FA_BLOCK_M as usize) as u32;
     let grid = batch_heads as u32 * num_q_tiles;
-    let smem = 2 * FA_BLOCK_N as usize * head_dim * sz;
+    let smem = if type_suffix::<T>() == "f64" {
+        2 * FA_BLOCK_N as usize * head_dim * std::mem::size_of::<f64>()
+    } else {
+        2 * FA_BLOCK_N as usize * head_dim * std::mem::size_of::<f32>()
+    };
     let seq_q_u = seq_q as u32;
     let seq_k_u = seq_k as u32;
     let head_dim_u = head_dim as u32;
     let bh_u = batch_heads as u32;
     let scale_f64 = 1.0 / (head_dim as f64).sqrt();
     unsafe {
-        if type_suffix::<T>() == "f32" {
+        if type_suffix::<T>() != "f64" {
             let scale = scale_f64 as f32;
             result::launch_kernel(
                 func,

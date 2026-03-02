@@ -84,3 +84,24 @@ tensor_like_ops! {
         tl_elu(alpha)        => (|s: &Tensor<T, B>, a| s.elu(T::from_f64(a)), |s: &Variable<T, B>, a| s.elu(a)),
     }
 }
+
+/// Extension for fused matmul+bias — cannot be expressed in the binary/unary macro.
+pub trait TensorLikeMatmulBias<T: Scalar, B: Backend>: Sized {
+    /// Compute `self @ weight + bias` in a single fused dispatch where possible.
+    fn tl_matmul_bias(&self, weight: &Self, bias: &Self) -> Self;
+}
+
+impl<T: Scalar, B: Backend> TensorLikeMatmulBias<T, B> for Tensor<T, B> {
+    #[inline]
+    fn tl_matmul_bias(&self, weight: &Self, bias: &Self) -> Self {
+        Tensor::matmul_bias(self, weight, bias)
+    }
+}
+
+impl<T: Scalar, B: Backend> TensorLikeMatmulBias<T, B> for Variable<T, B> {
+    #[inline]
+    fn tl_matmul_bias(&self, weight: &Self, bias: &Self) -> Self {
+        // Two autograd nodes — fused kernel fires only in the Tensor (inference) path.
+        self.matmul(weight).add_var(bias)
+    }
+}

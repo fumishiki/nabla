@@ -21,10 +21,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             rows * cols,
             "reshape: {rows}x{cols} cannot reshape to {m}x{n}"
         );
-        Self::from_fn(m, n, |r, c| {
-            let flat = r * n + c;
-            self.get(flat / cols, flat % cols)
-        })
+        Self {
+            storage: B::reshape(&self.storage, m, n),
+            _axes: PhantomData,
+        }
     }
 
     /// Flatten to `(1, nrows*ncols)`.
@@ -66,8 +66,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Return a contiguous copy of the tensor (forces row-major layout).
     #[must_use]
     pub fn contiguous(&self) -> Self {
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| self.get(r, c))
+        Self {
+            storage: B::clone_storage(&self.storage),
+            _axes: PhantomData,
+        }
     }
 
     /// Detach from the computation graph: returns a clone with no gradient tracking.
@@ -604,11 +606,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Convert every element to a different scalar type `U` via `f64` as an intermediate.
     #[must_use]
     pub fn cast<U: Scalar>(&self) -> Tensor<U, B> {
-        let (m, n) = self.shape();
-        let data: Vec<U> = (0..m)
-            .flat_map(|r| (0..n).map(move |c| U::from_f64(self.get(r, c).to_f64())))
-            .collect();
-        Tensor::from_storage(B::from_vec(m, n, data))
+        Tensor::from_storage(B::cast(&self.storage))
     }
 
     /// Convert 2D Tensor to N-D NdTensor with the given shape.

@@ -246,19 +246,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             n % num_groups == 0,
             "nabla: group_norm C={n} not divisible by groups={num_groups}"
         );
-        let g_size = n / num_groups;
-        Self::from_fn(m, n, |r, c| {
-            let g = c / g_size;
-            let g_start = g * g_size;
-            let mean = (0..g_size).fold(T::zero(), |acc, j| acc + self.get(r, g_start + j))
-                / T::from_f64(g_size as f64);
-            let var = (0..g_size).fold(T::zero(), |acc, j| {
-                let d = self.get(r, g_start + j) - mean;
-                acc + d * d
-            }) / T::from_f64(g_size as f64);
-            let x = self.get(r, c);
-            (x - mean) / (var + eps).math_sqrt() * weight.get(0, c) + bias.get(0, c)
-        })
+        Self {
+            storage: B::group_norm(&self.storage, &weight.storage, &bias.storage, num_groups, eps),
+            _axes: PhantomData,
+        }
     }
 }
 

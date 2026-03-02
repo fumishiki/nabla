@@ -6,6 +6,214 @@
 #define STORE_F4(ptr, i, v) (((float4*)(ptr))[i] = (v))
 #define VEC4_IDX (blockIdx.x * blockDim.x + threadIdx.x)
 
+// Define stdint types inline to avoid NVRTC system header path issues.
+// Including <stdint.h> from /usr/include on aarch64 interferes with CUDA macros.
+#ifndef __nabla_stdint_defined__
+#define __nabla_stdint_defined__
+typedef unsigned char      uint8_t;
+typedef signed char        int8_t;
+typedef unsigned short     uint16_t;
+typedef signed short       int16_t;
+typedef unsigned int       uint32_t;
+typedef signed int         int32_t;
+typedef unsigned long long uint64_t;
+typedef signed long long   int64_t;
+#endif
+#if defined(__CUDACC__) && !defined(__HIPCC__)
+#include <cuda_fp16.h>
+#endif
+#if defined(__HIPCC__) || defined(__HIP_PLATFORM_HCC__)
+#include <hip/hip_fp16.h>
+#endif
+
+#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__HIP_PLATFORM_HCC__)
+__device__ __forceinline__ __half to_half(float v) { return __float2half(v); }
+__device__ __forceinline__ float from_half(__half v) { return __half2float(v); }
+#endif
+
+__device__ __forceinline__ uint8_t fp8e4m3_from_f32(float v) {
+    const int M = 3, BIAS = 7, EMIN = -6, EMAX = 7;
+    if (v == 0.0f) return 0;
+    uint8_t sign = v < 0.0f;
+    float av = fabsf(v);
+    if (!isfinite(av)) {
+        uint8_t exp_bits = (uint8_t)(EMAX + BIAS);
+        uint8_t mant = (uint8_t)((1 << M) - 1);
+        return (uint8_t)((sign << 7) | (exp_bits << M) | mant);
+    }
+    int exp = (int)floorf(log2f(av));
+    if (exp < EMIN) return 0;
+    int mant_bits = 0;
+    if (exp > EMAX) {
+        exp = EMAX;
+        mant_bits = (1 << M) - 1;
+    } else {
+        float base = ldexpf(1.0f, exp);
+        float mant = av / base - 1.0f;
+        if (mant < 0.0f) mant = 0.0f;
+        int mant_i = (int)floorf(mant * (float)(1 << M) + 0.5f);
+        if (mant_i >= (1 << M)) {
+            mant_i = 0;
+            exp += 1;
+            if (exp > EMAX) { exp = EMAX; mant_i = (1 << M) - 1; }
+        }
+        mant_bits = mant_i;
+    }
+    uint8_t exp_bits = (uint8_t)(exp + BIAS);
+    return (uint8_t)((sign << 7) | (exp_bits << M) | (uint8_t)mant_bits);
+}
+
+__device__ __forceinline__ float fp8e4m3_to_f32(uint8_t bits) {
+    const int M = 3, BIAS = 7;
+    if (bits == 0) return 0.0f;
+    uint8_t sign = (bits >> 7) & 1;
+    int exp_bits = (int)((bits >> M) & 0x0f);
+    int mant_bits = (int)(bits & ((1 << M) - 1));
+    int exp = exp_bits - BIAS;
+    float mant = 1.0f + (float)mant_bits / (float)(1 << M);
+    float v = ldexpf(mant, exp);
+    return sign ? -v : v;
+}
+
+__device__ __forceinline__ uint8_t fp8e5m2_from_f32(float v) {
+    const int M = 2, BIAS = 15, EMIN = -14, EMAX = 15;
+    if (v == 0.0f) return 0;
+    uint8_t sign = v < 0.0f;
+    float av = fabsf(v);
+    if (!isfinite(av)) {
+        uint8_t exp_bits = (uint8_t)(EMAX + BIAS);
+        uint8_t mant = (uint8_t)((1 << M) - 1);
+        return (uint8_t)((sign << 7) | (exp_bits << M) | mant);
+    }
+    int exp = (int)floorf(log2f(av));
+    if (exp < EMIN) return 0;
+    int mant_bits = 0;
+    if (exp > EMAX) {
+        exp = EMAX;
+        mant_bits = (1 << M) - 1;
+    } else {
+        float base = ldexpf(1.0f, exp);
+        float mant = av / base - 1.0f;
+        if (mant < 0.0f) mant = 0.0f;
+        int mant_i = (int)floorf(mant * (float)(1 << M) + 0.5f);
+        if (mant_i >= (1 << M)) {
+            mant_i = 0;
+            exp += 1;
+            if (exp > EMAX) { exp = EMAX; mant_i = (1 << M) - 1; }
+        }
+        mant_bits = mant_i;
+    }
+    uint8_t exp_bits = (uint8_t)(exp + BIAS);
+    return (uint8_t)((sign << 7) | (exp_bits << M) | (uint8_t)mant_bits);
+}
+
+__device__ __forceinline__ float fp8e5m2_to_f32(uint8_t bits) {
+    const int M = 2, BIAS = 15;
+    if (bits == 0) return 0.0f;
+    uint8_t sign = (bits >> 7) & 1;
+    int exp_bits = (int)((bits >> M) & 0x1f);
+    int mant_bits = (int)(bits & ((1 << M) - 1));
+    int exp = exp_bits - BIAS;
+    float mant = 1.0f + (float)mant_bits / (float)(1 << M);
+    float v = ldexpf(mant, exp);
+    return sign ? -v : v;
+}
+
+__device__ __forceinline__ uint8_t fp4e2m1_from_f32(float v) {
+    const int M = 1, BIAS = 1, EMIN = -1, EMAX = 2;
+    if (v == 0.0f) return 0;
+    uint8_t sign = v < 0.0f;
+    float av = fabsf(v);
+    if (!isfinite(av)) {
+        uint8_t exp_bits = (uint8_t)(EMAX + BIAS);
+        uint8_t mant = (uint8_t)((1 << M) - 1);
+        return (uint8_t)(((sign << 3) | (exp_bits << M) | mant) & 0x0f);
+    }
+    int exp = (int)floorf(log2f(av));
+    if (exp < EMIN) return 0;
+    int mant_bits = 0;
+    if (exp > EMAX) {
+        exp = EMAX;
+        mant_bits = (1 << M) - 1;
+    } else {
+        float base = ldexpf(1.0f, exp);
+        float mant = av / base - 1.0f;
+        if (mant < 0.0f) mant = 0.0f;
+        int mant_i = (int)floorf(mant * (float)(1 << M) + 0.5f);
+        if (mant_i >= (1 << M)) {
+            mant_i = 0;
+            exp += 1;
+            if (exp > EMAX) { exp = EMAX; mant_i = (1 << M) - 1; }
+        }
+        mant_bits = mant_i;
+    }
+    uint8_t exp_bits = (uint8_t)(exp + BIAS);
+    return (uint8_t)(((sign << 3) | (exp_bits << M) | (uint8_t)mant_bits) & 0x0f);
+}
+
+__device__ __forceinline__ float fp4e2m1_to_f32(uint8_t bits) {
+    const int M = 1, BIAS = 1;
+    uint8_t b = bits & 0x0f;
+    if (b == 0) return 0.0f;
+    uint8_t sign = (b >> 3) & 1;
+    int exp_bits = (int)((b >> M) & 0x03);
+    int mant_bits = (int)(b & ((1 << M) - 1));
+    int exp = exp_bits - BIAS;
+    float mant = 1.0f + (float)mant_bits / (float)(1 << M);
+    float v = ldexpf(mant, exp);
+    return sign ? -v : v;
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_cast_f32_to_f16(const float* __restrict__ in, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = to_half(in[i]);
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_cast_f16_to_f32(const __half* __restrict__ in, float* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = from_half(in[i]);
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_cast_f64_to_f32(const double* __restrict__ in, float* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = (float)in[i];
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_cast_f32_to_f64(const float* __restrict__ in, double* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = (double)in[i];
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_cast_f32_to_fp8e4m3(const float* __restrict__ in, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = fp8e4m3_from_f32(in[i]);
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_cast_fp8e4m3_to_f32(const uint8_t* __restrict__ in, float* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = fp8e4m3_to_f32(in[i]);
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_cast_f32_to_fp8e5m2(const float* __restrict__ in, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = fp8e5m2_from_f32(in[i]);
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_cast_fp8e5m2_to_f32(const uint8_t* __restrict__ in, float* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = fp8e5m2_to_f32(in[i]);
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_cast_f32_to_fp4e2m1(const float* __restrict__ in, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = fp4e2m1_from_f32(in[i]);
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_cast_fp4e2m1_to_f32(const uint8_t* __restrict__ in, float* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = fp4e2m1_to_f32(in[i]);
+}
+
 
 #define _NEG(x) (-(x))
 #define _RECIP_F(x) (1.0f/(x))
@@ -27,6 +235,15 @@ extern "C" __global__ __launch_bounds__(256) void k_##name##_f64(const double* _
     unsigned i = THREAD_ID; if (i < n) out[i] = op(__ldg(&in[i])); \
 }
 
+#define UNARY_F16(name, vop, sop) \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_f16(const __half* __restrict__ in, __half* __restrict__ out, unsigned n) { \
+    unsigned i = THREAD_ID; \
+    if (i < n) { \
+        float x = from_half(in[i]); \
+        out[i] = to_half(sop(x)); \
+    } \
+}
+
 #define BINARY_F32(name, op) \
 extern "C" __global__ __launch_bounds__(256) void k_##name##_f32(const float* __restrict__ a, const float* __restrict__ b, float* __restrict__ out, unsigned n) { \
     unsigned i4 = VEC4_IDX, i = i4 * 4; \
@@ -40,6 +257,157 @@ extern "C" __global__ __launch_bounds__(256) void k_##name##_f32(const float* __
 #define BINARY_F64(name, op) \
 extern "C" __global__ __launch_bounds__(256) void k_##name##_f64(const double* __restrict__ a, const double* __restrict__ b, double* __restrict__ out, unsigned n) { \
     unsigned i = THREAD_ID; if (i < n) out[i] = __ldg(&a[i]) op __ldg(&b[i]); \
+}
+
+#define BINARY_F16(name, op) \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_f16(const __half* __restrict__ a, const __half* __restrict__ b, __half* __restrict__ out, unsigned n) { \
+    unsigned i = THREAD_ID; \
+    if (i < n) { \
+        float ax = from_half(a[i]); \
+        float bx = from_half(b[i]); \
+        out[i] = to_half(ax op bx); \
+    } \
+}
+
+#define UNARY_FP8E4M3(name, op) \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_fp8e4m3(const uint8_t* __restrict__ in, uint8_t* __restrict__ out, unsigned n) { \
+    unsigned i = THREAD_ID; \
+    if (i < n) { \
+        float x = fp8e4m3_to_f32(in[i]); \
+        out[i] = fp8e4m3_from_f32(op(x)); \
+    } \
+}
+
+#define UNARY_FP8E5M2(name, op) \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_fp8e5m2(const uint8_t* __restrict__ in, uint8_t* __restrict__ out, unsigned n) { \
+    unsigned i = THREAD_ID; \
+    if (i < n) { \
+        float x = fp8e5m2_to_f32(in[i]); \
+        out[i] = fp8e5m2_from_f32(op(x)); \
+    } \
+}
+
+#define UNARY_FP4E2M1(name, op) \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_fp4e2m1(const uint8_t* __restrict__ in, uint8_t* __restrict__ out, unsigned n) { \
+    unsigned i = THREAD_ID; \
+    if (i < n) { \
+        float x = fp4e2m1_to_f32(in[i]); \
+        out[i] = fp4e2m1_from_f32(op(x)); \
+    } \
+}
+
+#define BINARY_FP8E4M3(name, op) \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_fp8e4m3(const uint8_t* __restrict__ a, const uint8_t* __restrict__ b, uint8_t* __restrict__ out, unsigned n) { \
+    unsigned i = THREAD_ID; \
+    if (i < n) { \
+        float ax = fp8e4m3_to_f32(a[i]); \
+        float bx = fp8e4m3_to_f32(b[i]); \
+        out[i] = fp8e4m3_from_f32(ax op bx); \
+    } \
+}
+
+#define BINARY_FP8E5M2(name, op) \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_fp8e5m2(const uint8_t* __restrict__ a, const uint8_t* __restrict__ b, uint8_t* __restrict__ out, unsigned n) { \
+    unsigned i = THREAD_ID; \
+    if (i < n) { \
+        float ax = fp8e5m2_to_f32(a[i]); \
+        float bx = fp8e5m2_to_f32(b[i]); \
+        out[i] = fp8e5m2_from_f32(ax op bx); \
+    } \
+}
+
+#define BINARY_FP4E2M1(name, op) \
+extern "C" __global__ __launch_bounds__(256) void k_##name##_fp4e2m1(const uint8_t* __restrict__ a, const uint8_t* __restrict__ b, uint8_t* __restrict__ out, unsigned n) { \
+    unsigned i = THREAD_ID; \
+    if (i < n) { \
+        float ax = fp4e2m1_to_f32(a[i]); \
+        float bx = fp4e2m1_to_f32(b[i]); \
+        out[i] = fp4e2m1_from_f32(ax op bx); \
+    } \
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_masked_fill_f32(const float* __restrict__ in, const float* __restrict__ mask, float value, float* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = (mask[i] == 0.0f) ? in[i] : value;
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_masked_fill_f64(const double* __restrict__ in, const double* __restrict__ mask, double value, double* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = (mask[i] == 0.0) ? in[i] : value;
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_masked_fill_f16(const __half* __restrict__ in, const __half* __restrict__ mask, __half value, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float m = from_half(mask[i]);
+        out[i] = (m == 0.0f) ? in[i] : value;
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_masked_fill_fp8e4m3(const uint8_t* __restrict__ in, const uint8_t* __restrict__ mask, uint8_t value, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float m = fp8e4m3_to_f32(mask[i]);
+        out[i] = (m == 0.0f) ? in[i] : value;
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_masked_fill_fp8e5m2(const uint8_t* __restrict__ in, const uint8_t* __restrict__ mask, uint8_t value, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float m = fp8e5m2_to_f32(mask[i]);
+        out[i] = (m == 0.0f) ? in[i] : value;
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_masked_fill_fp4e2m1(const uint8_t* __restrict__ in, const uint8_t* __restrict__ mask, uint8_t value, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float m = fp4e2m1_to_f32(mask[i]);
+        out[i] = (m == 0.0f) ? in[i] : value;
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_where_f32(const float* __restrict__ a, const float* __restrict__ cond, const float* __restrict__ b, float* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = (cond[i] == 0.0f) ? b[i] : a[i];
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_where_f64(const double* __restrict__ a, const double* __restrict__ cond, const double* __restrict__ b, double* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) out[i] = (cond[i] == 0.0) ? b[i] : a[i];
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_where_f16(const __half* __restrict__ a, const __half* __restrict__ cond, const __half* __restrict__ b, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float c = from_half(cond[i]);
+        out[i] = (c == 0.0f) ? b[i] : a[i];
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_where_fp8e4m3(const uint8_t* __restrict__ a, const uint8_t* __restrict__ cond, const uint8_t* __restrict__ b, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float c = fp8e4m3_to_f32(cond[i]);
+        out[i] = (c == 0.0f) ? b[i] : a[i];
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_where_fp8e5m2(const uint8_t* __restrict__ a, const uint8_t* __restrict__ cond, const uint8_t* __restrict__ b, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float c = fp8e5m2_to_f32(cond[i]);
+        out[i] = (c == 0.0f) ? b[i] : a[i];
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_where_fp4e2m1(const uint8_t* __restrict__ a, const uint8_t* __restrict__ cond, const uint8_t* __restrict__ b, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float c = fp4e2m1_to_f32(cond[i]);
+        out[i] = (c == 0.0f) ? b[i] : a[i];
+    }
 }
 
 
@@ -88,6 +456,110 @@ UNARY_F32(atanh, atanhf,          atanhf)
 UNARY_F32(log2,  __log2f,         __log2f)
 UNARY_F32(log10, __log10f,        __log10f)
 
+UNARY_F16(neg,   _NEG,            _NEG)
+UNARY_F16(recip, _RECIP_F,        _RECIP_F)
+UNARY_F16(exp,   __expf,          __expf)
+UNARY_F16(ln,    __logf,          __logf)
+UNARY_F16(log1p, _LOG1P_FAST,     log1pf)
+UNARY_F16(sin,   __sinf,          __sinf)
+UNARY_F16(cos,   __cosf,          __cosf)
+UNARY_F16(tan,   tanf,            tanf)
+UNARY_F16(tanh,  tanhf,           tanhf)
+UNARY_F16(sqrt,  __fsqrt_rn,      sqrtf)
+UNARY_F16(abs,   fabsf,           fabsf)
+UNARY_F16(ceil,  ceilf,           ceilf)
+UNARY_F16(floor, floorf,          floorf)
+UNARY_F16(round, roundf,          roundf)
+UNARY_F16(erf,   erf_approx_f32,  erf_approx_f32)
+UNARY_F16(asin,  asinf,           asinf)
+UNARY_F16(acos,  acosf,           acosf)
+UNARY_F16(atan,  atanf,           atanf)
+UNARY_F16(sinh,  sinhf,           sinhf)
+UNARY_F16(cosh,  coshf,           coshf)
+UNARY_F16(asinh, asinhf,          asinhf)
+UNARY_F16(acosh, acoshf,          acoshf)
+UNARY_F16(atanh, atanhf,          atanhf)
+UNARY_F16(log2,  __log2f,         __log2f)
+UNARY_F16(log10, __log10f,        __log10f)
+
+UNARY_FP8E4M3(neg,   _NEG)
+UNARY_FP8E4M3(recip, _RECIP_F)
+UNARY_FP8E4M3(exp,   __expf)
+UNARY_FP8E4M3(ln,    __logf)
+UNARY_FP8E4M3(log1p, log1pf)
+UNARY_FP8E4M3(sin,   __sinf)
+UNARY_FP8E4M3(cos,   __cosf)
+UNARY_FP8E4M3(tan,   tanf)
+UNARY_FP8E4M3(tanh,  tanhf)
+UNARY_FP8E4M3(sqrt,  sqrtf)
+UNARY_FP8E4M3(abs,   fabsf)
+UNARY_FP8E4M3(ceil,  ceilf)
+UNARY_FP8E4M3(floor, floorf)
+UNARY_FP8E4M3(round, roundf)
+UNARY_FP8E4M3(erf,   erf_approx_f32)
+UNARY_FP8E4M3(asin,  asinf)
+UNARY_FP8E4M3(acos,  acosf)
+UNARY_FP8E4M3(atan,  atanf)
+UNARY_FP8E4M3(sinh,  sinhf)
+UNARY_FP8E4M3(cosh,  coshf)
+UNARY_FP8E4M3(asinh, asinhf)
+UNARY_FP8E4M3(acosh, acoshf)
+UNARY_FP8E4M3(atanh, atanhf)
+UNARY_FP8E4M3(log2,  __log2f)
+UNARY_FP8E4M3(log10, __log10f)
+
+UNARY_FP8E5M2(neg,   _NEG)
+UNARY_FP8E5M2(recip, _RECIP_F)
+UNARY_FP8E5M2(exp,   __expf)
+UNARY_FP8E5M2(ln,    __logf)
+UNARY_FP8E5M2(log1p, log1pf)
+UNARY_FP8E5M2(sin,   __sinf)
+UNARY_FP8E5M2(cos,   __cosf)
+UNARY_FP8E5M2(tan,   tanf)
+UNARY_FP8E5M2(tanh,  tanhf)
+UNARY_FP8E5M2(sqrt,  sqrtf)
+UNARY_FP8E5M2(abs,   fabsf)
+UNARY_FP8E5M2(ceil,  ceilf)
+UNARY_FP8E5M2(floor, floorf)
+UNARY_FP8E5M2(round, roundf)
+UNARY_FP8E5M2(erf,   erf_approx_f32)
+UNARY_FP8E5M2(asin,  asinf)
+UNARY_FP8E5M2(acos,  acosf)
+UNARY_FP8E5M2(atan,  atanf)
+UNARY_FP8E5M2(sinh,  sinhf)
+UNARY_FP8E5M2(cosh,  coshf)
+UNARY_FP8E5M2(asinh, asinhf)
+UNARY_FP8E5M2(acosh, acoshf)
+UNARY_FP8E5M2(atanh, atanhf)
+UNARY_FP8E5M2(log2,  __log2f)
+UNARY_FP8E5M2(log10, __log10f)
+
+UNARY_FP4E2M1(neg,   _NEG)
+UNARY_FP4E2M1(recip, _RECIP_F)
+UNARY_FP4E2M1(exp,   __expf)
+UNARY_FP4E2M1(ln,    __logf)
+UNARY_FP4E2M1(log1p, log1pf)
+UNARY_FP4E2M1(sin,   __sinf)
+UNARY_FP4E2M1(cos,   __cosf)
+UNARY_FP4E2M1(tan,   tanf)
+UNARY_FP4E2M1(tanh,  tanhf)
+UNARY_FP4E2M1(sqrt,  sqrtf)
+UNARY_FP4E2M1(abs,   fabsf)
+UNARY_FP4E2M1(ceil,  ceilf)
+UNARY_FP4E2M1(floor, floorf)
+UNARY_FP4E2M1(round, roundf)
+UNARY_FP4E2M1(erf,   erf_approx_f32)
+UNARY_FP4E2M1(asin,  asinf)
+UNARY_FP4E2M1(acos,  acosf)
+UNARY_FP4E2M1(atan,  atanf)
+UNARY_FP4E2M1(sinh,  sinhf)
+UNARY_FP4E2M1(cosh,  coshf)
+UNARY_FP4E2M1(asinh, asinhf)
+UNARY_FP4E2M1(acosh, acoshf)
+UNARY_FP4E2M1(atanh, atanhf)
+UNARY_FP4E2M1(log2,  __log2f)
+UNARY_FP4E2M1(log10, __log10f)
+
 
 __device__ float sigmoid_f32(float x) { return 1.0f / (1.0f + __expf(-x)); }
 __device__ double sigmoid_f64(double x) { return 1.0 / (1.0 + exp(-x)); }
@@ -126,6 +598,34 @@ UNARY_F32(mish,       mish_f32,       mish_f32)
 UNARY_F32(leaky_relu, leaky_relu_f32, leaky_relu_f32)
 UNARY_F32(elu,        elu_f32,        elu_f32)
 UNARY_F32(hardswish,  hardswish_f32,  hardswish_f32)
+
+UNARY_F16(sigmoid,    sigmoid_f32,    sigmoid_f32)
+UNARY_F16(silu,       silu_f32,       silu_f32)
+UNARY_F16(mish,       mish_f32,       mish_f32)
+UNARY_F16(leaky_relu, leaky_relu_f32, leaky_relu_f32)
+UNARY_F16(elu,        elu_f32,        elu_f32)
+UNARY_F16(hardswish,  hardswish_f32,  hardswish_f32)
+
+UNARY_FP8E4M3(sigmoid,    sigmoid_f32)
+UNARY_FP8E4M3(silu,       silu_f32)
+UNARY_FP8E4M3(mish,       mish_f32)
+UNARY_FP8E4M3(leaky_relu, leaky_relu_f32)
+UNARY_FP8E4M3(elu,        elu_f32)
+UNARY_FP8E4M3(hardswish,  hardswish_f32)
+
+UNARY_FP8E5M2(sigmoid,    sigmoid_f32)
+UNARY_FP8E5M2(silu,       silu_f32)
+UNARY_FP8E5M2(mish,       mish_f32)
+UNARY_FP8E5M2(leaky_relu, leaky_relu_f32)
+UNARY_FP8E5M2(elu,        elu_f32)
+UNARY_FP8E5M2(hardswish,  hardswish_f32)
+
+UNARY_FP4E2M1(sigmoid,    sigmoid_f32)
+UNARY_FP4E2M1(silu,       silu_f32)
+UNARY_FP4E2M1(mish,       mish_f32)
+UNARY_FP4E2M1(leaky_relu, leaky_relu_f32)
+UNARY_FP4E2M1(elu,        elu_f32)
+UNARY_FP4E2M1(hardswish,  hardswish_f32)
 
 // --- Backward activation kernels (binary: grad, input -> grad_input) ---
 extern "C" __global__ __launch_bounds__(256) void k_relu_bwd_f32(const float* __restrict__ grad, const float* __restrict__ input, float* __restrict__ out, unsigned n) {
@@ -172,10 +672,70 @@ extern "C" __global__ __launch_bounds__(256) void k_abs_bwd_f32(const float* __r
     } else { for (unsigned j = i; j < n && j < i+4; j++) { float gv = __ldg(&grad[j]); float xv = __ldg(&input[j]); out[j] = xv > 0.f ? gv : xv < 0.f ? -gv : 0.f; } }
 }
 
+extern "C" __global__ __launch_bounds__(256) void k_relu_bwd_f16(const __half* __restrict__ grad, const __half* __restrict__ input, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float g = from_half(grad[i]);
+        float x = from_half(input[i]);
+        out[i] = to_half(x > 0.0f ? g : 0.0f);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_leaky_relu_bwd_f16(const __half* __restrict__ grad, const __half* __restrict__ input, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float g = from_half(grad[i]);
+        float x = from_half(input[i]);
+        out[i] = to_half(x > 0.0f ? g : 0.01f * g);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_elu_bwd_f16(const __half* __restrict__ grad, const __half* __restrict__ input, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float g = from_half(grad[i]);
+        float x = from_half(input[i]);
+        out[i] = to_half(x > 0.0f ? g : g * __expf(x));
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_gelu_bwd_f16(const __half* __restrict__ grad, const __half* __restrict__ input, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float g = from_half(grad[i]);
+        float x = from_half(input[i]);
+        float cdf = 0.5f * (1.0f + erf_approx_f32(x * 0.7071067811865476f));
+        float pdf = __expf(-0.5f * x * x) * 0.3989422804014327f;
+        out[i] = to_half(g * (cdf + x * pdf));
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_abs_bwd_f16(const __half* __restrict__ grad, const __half* __restrict__ input, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float g = from_half(grad[i]);
+        float x = from_half(input[i]);
+        float v = x > 0.0f ? g : x < 0.0f ? -g : 0.0f;
+        out[i] = to_half(v);
+    }
+}
+
 BINARY_F32(add,  +)
 BINARY_F32(sub,  -)
 BINARY_F32(emul, *)
 BINARY_F32(ediv, /)
+BINARY_F16(add,  +)
+BINARY_F16(sub,  -)
+BINARY_F16(emul, *)
+BINARY_F16(ediv, /)
+BINARY_FP8E4M3(add,  +)
+BINARY_FP8E4M3(sub,  -)
+BINARY_FP8E4M3(emul, *)
+BINARY_FP8E4M3(ediv, /)
+BINARY_FP8E5M2(add,  +)
+BINARY_FP8E5M2(sub,  -)
+BINARY_FP8E5M2(emul, *)
+BINARY_FP8E5M2(ediv, /)
+BINARY_FP4E2M1(add,  +)
+BINARY_FP4E2M1(sub,  -)
+BINARY_FP4E2M1(emul, *)
+BINARY_FP4E2M1(ediv, /)
 
 extern "C" __global__ __launch_bounds__(256) void k_atan2_f32(const float* __restrict__ a, const float* __restrict__ b, float* __restrict__ out, unsigned n) {
     unsigned i4 = VEC4_IDX, i = i4 * 4;
@@ -184,6 +744,42 @@ extern "C" __global__ __launch_bounds__(256) void k_atan2_f32(const float* __res
         float4 vo = make_float4(atan2f(va.x, vb.x), atan2f(va.y, vb.y), atan2f(va.z, vb.z), atan2f(va.w, vb.w));
         STORE_F4(out, i4, vo);
     } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = atan2f(__ldg(&a[j]), __ldg(&b[j])); }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_atan2_f16(const __half* __restrict__ a, const __half* __restrict__ b, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float ax = from_half(a[i]);
+        float bx = from_half(b[i]);
+        out[i] = to_half(atan2f(ax, bx));
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_atan2_fp8e4m3(const uint8_t* __restrict__ a, const uint8_t* __restrict__ b, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float ax = fp8e4m3_to_f32(a[i]);
+        float bx = fp8e4m3_to_f32(b[i]);
+        out[i] = fp8e4m3_from_f32(atan2f(ax, bx));
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_atan2_fp8e5m2(const uint8_t* __restrict__ a, const uint8_t* __restrict__ b, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float ax = fp8e5m2_to_f32(a[i]);
+        float bx = fp8e5m2_to_f32(b[i]);
+        out[i] = fp8e5m2_from_f32(atan2f(ax, bx));
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_atan2_fp4e2m1(const uint8_t* __restrict__ a, const uint8_t* __restrict__ b, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float ax = fp4e2m1_to_f32(a[i]);
+        float bx = fp4e2m1_to_f32(b[i]);
+        out[i] = fp4e2m1_from_f32(atan2f(ax, bx));
+    }
 }
 
 
@@ -196,6 +792,43 @@ extern "C" __global__ __launch_bounds__(256) void k_axpy_f32(float* __restrict__
     } else { for (unsigned j = i; j < n && j < i+4; j++) y[j] += alpha * __ldg(&x[j]); }
 }
 
+extern "C" __global__ __launch_bounds__(256) void k_axpy_f16(__half* __restrict__ y, __half alpha, const __half* __restrict__ x, unsigned n) {
+    unsigned i = THREAD_ID;
+    float a = from_half(alpha);
+    if (i < n) {
+        float yv = from_half(y[i]);
+        float xv = from_half(x[i]);
+        y[i] = to_half(yv + a * xv);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_axpy_fp8e4m3(uint8_t* __restrict__ y, uint8_t alpha, const uint8_t* __restrict__ x, unsigned n) {
+    unsigned i = THREAD_ID;
+    float a = fp8e4m3_to_f32(alpha);
+    if (i < n) {
+        float yv = fp8e4m3_to_f32(y[i]);
+        float xv = fp8e4m3_to_f32(x[i]);
+        y[i] = fp8e4m3_from_f32(yv + a * xv);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_axpy_fp8e5m2(uint8_t* __restrict__ y, uint8_t alpha, const uint8_t* __restrict__ x, unsigned n) {
+    unsigned i = THREAD_ID;
+    float a = fp8e5m2_to_f32(alpha);
+    if (i < n) {
+        float yv = fp8e5m2_to_f32(y[i]);
+        float xv = fp8e5m2_to_f32(x[i]);
+        y[i] = fp8e5m2_from_f32(yv + a * xv);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_axpy_fp4e2m1(uint8_t* __restrict__ y, uint8_t alpha, const uint8_t* __restrict__ x, unsigned n) {
+    unsigned i = THREAD_ID;
+    float a = fp4e2m1_to_f32(alpha);
+    if (i < n) {
+        float yv = fp4e2m1_to_f32(y[i]);
+        float xv = fp4e2m1_to_f32(x[i]);
+        y[i] = fp4e2m1_from_f32(yv + a * xv);
+    }
+}
+
 extern "C" __global__ __launch_bounds__(256) void k_scale_f32(const float* __restrict__ in, float s, float* __restrict__ out, unsigned n) {
     unsigned i4 = VEC4_IDX, i = i4 * 4;
     if (i + 3 < n) {
@@ -203,6 +836,38 @@ extern "C" __global__ __launch_bounds__(256) void k_scale_f32(const float* __res
         v.x *= s; v.y *= s; v.z *= s; v.w *= s;
         STORE_F4(out, i4, v);
     } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = __ldg(&in[j])*s; }
+}
+extern "C" __global__ __launch_bounds__(256) void k_scale_f16(const __half* __restrict__ in, __half s, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    float sf = from_half(s);
+    if (i < n) {
+        float v = from_half(in[i]);
+        out[i] = to_half(v * sf);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_scale_fp8e4m3(const uint8_t* __restrict__ in, uint8_t s, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    float sf = fp8e4m3_to_f32(s);
+    if (i < n) {
+        float v = fp8e4m3_to_f32(in[i]);
+        out[i] = fp8e4m3_from_f32(v * sf);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_scale_fp8e5m2(const uint8_t* __restrict__ in, uint8_t s, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    float sf = fp8e5m2_to_f32(s);
+    if (i < n) {
+        float v = fp8e5m2_to_f32(in[i]);
+        out[i] = fp8e5m2_from_f32(v * sf);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_scale_fp4e2m1(const uint8_t* __restrict__ in, uint8_t s, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    float sf = fp4e2m1_to_f32(s);
+    if (i < n) {
+        float v = fp4e2m1_to_f32(in[i]);
+        out[i] = fp4e2m1_from_f32(v * sf);
+    }
 }
 extern "C" __global__ __launch_bounds__(256) void k_powf_f32(const float* __restrict__ in, float p, float* __restrict__ out, unsigned n) {
     unsigned i4 = VEC4_IDX, i = i4 * 4;
@@ -213,6 +878,38 @@ extern "C" __global__ __launch_bounds__(256) void k_powf_f32(const float* __rest
         STORE_F4(out, i4, v);
     } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = powf(__ldg(&in[j]), p); }
 }
+extern "C" __global__ __launch_bounds__(256) void k_powf_f16(const __half* __restrict__ in, __half p, __half* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    float pf = from_half(p);
+    if (i < n) {
+        float v = from_half(in[i]);
+        out[i] = to_half(powf(v, pf));
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_powf_fp8e4m3(const uint8_t* __restrict__ in, uint8_t p, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    float pf = fp8e4m3_to_f32(p);
+    if (i < n) {
+        float v = fp8e4m3_to_f32(in[i]);
+        out[i] = fp8e4m3_from_f32(powf(v, pf));
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_powf_fp8e5m2(const uint8_t* __restrict__ in, uint8_t p, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    float pf = fp8e5m2_to_f32(p);
+    if (i < n) {
+        float v = fp8e5m2_to_f32(in[i]);
+        out[i] = fp8e5m2_from_f32(powf(v, pf));
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_powf_fp4e2m1(const uint8_t* __restrict__ in, uint8_t p, uint8_t* __restrict__ out, unsigned n) {
+    unsigned i = THREAD_ID;
+    float pf = fp4e2m1_to_f32(p);
+    if (i < n) {
+        float v = fp4e2m1_to_f32(in[i]);
+        out[i] = fp4e2m1_from_f32(powf(v, pf));
+    }
+}
 extern "C" __global__ __launch_bounds__(256) void k_fill_f32(float* __restrict__ out, float val, unsigned n) {
     unsigned i4 = VEC4_IDX, i = i4 * 4;
     if (i + 3 < n) {
@@ -220,9 +917,69 @@ extern "C" __global__ __launch_bounds__(256) void k_fill_f32(float* __restrict__
         STORE_F4(out, i4, v);
     } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = val; }
 }
+extern "C" __global__ __launch_bounds__(256) void k_fill_f16(__half* __restrict__ out, __half val, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        out[i] = val;
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_fill_fp8e4m3(uint8_t* __restrict__ out, uint8_t val, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        out[i] = val;
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_fill_fp8e5m2(uint8_t* __restrict__ out, uint8_t val, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        out[i] = val;
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_fill_fp4e2m1(uint8_t* __restrict__ out, uint8_t val, unsigned n) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        out[i] = val;
+    }
+}
 
 
 extern "C" __global__ void k_transpose_f32(const float* in, float* out,
+                                            unsigned rows, unsigned cols) {
+    unsigned i = THREAD_ID;
+    if (i < rows * cols) {
+        unsigned r = i / cols;
+        unsigned c = i % cols;
+        out[c * rows + r] = in[r * cols + c];
+    }
+}
+extern "C" __global__ void k_transpose_f16(const __half* in, __half* out,
+                                            unsigned rows, unsigned cols) {
+    unsigned i = THREAD_ID;
+    if (i < rows * cols) {
+        unsigned r = i / cols;
+        unsigned c = i % cols;
+        out[c * rows + r] = in[r * cols + c];
+    }
+}
+extern "C" __global__ void k_transpose_fp8e4m3(const uint8_t* in, uint8_t* out,
+                                            unsigned rows, unsigned cols) {
+    unsigned i = THREAD_ID;
+    if (i < rows * cols) {
+        unsigned r = i / cols;
+        unsigned c = i % cols;
+        out[c * rows + r] = in[r * cols + c];
+    }
+}
+extern "C" __global__ void k_transpose_fp8e5m2(const uint8_t* in, uint8_t* out,
+                                            unsigned rows, unsigned cols) {
+    unsigned i = THREAD_ID;
+    if (i < rows * cols) {
+        unsigned r = i / cols;
+        unsigned c = i % cols;
+        out[c * rows + r] = in[r * cols + c];
+    }
+}
+extern "C" __global__ void k_transpose_fp4e2m1(const uint8_t* in, uint8_t* out,
                                             unsigned rows, unsigned cols) {
     unsigned i = THREAD_ID;
     if (i < rows * cols) {
@@ -249,6 +1006,83 @@ extern "C" __global__ void k_matmul_f32(const float* A, const float* B, float* C
         __syncthreads();
     }
     if (row < M && col < N) C[row * N + col] = acc;
+}
+extern "C" __global__ void k_matmul_f16(const __half* A, const __half* B, __half* C,
+                                         unsigned M, unsigned K, unsigned N) {
+    __shared__ float sA[TILE][TILE], sB[TILE][TILE];
+    unsigned row = blockIdx.y * TILE + threadIdx.y;
+    unsigned col = blockIdx.x * TILE + threadIdx.x;
+    float acc = 0.0f;
+    for (unsigned t = 0; t < (K + TILE - 1) / TILE; t++) {
+        unsigned ak = t * TILE + threadIdx.x;
+        unsigned bk = t * TILE + threadIdx.y;
+        sA[threadIdx.y][threadIdx.x] = (row < M && ak < K) ? from_half(A[row * K + ak]) : 0.0f;
+        sB[threadIdx.y][threadIdx.x] = (bk < K && col < N) ? from_half(B[bk * N + col]) : 0.0f;
+        __syncthreads();
+        for (unsigned k = 0; k < TILE; k++) acc += sA[threadIdx.y][k] * sB[k][threadIdx.x];
+        __syncthreads();
+    }
+    if (row < M && col < N) C[row * N + col] = to_half(acc);
+}
+
+extern "C" __global__ void k_matmul_fp8e4m3(const uint8_t* A, const uint8_t* B, uint8_t* C,
+                                         unsigned M, unsigned K, unsigned N) {
+    __shared__ float sA[TILE][TILE], sB[TILE][TILE];
+    unsigned row = blockIdx.y * TILE + threadIdx.y;
+    unsigned col = blockIdx.x * TILE + threadIdx.x;
+    float acc = 0.0f;
+    for (unsigned t = 0; t < (K + TILE - 1) / TILE; t++) {
+        unsigned ak = t * TILE + threadIdx.x;
+        unsigned bk = t * TILE + threadIdx.y;
+        sA[threadIdx.y][threadIdx.x] =
+            (row < M && ak < K) ? fp8e4m3_to_f32(A[row * K + ak]) : 0.0f;
+        sB[threadIdx.y][threadIdx.x] =
+            (bk < K && col < N) ? fp8e4m3_to_f32(B[bk * N + col]) : 0.0f;
+        __syncthreads();
+        for (unsigned k = 0; k < TILE; k++) acc += sA[threadIdx.y][k] * sB[k][threadIdx.x];
+        __syncthreads();
+    }
+    if (row < M && col < N) C[row * N + col] = fp8e4m3_from_f32(acc);
+}
+
+extern "C" __global__ void k_matmul_fp8e5m2(const uint8_t* A, const uint8_t* B, uint8_t* C,
+                                         unsigned M, unsigned K, unsigned N) {
+    __shared__ float sA[TILE][TILE], sB[TILE][TILE];
+    unsigned row = blockIdx.y * TILE + threadIdx.y;
+    unsigned col = blockIdx.x * TILE + threadIdx.x;
+    float acc = 0.0f;
+    for (unsigned t = 0; t < (K + TILE - 1) / TILE; t++) {
+        unsigned ak = t * TILE + threadIdx.x;
+        unsigned bk = t * TILE + threadIdx.y;
+        sA[threadIdx.y][threadIdx.x] =
+            (row < M && ak < K) ? fp8e5m2_to_f32(A[row * K + ak]) : 0.0f;
+        sB[threadIdx.y][threadIdx.x] =
+            (bk < K && col < N) ? fp8e5m2_to_f32(B[bk * N + col]) : 0.0f;
+        __syncthreads();
+        for (unsigned k = 0; k < TILE; k++) acc += sA[threadIdx.y][k] * sB[k][threadIdx.x];
+        __syncthreads();
+    }
+    if (row < M && col < N) C[row * N + col] = fp8e5m2_from_f32(acc);
+}
+
+extern "C" __global__ void k_matmul_fp4e2m1(const uint8_t* A, const uint8_t* B, uint8_t* C,
+                                         unsigned M, unsigned K, unsigned N) {
+    __shared__ float sA[TILE][TILE], sB[TILE][TILE];
+    unsigned row = blockIdx.y * TILE + threadIdx.y;
+    unsigned col = blockIdx.x * TILE + threadIdx.x;
+    float acc = 0.0f;
+    for (unsigned t = 0; t < (K + TILE - 1) / TILE; t++) {
+        unsigned ak = t * TILE + threadIdx.x;
+        unsigned bk = t * TILE + threadIdx.y;
+        sA[threadIdx.y][threadIdx.x] =
+            (row < M && ak < K) ? fp4e2m1_to_f32(A[row * K + ak]) : 0.0f;
+        sB[threadIdx.y][threadIdx.x] =
+            (bk < K && col < N) ? fp4e2m1_to_f32(B[bk * N + col]) : 0.0f;
+        __syncthreads();
+        for (unsigned k = 0; k < TILE; k++) acc += sA[threadIdx.y][k] * sB[k][threadIdx.x];
+        __syncthreads();
+    }
+    if (row < M && col < N) C[row * N + col] = fp4e2m1_from_f32(acc);
 }
 
 
@@ -470,6 +1304,302 @@ extern "C" __global__ void k_min_f32(const float* __restrict__ in,
         if (tid == 0) out[0] = val;
     }
 }
+
+extern "C" __global__ void __launch_bounds__(256) k_sum_f16(
+    const __half* __restrict__ in,
+    float* __restrict__ partial,
+    unsigned n,
+    __half* __restrict__ out) {
+    float acc = 0.0f;
+    unsigned tid = threadIdx.x;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    if (blockIdx.x == 0 && tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        *counter = 0u;
+    }
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += grid_stride) {
+        acc += from_half(in[i]);
+    }
+    acc = warp_reduce_sum_f32(acc);
+    __shared__ float sdata_sum[32];
+    if (tid % 32 == 0) sdata_sum[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata_sum[tid] : 0.0f;
+        acc = warp_reduce_sum_f32(acc);
+    }
+    if (tid == 0) partial[blockIdx.x] = acc;
+
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        unsigned ticket = atomicInc(counter, gridDim.x);
+        is_last = (ticket == gridDim.x - 1);
+    }
+    __syncthreads();
+    if (is_last) {
+        float val = (tid < gridDim.x) ? partial[tid] : 0.0f;
+        val = warp_reduce_sum_f32(val);
+        if (blockDim.x > 32) {
+            if (tid % 32 == 0) sdata_sum[tid / 32] = val;
+            __syncthreads();
+            if (tid < 32) {
+                val = (tid < (blockDim.x + 31) / 32) ? sdata_sum[tid] : 0.0f;
+                val = warp_reduce_sum_f32(val);
+            }
+        }
+        if (tid == 0) out[0] = to_half(val);
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(256) k_max_f16(
+    const __half* __restrict__ in,
+    float* __restrict__ partial,
+    unsigned n,
+    __half* __restrict__ out) {
+    float neg_inf = -__int_as_float(0x7f800000);
+    float acc = neg_inf;
+    unsigned tid = threadIdx.x;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    if (blockIdx.x == 0 && tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        *counter = 0u;
+    }
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += grid_stride) {
+        acc = fmaxf(acc, from_half(in[i]));
+    }
+    acc = warp_reduce_max_f32(acc);
+    __shared__ float sdata_max[32];
+    if (tid % 32 == 0) sdata_max[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata_max[tid] : neg_inf;
+        acc = warp_reduce_max_f32(acc);
+    }
+    if (tid == 0) partial[blockIdx.x] = acc;
+
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        unsigned ticket = atomicInc(counter, gridDim.x);
+        is_last = (ticket == gridDim.x - 1);
+    }
+    __syncthreads();
+    if (is_last) {
+        float val = (tid < gridDim.x) ? partial[tid] : neg_inf;
+        val = warp_reduce_max_f32(val);
+        if (blockDim.x > 32) {
+            if (tid % 32 == 0) sdata_max[tid / 32] = val;
+            __syncthreads();
+            if (tid < 32) {
+                val = (tid < (blockDim.x + 31) / 32) ? sdata_max[tid] : neg_inf;
+                val = warp_reduce_max_f32(val);
+            }
+        }
+        if (tid == 0) out[0] = to_half(val);
+    }
+}
+
+extern "C" __global__ void k_min_f16(const __half* __restrict__ in,
+                                      float* __restrict__ partial,
+                                      unsigned n,
+                                      __half* __restrict__ out) {
+    float pos_inf = __int_as_float(0x7f800000);
+    float acc = pos_inf;
+    unsigned tid = threadIdx.x;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    if (blockIdx.x == 0 && tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        *counter = 0u;
+    }
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += grid_stride) {
+        acc = fminf(acc, from_half(in[i]));
+    }
+    acc = warp_reduce_min_f32(acc);
+    __shared__ float sdata_min[32];
+    if (tid % 32 == 0) sdata_min[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata_min[tid] : pos_inf;
+        acc = warp_reduce_min_f32(acc);
+    }
+    if (tid == 0) partial[blockIdx.x] = acc;
+
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) {
+        unsigned* counter = (unsigned*)&partial[gridDim.x];
+        unsigned ticket = atomicInc(counter, gridDim.x);
+        is_last = (ticket == gridDim.x - 1);
+    }
+    __syncthreads();
+    if (is_last) {
+        float val = (tid < gridDim.x) ? partial[tid] : pos_inf;
+        val = warp_reduce_min_f32(val);
+        if (blockDim.x > 32) {
+            if (tid % 32 == 0) sdata_min[tid / 32] = val;
+            __syncthreads();
+            if (tid < 32) {
+                val = (tid < (blockDim.x + 31) / 32) ? sdata_min[tid] : pos_inf;
+                val = warp_reduce_min_f32(val);
+            }
+        }
+        if (tid == 0) out[0] = to_half(val);
+    }
+}
+
+#define REDUCE_FP8_SUM(name, to_f32, from_f32) \
+extern "C" __global__ void __launch_bounds__(256) k_sum_##name( \
+    const uint8_t* __restrict__ in, float* __restrict__ partial, unsigned n, uint8_t* __restrict__ out) { \
+    float acc = 0.0f; \
+    unsigned tid = threadIdx.x; \
+    unsigned grid_stride = blockDim.x * gridDim.x; \
+    if (blockIdx.x == 0 && tid == 0) { \
+        unsigned* counter = (unsigned*)&partial[gridDim.x]; \
+        *counter = 0u; \
+    } \
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += grid_stride) { \
+        acc += to_f32(in[i]); \
+    } \
+    acc = warp_reduce_sum_f32(acc); \
+    __shared__ float sdata_sum[32]; \
+    if (tid % 32 == 0) sdata_sum[tid / 32] = acc; \
+    __syncthreads(); \
+    if (tid < 32) { \
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata_sum[tid] : 0.0f; \
+        acc = warp_reduce_sum_f32(acc); \
+    } \
+    if (tid == 0) partial[blockIdx.x] = acc; \
+    __threadfence(); \
+    __shared__ bool is_last; \
+    if (tid == 0) { \
+        unsigned* counter = (unsigned*)&partial[gridDim.x]; \
+        unsigned ticket = atomicInc(counter, gridDim.x); \
+        is_last = (ticket == gridDim.x - 1); \
+    } \
+    __syncthreads(); \
+    if (is_last) { \
+        float val = (tid < gridDim.x) ? partial[tid] : 0.0f; \
+        val = warp_reduce_sum_f32(val); \
+        if (blockDim.x > 32) { \
+            if (tid % 32 == 0) sdata_sum[tid / 32] = val; \
+            __syncthreads(); \
+            if (tid < 32) { \
+                val = (tid < (blockDim.x + 31) / 32) ? sdata_sum[tid] : 0.0f; \
+                val = warp_reduce_sum_f32(val); \
+            } \
+        } \
+        if (tid == 0) out[0] = from_f32(val); \
+    } \
+}
+
+#define REDUCE_FP8_MAX(name, to_f32, from_f32) \
+extern "C" __global__ void __launch_bounds__(256) k_max_##name( \
+    const uint8_t* __restrict__ in, float* __restrict__ partial, unsigned n, uint8_t* __restrict__ out) { \
+    float neg_inf = -__int_as_float(0x7f800000); \
+    float acc = neg_inf; \
+    unsigned tid = threadIdx.x; \
+    unsigned grid_stride = blockDim.x * gridDim.x; \
+    if (blockIdx.x == 0 && tid == 0) { \
+        unsigned* counter = (unsigned*)&partial[gridDim.x]; \
+        *counter = 0u; \
+    } \
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += grid_stride) { \
+        acc = fmaxf(acc, to_f32(in[i])); \
+    } \
+    acc = warp_reduce_max_f32(acc); \
+    __shared__ float sdata_max[32]; \
+    if (tid % 32 == 0) sdata_max[tid / 32] = acc; \
+    __syncthreads(); \
+    if (tid < 32) { \
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata_max[tid] : neg_inf; \
+        acc = warp_reduce_max_f32(acc); \
+    } \
+    if (tid == 0) partial[blockIdx.x] = acc; \
+    __threadfence(); \
+    __shared__ bool is_last; \
+    if (tid == 0) { \
+        unsigned* counter = (unsigned*)&partial[gridDim.x]; \
+        unsigned ticket = atomicInc(counter, gridDim.x); \
+        is_last = (ticket == gridDim.x - 1); \
+    } \
+    __syncthreads(); \
+    if (is_last) { \
+        float val = (tid < gridDim.x) ? partial[tid] : neg_inf; \
+        val = warp_reduce_max_f32(val); \
+        if (blockDim.x > 32) { \
+            if (tid % 32 == 0) sdata_max[tid / 32] = val; \
+            __syncthreads(); \
+            if (tid < 32) { \
+                val = (tid < (blockDim.x + 31) / 32) ? sdata_max[tid] : neg_inf; \
+                val = warp_reduce_max_f32(val); \
+            } \
+        } \
+        if (tid == 0) out[0] = from_f32(val); \
+    } \
+}
+
+#define REDUCE_FP8_MIN(name, to_f32, from_f32) \
+extern "C" __global__ void __launch_bounds__(256) k_min_##name( \
+    const uint8_t* __restrict__ in, float* __restrict__ partial, unsigned n, uint8_t* __restrict__ out) { \
+    float pos_inf = __int_as_float(0x7f800000); \
+    float acc = pos_inf; \
+    unsigned tid = threadIdx.x; \
+    unsigned grid_stride = blockDim.x * gridDim.x; \
+    if (blockIdx.x == 0 && tid == 0) { \
+        unsigned* counter = (unsigned*)&partial[gridDim.x]; \
+        *counter = 0u; \
+    } \
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += grid_stride) { \
+        acc = fminf(acc, to_f32(in[i])); \
+    } \
+    acc = warp_reduce_min_f32(acc); \
+    __shared__ float sdata_min[32]; \
+    if (tid % 32 == 0) sdata_min[tid / 32] = acc; \
+    __syncthreads(); \
+    if (tid < 32) { \
+        acc = (tid < (blockDim.x + 31) / 32) ? sdata_min[tid] : pos_inf; \
+        acc = warp_reduce_min_f32(acc); \
+    } \
+    if (tid == 0) partial[blockIdx.x] = acc; \
+    __threadfence(); \
+    __shared__ bool is_last; \
+    if (tid == 0) { \
+        unsigned* counter = (unsigned*)&partial[gridDim.x]; \
+        unsigned ticket = atomicInc(counter, gridDim.x); \
+        is_last = (ticket == gridDim.x - 1); \
+    } \
+    __syncthreads(); \
+    if (is_last) { \
+        float val = (tid < gridDim.x) ? partial[tid] : pos_inf; \
+        val = warp_reduce_min_f32(val); \
+        if (blockDim.x > 32) { \
+            if (tid % 32 == 0) sdata_min[tid / 32] = val; \
+            __syncthreads(); \
+            if (tid < 32) { \
+                val = (tid < (blockDim.x + 31) / 32) ? sdata_min[tid] : pos_inf; \
+                val = warp_reduce_min_f32(val); \
+            } \
+        } \
+        if (tid == 0) out[0] = from_f32(val); \
+    } \
+}
+
+REDUCE_FP8_SUM(fp8e4m3, fp8e4m3_to_f32, fp8e4m3_from_f32)
+REDUCE_FP8_MAX(fp8e4m3, fp8e4m3_to_f32, fp8e4m3_from_f32)
+REDUCE_FP8_MIN(fp8e4m3, fp8e4m3_to_f32, fp8e4m3_from_f32)
+REDUCE_FP8_SUM(fp8e5m2, fp8e5m2_to_f32, fp8e5m2_from_f32)
+REDUCE_FP8_MAX(fp8e5m2, fp8e5m2_to_f32, fp8e5m2_from_f32)
+REDUCE_FP8_MIN(fp8e5m2, fp8e5m2_to_f32, fp8e5m2_from_f32)
+REDUCE_FP8_SUM(fp4e2m1, fp4e2m1_to_f32, fp4e2m1_from_f32)
+REDUCE_FP8_MAX(fp4e2m1, fp4e2m1_to_f32, fp4e2m1_from_f32)
+REDUCE_FP8_MIN(fp4e2m1, fp4e2m1_to_f32, fp4e2m1_from_f32)
+
+#undef REDUCE_FP8_SUM
+#undef REDUCE_FP8_MAX
+#undef REDUCE_FP8_MIN
 
 
 UNARY_F64(neg,   _NEG)
@@ -782,6 +1912,43 @@ extern "C" __global__ __launch_bounds__(256) void k_expand_f64(double* __restric
     }
 }
 
+extern "C" __global__ __launch_bounds__(256) void k_expand_f16(__half* __restrict__ out, const __half* __restrict__ src, unsigned src_rows, unsigned src_cols, unsigned dst_rows, unsigned dst_cols) {
+    unsigned i = THREAD_ID;
+    unsigned n = dst_rows * dst_cols;
+    if (i < n) {
+        unsigned r = i / dst_cols, c = i % dst_cols;
+        unsigned sr = src_rows == 1 ? 0 : r, sc = src_cols == 1 ? 0 : c;
+        out[i] = src[sr * src_cols + sc];
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_expand_fp8e4m3(uint8_t* __restrict__ out, const uint8_t* __restrict__ src, unsigned src_rows, unsigned src_cols, unsigned dst_rows, unsigned dst_cols) {
+    unsigned i = THREAD_ID;
+    unsigned n = dst_rows * dst_cols;
+    if (i < n) {
+        unsigned r = i / dst_cols, c = i % dst_cols;
+        unsigned sr = src_rows == 1 ? 0 : r, sc = src_cols == 1 ? 0 : c;
+        out[i] = src[sr * src_cols + sc];
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_expand_fp8e5m2(uint8_t* __restrict__ out, const uint8_t* __restrict__ src, unsigned src_rows, unsigned src_cols, unsigned dst_rows, unsigned dst_cols) {
+    unsigned i = THREAD_ID;
+    unsigned n = dst_rows * dst_cols;
+    if (i < n) {
+        unsigned r = i / dst_cols, c = i % dst_cols;
+        unsigned sr = src_rows == 1 ? 0 : r, sc = src_cols == 1 ? 0 : c;
+        out[i] = src[sr * src_cols + sc];
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_expand_fp4e2m1(uint8_t* __restrict__ out, const uint8_t* __restrict__ src, unsigned src_rows, unsigned src_cols, unsigned dst_rows, unsigned dst_cols) {
+    unsigned i = THREAD_ID;
+    unsigned n = dst_rows * dst_cols;
+    if (i < n) {
+        unsigned r = i / dst_cols, c = i % dst_cols;
+        unsigned sr = src_rows == 1 ? 0 : r, sc = src_cols == 1 ? 0 : c;
+        out[i] = src[sr * src_cols + sc];
+    }
+}
+
 // --- Fused MSE sum forward: sum((pred-target)^2) with last-block aggregation ---
 extern "C" __global__ __launch_bounds__(256) void k_mse_sum_fwd_f32(
     const float* __restrict__ pred, const float* __restrict__ target,
@@ -817,6 +1984,126 @@ extern "C" __global__ __launch_bounds__(256) void k_mse_sum_fwd_f32(
         val = warp_reduce_sum_f32(val);
         if (blockDim.x > 32) { if (tid % 32 == 0) sdata[tid / 32] = val; __syncthreads(); if (tid < 32) { val = (tid < (blockDim.x + 31) / 32) ? sdata[tid] : 0.0f; val = warp_reduce_sum_f32(val); } }
         if (tid == 0) out[0] = val;
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_mse_sum_fwd_f16(
+    const __half* __restrict__ pred, const __half* __restrict__ target,
+    float* __restrict__ partial, unsigned n, __half* __restrict__ out
+) {
+    float acc = 0.0f;
+    unsigned tid = threadIdx.x;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    if (blockIdx.x == 0 && tid == 0) { unsigned* ctr = (unsigned*)&partial[gridDim.x]; *ctr = 0u; }
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += grid_stride) {
+        float d = from_half(pred[i]) - from_half(target[i]);
+        acc += d * d;
+    }
+    acc = warp_reduce_sum_f32(acc);
+    __shared__ float sdata_f16[32];
+    if (tid % 32 == 0) sdata_f16[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) { acc = (tid < (blockDim.x + 31) / 32) ? sdata_f16[tid] : 0.0f; acc = warp_reduce_sum_f32(acc); }
+    if (tid == 0) partial[blockIdx.x] = acc;
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) { unsigned* ctr = (unsigned*)&partial[gridDim.x]; unsigned ticket = atomicInc(ctr, gridDim.x); is_last = (ticket == gridDim.x - 1); }
+    __syncthreads();
+    if (is_last) {
+        float val = (tid < gridDim.x) ? partial[tid] : 0.0f;
+        val = warp_reduce_sum_f32(val);
+        if (blockDim.x > 32) { if (tid % 32 == 0) sdata_f16[tid / 32] = val; __syncthreads(); if (tid < 32) { val = (tid < (blockDim.x + 31) / 32) ? sdata_f16[tid] : 0.0f; val = warp_reduce_sum_f32(val); } }
+        if (tid == 0) out[0] = to_half(val);
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_mse_sum_fwd_fp8e4m3(
+    const uint8_t* __restrict__ pred, const uint8_t* __restrict__ target,
+    float* __restrict__ partial, unsigned n, uint8_t* __restrict__ out
+) {
+    float acc = 0.0f;
+    unsigned tid = threadIdx.x;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    if (blockIdx.x == 0 && tid == 0) { unsigned* ctr = (unsigned*)&partial[gridDim.x]; *ctr = 0u; }
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += grid_stride) {
+        float d = fp8e4m3_to_f32(pred[i]) - fp8e4m3_to_f32(target[i]);
+        acc += d * d;
+    }
+    acc = warp_reduce_sum_f32(acc);
+    __shared__ float sdata_fp8[32];
+    if (tid % 32 == 0) sdata_fp8[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) { acc = (tid < (blockDim.x + 31) / 32) ? sdata_fp8[tid] : 0.0f; acc = warp_reduce_sum_f32(acc); }
+    if (tid == 0) partial[blockIdx.x] = acc;
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) { unsigned* ctr = (unsigned*)&partial[gridDim.x]; unsigned ticket = atomicInc(ctr, gridDim.x); is_last = (ticket == gridDim.x - 1); }
+    __syncthreads();
+    if (is_last) {
+        float val = (tid < gridDim.x) ? partial[tid] : 0.0f;
+        val = warp_reduce_sum_f32(val);
+        if (blockDim.x > 32) { if (tid % 32 == 0) sdata_fp8[tid / 32] = val; __syncthreads(); if (tid < 32) { val = (tid < (blockDim.x + 31) / 32) ? sdata_fp8[tid] : 0.0f; val = warp_reduce_sum_f32(val); } }
+        if (tid == 0) out[0] = fp8e4m3_from_f32(val);
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_mse_sum_fwd_fp8e5m2(
+    const uint8_t* __restrict__ pred, const uint8_t* __restrict__ target,
+    float* __restrict__ partial, unsigned n, uint8_t* __restrict__ out
+) {
+    float acc = 0.0f;
+    unsigned tid = threadIdx.x;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    if (blockIdx.x == 0 && tid == 0) { unsigned* ctr = (unsigned*)&partial[gridDim.x]; *ctr = 0u; }
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += grid_stride) {
+        float d = fp8e5m2_to_f32(pred[i]) - fp8e5m2_to_f32(target[i]);
+        acc += d * d;
+    }
+    acc = warp_reduce_sum_f32(acc);
+    __shared__ float sdata_fp8[32];
+    if (tid % 32 == 0) sdata_fp8[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) { acc = (tid < (blockDim.x + 31) / 32) ? sdata_fp8[tid] : 0.0f; acc = warp_reduce_sum_f32(acc); }
+    if (tid == 0) partial[blockIdx.x] = acc;
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) { unsigned* ctr = (unsigned*)&partial[gridDim.x]; unsigned ticket = atomicInc(ctr, gridDim.x); is_last = (ticket == gridDim.x - 1); }
+    __syncthreads();
+    if (is_last) {
+        float val = (tid < gridDim.x) ? partial[tid] : 0.0f;
+        val = warp_reduce_sum_f32(val);
+        if (blockDim.x > 32) { if (tid % 32 == 0) sdata_fp8[tid / 32] = val; __syncthreads(); if (tid < 32) { val = (tid < (blockDim.x + 31) / 32) ? sdata_fp8[tid] : 0.0f; val = warp_reduce_sum_f32(val); } }
+        if (tid == 0) out[0] = fp8e5m2_from_f32(val);
+    }
+}
+
+extern "C" __global__ __launch_bounds__(256) void k_mse_sum_fwd_fp4e2m1(
+    const uint8_t* __restrict__ pred, const uint8_t* __restrict__ target,
+    float* __restrict__ partial, unsigned n, uint8_t* __restrict__ out
+) {
+    float acc = 0.0f;
+    unsigned tid = threadIdx.x;
+    unsigned grid_stride = blockDim.x * gridDim.x;
+    if (blockIdx.x == 0 && tid == 0) { unsigned* ctr = (unsigned*)&partial[gridDim.x]; *ctr = 0u; }
+    for (unsigned i = blockIdx.x * blockDim.x + tid; i < n; i += grid_stride) {
+        float d = fp4e2m1_to_f32(pred[i]) - fp4e2m1_to_f32(target[i]);
+        acc += d * d;
+    }
+    acc = warp_reduce_sum_f32(acc);
+    __shared__ float sdata_fp8[32];
+    if (tid % 32 == 0) sdata_fp8[tid / 32] = acc;
+    __syncthreads();
+    if (tid < 32) { acc = (tid < (blockDim.x + 31) / 32) ? sdata_fp8[tid] : 0.0f; acc = warp_reduce_sum_f32(acc); }
+    if (tid == 0) partial[blockIdx.x] = acc;
+    __threadfence();
+    __shared__ bool is_last;
+    if (tid == 0) { unsigned* ctr = (unsigned*)&partial[gridDim.x]; unsigned ticket = atomicInc(ctr, gridDim.x); is_last = (ticket == gridDim.x - 1); }
+    __syncthreads();
+    if (is_last) {
+        float val = (tid < gridDim.x) ? partial[tid] : 0.0f;
+        val = warp_reduce_sum_f32(val);
+        if (blockDim.x > 32) { if (tid % 32 == 0) sdata_fp8[tid / 32] = val; __syncthreads(); if (tid < 32) { val = (tid < (blockDim.x + 31) / 32) ? sdata_fp8[tid] : 0.0f; val = warp_reduce_sum_f32(val); } }
+        if (tid == 0) out[0] = fp4e2m1_from_f32(val);
     }
 }
 
@@ -863,6 +2150,51 @@ extern "C" __global__ __launch_bounds__(256) void k_mse_sum_bwd_f32(
     } else { for (unsigned j = i; j < n && j < i+4; j++) out[j] = (__ldg(&pred[j]) - __ldg(&target[j])) * two_g; }
 }
 
+extern "C" __global__ __launch_bounds__(256) void k_mse_sum_bwd_f16(
+    const __half* __restrict__ pred, const __half* __restrict__ target,
+    const __half* __restrict__ grad_ptr, __half* __restrict__ out, unsigned n
+) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float g = from_half(grad_ptr[0]);
+        float d = from_half(pred[i]) - from_half(target[i]);
+        out[i] = to_half(2.0f * d * g);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_mse_sum_bwd_fp8e4m3(
+    const uint8_t* __restrict__ pred, const uint8_t* __restrict__ target,
+    const uint8_t* __restrict__ grad_ptr, uint8_t* __restrict__ out, unsigned n
+) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float g = fp8e4m3_to_f32(grad_ptr[0]);
+        float d = fp8e4m3_to_f32(pred[i]) - fp8e4m3_to_f32(target[i]);
+        out[i] = fp8e4m3_from_f32(2.0f * d * g);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_mse_sum_bwd_fp8e5m2(
+    const uint8_t* __restrict__ pred, const uint8_t* __restrict__ target,
+    const uint8_t* __restrict__ grad_ptr, uint8_t* __restrict__ out, unsigned n
+) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float g = fp8e5m2_to_f32(grad_ptr[0]);
+        float d = fp8e5m2_to_f32(pred[i]) - fp8e5m2_to_f32(target[i]);
+        out[i] = fp8e5m2_from_f32(2.0f * d * g);
+    }
+}
+extern "C" __global__ __launch_bounds__(256) void k_mse_sum_bwd_fp4e2m1(
+    const uint8_t* __restrict__ pred, const uint8_t* __restrict__ target,
+    const uint8_t* __restrict__ grad_ptr, uint8_t* __restrict__ out, unsigned n
+) {
+    unsigned i = THREAD_ID;
+    if (i < n) {
+        float g = fp4e2m1_to_f32(grad_ptr[0]);
+        float d = fp4e2m1_to_f32(pred[i]) - fp4e2m1_to_f32(target[i]);
+        out[i] = fp4e2m1_from_f32(2.0f * d * g);
+    }
+}
+
 extern "C" __global__ __launch_bounds__(256) void k_mse_sum_bwd_f64(
     const double* __restrict__ pred, const double* __restrict__ target,
     const double* __restrict__ grad_ptr, double* __restrict__ out, unsigned n
@@ -893,6 +2225,31 @@ extern "C" __global__ __launch_bounds__(256) void k_multi_axpy3_f32(
     }
 }
 
+extern "C" __global__ __launch_bounds__(256) void k_multi_axpy3_f16(
+    __half* __restrict__ y0, const __half* __restrict__ x0, unsigned n0,
+    __half* __restrict__ y1, const __half* __restrict__ x1, unsigned n1,
+    __half* __restrict__ y2, const __half* __restrict__ x2, unsigned n2, __half alpha
+) {
+    unsigned idx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned total = (n0 > n1 ? n0 : n1);
+    total = (total > n2 ? total : n2);
+    float a = from_half(alpha);
+    if (idx < total) {
+        if (idx < n0) {
+            float v = from_half(y0[idx]) + a * from_half(x0[idx]);
+            y0[idx] = to_half(v);
+        }
+        if (idx < n1) {
+            float v = from_half(y1[idx]) + a * from_half(x1[idx]);
+            y1[idx] = to_half(v);
+        }
+        if (idx < n2) {
+            float v = from_half(y2[idx]) + a * from_half(x2[idx]);
+            y2[idx] = to_half(v);
+        }
+    }
+}
+
 extern "C" __global__ __launch_bounds__(256) void k_multi_axpy3_f64(
     double* __restrict__ y0, const double* __restrict__ x0, unsigned n0,
     double* __restrict__ y1, const double* __restrict__ x1, unsigned n1,
@@ -906,4 +2263,3 @@ extern "C" __global__ __launch_bounds__(256) void k_multi_axpy3_f64(
         if (idx < n2) y2[idx] += alpha * __ldg(&x2[idx]);
     }
 }
-

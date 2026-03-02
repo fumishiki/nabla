@@ -216,7 +216,7 @@ pub mod prelude {
     pub use nabla_core::backend::{Backend, DefaultBackend};
     pub use nabla_core::error::{Error, Result};
     pub use nabla_core::layout::{LinearLayout, LinearLayout16, LinearLayout32, LinearLayout64};
-    pub use nabla_core::scalar::Scalar;
+    pub use nabla_core::scalar::{Fp4E2M1, Fp8E4M3, Fp8E5M2, Scalar};
     #[cfg(feature = "cpu")]
     pub use nabla_core::tensor::Matrix;
     pub use nabla_core::tensor::{Array, MatrixLike, NdTensor, StaticMatrix, Tensor, TensorView};

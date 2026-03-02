@@ -598,7 +598,7 @@ impl ConditionalGraph {
     }
 }
 
-const COND_SET_KERNEL_NAMES: &[&str] = &["k_cond_set_f32", "k_cond_set_f64"];
+const COND_SET_KERNEL_NAMES: &[&str] = &["k_cond_set_f32", "k_cond_set_f16", "k_cond_set_f64"];
 
 fn compile_cond_set_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResult<()> {
     {
@@ -615,6 +615,7 @@ fn compile_cond_set_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResult<()>
         kernels_cu::COND_SET_KERNELS,
         nvrtc::CompileOptions {
             arch: Some(arch),
+            include_paths: nvrtc_include_paths(),
             ..Default::default()
         },
     )?;

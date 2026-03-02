@@ -50,6 +50,7 @@ const KERNEL_NAMES: &[&str] = &[
     "k_softmax_f32",
     "k_layer_norm_f32",
     "k_rms_norm_f32",
+    "k_group_norm_f32",
     "k_sum_axis1_f32",
     "k_max_axis1_f32",
     "k_embedding_f32",
@@ -101,6 +102,7 @@ const KERNEL_NAMES: &[&str] = &[
     "k_softmax_f64",
     "k_layer_norm_f64",
     "k_rms_norm_f64",
+    "k_group_norm_f64",
     "k_sum_axis1_f64",
     "k_max_axis1_f64",
     "k_embedding_f64",
@@ -368,6 +370,14 @@ impl crate::backend::BackendCore for crate::backend::Hip {
     }
 
     #[inline]
+    fn reshape<T: Scalar>(a: &HipStorage<T>, nrows: usize, ncols: usize) -> HipStorage<T> {
+        let mut out = hip_clone(a);
+        out.nrows = nrows;
+        out.ncols = ncols;
+        out
+    }
+
+    #[inline]
     fn prefetch<T: Scalar>(storage: &HipStorage<T>) {
         storage.ensure_cache();
     }
@@ -439,11 +449,12 @@ impl crate::backend::BackendNN for crate::backend::Hip {
     }
     gpu_common::rtc_nn_impl! {
         HipStorage; softmax=hip_softmax, layer_norm=hip_layer_norm, rms_norm=hip_rms_norm,
-        batch_norm_train=hip_batch_norm_train, cross_entropy_fused=hip_cross_entropy_fused,
-        sdpa=hip_sdpa, embedding=hip_embedding, max_pool2d=hip_max_pool2d,
-        max_pool2d_with_idx=hip_max_pool2d_with_idx, avg_pool2d=hip_avg_pool2d,
-        adaptive_avg_pool2d=hip_adaptive_avg_pool2d, conv2d=hip_conv2d, conv1d=hip_conv1d,
-        conv3d=hip_conv3d, conv_transpose2d=hip_conv_transpose2d,
+        group_norm=hip_group_norm, batch_norm_train=hip_batch_norm_train,
+        cross_entropy_fused=hip_cross_entropy_fused, sdpa=hip_sdpa, embedding=hip_embedding,
+        max_pool2d=hip_max_pool2d, max_pool2d_with_idx=hip_max_pool2d_with_idx,
+        avg_pool2d=hip_avg_pool2d, adaptive_avg_pool2d=hip_adaptive_avg_pool2d,
+        conv2d=hip_conv2d, conv1d=hip_conv1d, conv3d=hip_conv3d,
+        conv_transpose2d=hip_conv_transpose2d,
     }
 }
 

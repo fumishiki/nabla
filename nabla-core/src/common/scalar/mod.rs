@@ -332,6 +332,10 @@ mod half_impl {
     impl_half_scalar!(half::bf16);
 }
 
+mod lowp;
+
+pub use lowp::{Fp4E2M1, Fp8E4M3, Fp8E5M2};
+
 /// Free-function wrappers for common scalar operations.
 pub mod math_utils {
     use super::Scalar;

@@ -274,7 +274,15 @@ pub(super) fn cuda_cumsum_cumprod<T: Scalar>(a: &CudaStorage<T>, op: &str) -> Cu
         CuBuffer::alloc_async(&ctx.stream, n * std::mem::size_of::<T>()).or_panic("CUDA alloc");
     let rows_u32 = rows as u32;
     let cols_u32 = cols as u32;
-    let shared_mem = (2 * BLOCK_SIZE as usize * std::mem::size_of::<T>()) as u32;
+    let shared_mem = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<half::f16>()
+        || std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp8E4M3>()
+        || std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp8E5M2>()
+        || std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp4E2M1>()
+    {
+        (2 * BLOCK_SIZE as usize * std::mem::size_of::<f32>()) as u32
+    } else {
+        (2 * BLOCK_SIZE as usize * std::mem::size_of::<T>()) as u32
+    };
     unsafe {
         result::launch_kernel(
             func,

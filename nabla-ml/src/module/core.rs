@@ -354,8 +354,7 @@ impl_layer! {
     Linear { weight; bias }
     forward(x) {
         let wt = weight.tl_t();
-        let out = x.tl_matmul(&wt);
-        match bias { Some(b) => out.tl_add(b), None => out }
+        match bias { Some(b) => x.tl_matmul_bias(&wt, b), None => x.tl_matmul(&wt) }
     }
 }
 

@@ -286,7 +286,7 @@ macro_rules! rtc_reduce_impl {
 pub(crate) use rtc_reduce_impl;
 
 macro_rules! rtc_nn_impl {
-    ($Stor:ident; softmax=$softmax:ident, layer_norm=$ln:ident, rms_norm=$rms:ident,
+    ($Stor:ident; softmax=$softmax:ident, layer_norm=$ln:ident, rms_norm=$rms:ident, group_norm=$gn:ident,
      batch_norm_train=$bn:ident, cross_entropy_fused=$ce:ident, sdpa=$sdpa:ident,
      embedding=$emb:ident, max_pool2d=$mp2:ident, max_pool2d_with_idx=$mpi2:ident,
      avg_pool2d=$ap2:ident, adaptive_avg_pool2d=$aap2:ident,
@@ -313,6 +313,15 @@ macro_rules! rtc_nn_impl {
         }
         fn rms_norm<T: Scalar>(a: &$Stor<T>, gamma: &$Stor<T>, eps: T) -> $Stor<T> {
             $rms(a, gamma, eps)
+        }
+        fn group_norm<T: Scalar>(
+            a: &$Stor<T>,
+            gamma: &$Stor<T>,
+            beta: &$Stor<T>,
+            groups: usize,
+            eps: T,
+        ) -> $Stor<T> {
+            $gn(a, gamma, beta, groups, eps)
         }
         #[allow(clippy::too_many_arguments)]
         fn batch_norm_train<T: Scalar>(

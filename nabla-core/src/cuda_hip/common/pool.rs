@@ -17,6 +17,12 @@ pub(crate) fn type_suffix<T: Scalar>() -> &'static str {
         "f16"
     } else if TypeId::of::<T>() == TypeId::of::<half::bf16>() {
         "bf16"
+    } else if TypeId::of::<T>() == TypeId::of::<crate::scalar::Fp8E4M3>() {
+        "fp8e4m3"
+    } else if TypeId::of::<T>() == TypeId::of::<crate::scalar::Fp8E5M2>() {
+        "fp8e5m2"
+    } else if TypeId::of::<T>() == TypeId::of::<crate::scalar::Fp4E2M1>() {
+        "fp4e2m1"
     } else {
         panic!("GPU backend: unsupported scalar type")
     }
@@ -232,6 +238,8 @@ pub(crate) enum KernelId {
     LayerNormF64,
     RmsNormF32,
     RmsNormF64,
+    GroupNormF32,
+    GroupNormF64,
     SumAxis1F32,
     SumAxis1F64,
     MaxAxis1F32,
@@ -380,6 +388,8 @@ pub(crate) const KERNEL_ID_MAP: &[(&str, KernelId)] = &[
     ("k_layer_norm_f64", KernelId::LayerNormF64),
     ("k_rms_norm_f32", KernelId::RmsNormF32),
     ("k_rms_norm_f64", KernelId::RmsNormF64),
+    ("k_group_norm_f32", KernelId::GroupNormF32),
+    ("k_group_norm_f64", KernelId::GroupNormF64),
     ("k_sum_axis1_f32", KernelId::SumAxis1F32),
     ("k_sum_axis1_f64", KernelId::SumAxis1F64),
     ("k_max_axis1_f32", KernelId::MaxAxis1F32),

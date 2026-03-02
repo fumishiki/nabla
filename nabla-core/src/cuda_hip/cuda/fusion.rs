@@ -48,6 +48,7 @@ pub(super) fn cuda_fuse_launch<T: Scalar>(
                 nvrtc::CompileOptions {
                     arch: Some(arch),
                     maxrregcount: maxreg,
+                    include_paths: nvrtc_include_paths(),
                     ..Default::default()
                 },
             )
@@ -189,6 +190,7 @@ pub(crate) fn cuda_mega_fuse_launch<T: Scalar>(
                 &src,
                 nvrtc::CompileOptions {
                     arch: Some(arch),
+                    include_paths: nvrtc_include_paths(),
                     ..Default::default()
                 },
             )
@@ -350,6 +352,7 @@ pub(crate) fn cuda_fuse_reduce_launch<T: Scalar>(
                 &src,
                 nvrtc::CompileOptions {
                     arch: Some(arch),
+                    include_paths: nvrtc_include_paths(),
                     ..Default::default()
                 },
             )

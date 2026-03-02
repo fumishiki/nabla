@@ -115,7 +115,7 @@ macro_rules! impl_layer {
 
     (@impl $name:ident [$($req:ident),*] [$($opt:ident),*] $x:ident $body:block) => {
         const _: () = {
-            use crate::autograd::{Tape, TensorLike, Variable};
+            use crate::autograd::{Tape, TensorLike, TensorLikeMatmulBias, Variable};
             use nabla_core::backend::Backend;
             use nabla_core::error::Result;
             use nabla_core::scalar::Scalar;
@@ -124,7 +124,7 @@ macro_rules! impl_layer {
             use super::{ForwardResult, Module};
 
             #[allow(clippy::needless_pass_by_value)]
-            fn __compute<T: Scalar, B: Backend, X: TensorLike<T, B>>(
+            fn __compute<T: Scalar, B: Backend, X: TensorLike<T, B> + TensorLikeMatmulBias<T, B>>(
                 $x: &X, $($req: &X,)* $($opt: Option<&X>,)*
             ) -> X
             $body

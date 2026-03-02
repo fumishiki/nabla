@@ -164,6 +164,175 @@ pub(crate) fn cuda_scale<T: Scalar>(a: &CudaStorage<T>, s: T) -> CudaStorage<T> 
     CudaStorage::new(a.nrows, a.ncols, out_buf)
 }
 
+pub(crate) fn cuda_cast<T: Scalar, U: Scalar>(a: &CudaStorage<T>) -> CudaStorage<U> {
+    use std::any::TypeId;
+
+    if TypeId::of::<T>() == TypeId::of::<U>() {
+        let cloned = cuda_clone(a);
+        // SAFETY: T == U, identical layout for CudaStorage.
+        return unsafe { std::mem::transmute::<CudaStorage<T>, CudaStorage<U>>(cloned) };
+    }
+
+    fn cast_to_f32<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<f32> {
+        use std::any::TypeId;
+        let ctx = get_ctx();
+        let n = a.n();
+        if TypeId::of::<T>() == TypeId::of::<f32>() {
+            let cloned = cuda_clone(a);
+            // SAFETY: T is f32.
+            return unsafe { std::mem::transmute::<CudaStorage<T>, CudaStorage<f32>>(cloned) };
+        }
+        let name = if TypeId::of::<T>() == TypeId::of::<half::f16>() {
+            "k_cast_f16_to_f32"
+        } else if TypeId::of::<T>() == TypeId::of::<f64>() {
+            "k_cast_f64_to_f32"
+        } else if TypeId::of::<T>() == TypeId::of::<crate::scalar::Fp8E4M3>() {
+            "k_cast_fp8e4m3_to_f32"
+        } else if TypeId::of::<T>() == TypeId::of::<crate::scalar::Fp8E5M2>() {
+            "k_cast_fp8e5m2_to_f32"
+        } else if TypeId::of::<T>() == TypeId::of::<crate::scalar::Fp4E2M1>() {
+            "k_cast_fp4e2m1_to_f32"
+        } else {
+            panic!("CUDA cast: unsupported source type");
+        };
+        let func = expect_ok(get_kernel(ctx, name), "CUDA kernel lookup");
+        let out_buf = alloc_out::<f32>(ctx, n);
+        let n_u32 = n as u32;
+        unsafe {
+            expect_ok(
+                result::launch_kernel(
+                    func,
+                    (grid_1d(n), 1, 1),
+                    (BLOCK_SIZE, 1, 1),
+                    0,
+                    ctx.stream.cu_stream(),
+                    &mut [
+                        &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                        &out_buf.ptr as *const CUdeviceptr as *mut c_void,
+                        &n_u32 as *const u32 as *mut c_void,
+                    ],
+                ),
+                "CUDA launch cast to f32",
+            );
+        }
+        CudaStorage::new(a.nrows, a.ncols, out_buf)
+    }
+
+    fn cast_from_f32<U: Scalar>(a: &CudaStorage<f32>) -> CudaStorage<U> {
+        use std::any::TypeId;
+        let ctx = get_ctx();
+        let n = a.n();
+        if TypeId::of::<U>() == TypeId::of::<f32>() {
+            let cloned = cuda_clone(a);
+            // SAFETY: U is f32.
+            return unsafe { std::mem::transmute::<CudaStorage<f32>, CudaStorage<U>>(cloned) };
+        }
+        let name = if TypeId::of::<U>() == TypeId::of::<half::f16>() {
+            "k_cast_f32_to_f16"
+        } else if TypeId::of::<U>() == TypeId::of::<f64>() {
+            "k_cast_f32_to_f64"
+        } else if TypeId::of::<U>() == TypeId::of::<crate::scalar::Fp8E4M3>() {
+            "k_cast_f32_to_fp8e4m3"
+        } else if TypeId::of::<U>() == TypeId::of::<crate::scalar::Fp8E5M2>() {
+            "k_cast_f32_to_fp8e5m2"
+        } else if TypeId::of::<U>() == TypeId::of::<crate::scalar::Fp4E2M1>() {
+            "k_cast_f32_to_fp4e2m1"
+        } else {
+            panic!("CUDA cast: unsupported destination type");
+        };
+        let func = expect_ok(get_kernel(ctx, name), "CUDA kernel lookup");
+        let out_buf = alloc_out::<U>(ctx, n);
+        let n_u32 = n as u32;
+        unsafe {
+            expect_ok(
+                result::launch_kernel(
+                    func,
+                    (grid_1d(n), 1, 1),
+                    (BLOCK_SIZE, 1, 1),
+                    0,
+                    ctx.stream.cu_stream(),
+                    &mut [
+                        &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                        &out_buf.ptr as *const CUdeviceptr as *mut c_void,
+                        &n_u32 as *const u32 as *mut c_void,
+                    ],
+                ),
+                "CUDA launch cast from f32",
+            );
+        }
+        CudaStorage::new(a.nrows, a.ncols, out_buf)
+    }
+
+    let tmp = cast_to_f32(a);
+    cast_from_f32::<U>(&tmp)
+}
+
+pub(crate) fn cuda_masked_fill<T: Scalar>(
+    a: &CudaStorage<T>,
+    mask: &CudaStorage<T>,
+    value: T,
+) -> CudaStorage<T> {
+    let ctx = get_ctx();
+    let n = a.n();
+    let name = format!("k_masked_fill_{}", type_suffix::<T>());
+    let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
+    let out_buf = alloc_out::<T>(ctx, n);
+    let n_u32 = n as u32;
+    unsafe {
+        expect_ok(
+            result::launch_kernel(
+                func,
+                (grid_1d(n), 1, 1),
+                (BLOCK_SIZE, 1, 1),
+                0,
+                ctx.stream.cu_stream(),
+                &mut [
+                    &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &mask.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &value as *const T as *mut c_void,
+                    &out_buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &n_u32 as *const u32 as *mut c_void,
+                ],
+            ),
+            "CUDA launch masked_fill",
+        );
+    }
+    CudaStorage::new(a.nrows, a.ncols, out_buf)
+}
+
+pub(crate) fn cuda_where<T: Scalar>(
+    a: &CudaStorage<T>,
+    cond: &CudaStorage<T>,
+    b: &CudaStorage<T>,
+) -> CudaStorage<T> {
+    let ctx = get_ctx();
+    let n = a.n();
+    let name = format!("k_where_{}", type_suffix::<T>());
+    let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
+    let out_buf = alloc_out::<T>(ctx, n);
+    let n_u32 = n as u32;
+    unsafe {
+        expect_ok(
+            result::launch_kernel(
+                func,
+                (grid_1d(n), 1, 1),
+                (BLOCK_SIZE, 1, 1),
+                0,
+                ctx.stream.cu_stream(),
+                &mut [
+                    &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &cond.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &b.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &out_buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &n_u32 as *const u32 as *mut c_void,
+                ],
+            ),
+            "CUDA launch where",
+        );
+    }
+    CudaStorage::new(a.nrows, a.ncols, out_buf)
+}
+
 pub(crate) fn cuda_axpy_inplace<T: Scalar>(y: &mut CudaStorage<T>, alpha: T, x: &CudaStorage<T>) {
     let ctx = get_ctx();
     let n = y.n();
@@ -1291,4 +1460,12 @@ pub(crate) fn cuda_multi_axpy3_inplace<T: Scalar>(
     y[0].invalidate_cache();
     y[1].invalidate_cache();
     y[2].invalidate_cache();
+}
+
+/// Broadcast-add a bias row vector `(1, n)` to each row of `a (m, n)`.
+/// Expands bias then element-wise adds using the standard `k_add` kernel.
+pub(crate) fn cuda_add_bias_row<T: Scalar>(a: &CudaStorage<T>, bias: &CudaStorage<T>) -> CudaStorage<T> {
+    let mut bias_expanded = cuda_zeros::<T>(a.nrows, a.ncols);
+    cuda_expand(&mut bias_expanded, bias, 1, bias.ncols);
+    launch_binary(a, &bias_expanded, "add")
 }

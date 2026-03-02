@@ -314,27 +314,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Replace elements where `mask` is non-zero with `value`.
     #[must_use]
     pub fn masked_fill(&self, mask: &Self, value: T) -> Self {
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| {
-            if mask.get(r, c).to_f64() == 0.0 {
-                self.get(r, c)
-            } else {
-                value
-            }
-        })
+        Tensor::from_storage(B::masked_fill(&self.storage, &mask.storage, value))
     }
 
     /// Element-wise conditional: `where cond != 0, pick self, else pick other`.
     #[must_use]
     pub fn where_cond(&self, cond: &Self, other: &Self) -> Self {
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| {
-            if cond.get(r, c).to_f64() == 0.0 {
-                other.get(r, c)
-            } else {
-                self.get(r, c)
-            }
-        })
+        Tensor::from_storage(B::where_cond(&self.storage, &cond.storage, &other.storage))
     }
 
     // ---- Broadcast operations ----

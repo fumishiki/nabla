@@ -406,7 +406,7 @@ pub(super) struct CudaCtx {
     pub(super) reduce_scratch: CUdeviceptr,
     pub(super) reduce_host_ptr: SyncHostPtr,
     pub(super) reduce_host_dptr: CUdeviceptr,
-    pub(super) reduce_funcs: [SyncFn; 6],
+    pub(super) reduce_funcs: [SyncFn; 18],
 }
 
 pub(super) fn query_compute_capability() -> (i32, i32) {
@@ -534,7 +534,7 @@ pub(super) fn get_ctx() -> &'static CudaCtx {
             reduce_scratch,
             reduce_host_ptr: SyncHostPtr(reduce_host_ptr),
             reduce_host_dptr,
-            reduce_funcs: [SyncFn(std::ptr::null_mut()); 6],
+            reduce_funcs: [SyncFn(std::ptr::null_mut()); 18],
         };
         if let Err(e) = super::compile_all_kernels(&cuda_ctx, &arch) {
             panic!("CUDA kernel compilation failed: {e}");
@@ -553,9 +553,21 @@ pub(super) fn get_ctx() -> &'static CudaCtx {
                 SyncFn(rf("k_sum_f32")),
                 SyncFn(rf("k_max_f32")),
                 SyncFn(rf("k_min_f32")),
+                SyncFn(rf("k_sum_f16")),
+                SyncFn(rf("k_max_f16")),
+                SyncFn(rf("k_min_f16")),
                 SyncFn(rf("k_sum_f64")),
                 SyncFn(rf("k_max_f64")),
                 SyncFn(rf("k_min_f64")),
+                SyncFn(rf("k_sum_fp8e4m3")),
+                SyncFn(rf("k_max_fp8e4m3")),
+                SyncFn(rf("k_min_fp8e4m3")),
+                SyncFn(rf("k_sum_fp8e5m2")),
+                SyncFn(rf("k_max_fp8e5m2")),
+                SyncFn(rf("k_min_fp8e5m2")),
+                SyncFn(rf("k_sum_fp4e2m1")),
+                SyncFn(rf("k_max_fp4e2m1")),
+                SyncFn(rf("k_min_fp4e2m1")),
             ];
         }
         cuda_ctx

@@ -107,6 +107,17 @@ pub(crate) fn cuda_conv2d<T: Scalar>(
         groups == 1,
         "GPU conv2d: groups > 1 not supported; use CPU backend"
     );
+    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp8E4M3>()
+        || std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp8E5M2>()
+        || std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp4E2M1>()
+    {
+        let in_f16 = cuda_cast::<T, half::f16>(input);
+        let w_f16 = cuda_cast::<T, half::f16>(weight);
+        let out_f16 = cuda_conv2d::<half::f16>(
+            &in_f16, &w_f16, n, c_in, h, w, c_out, kh, kw, stride, padding, dilation, groups,
+        );
+        return cuda_cast::<half::f16, T>(&out_f16);
+    }
     let (sh, sw) = stride;
     let (ph, pw) = padding;
     let (dh, dw) = dilation;
@@ -178,8 +189,39 @@ pub(crate) fn cuda_conv2d<T: Scalar>(
                 n as i32,
             )
             .or_panic("cuBLAS dgemm_strided_batched conv2d");
+        } else if TypeId::of::<T>() == TypeId::of::<half::f16>() {
+            let alpha_f = 1.0f32;
+            let beta_f = 0.0f32;
+            let status = cublas_sys::cublasGemmStridedBatchedEx(
+                ctx.blas.0,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                out_spatial as i32,
+                c_out as i32,
+                k_cols as i32,
+                &alpha_f as *const f32 as *const std::ffi::c_void,
+                col.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                out_spatial as i32,
+                (k_cols * out_spatial) as i64,
+                weight.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                k_cols as i32,
+                0_i64,
+                &beta_f as *const f32 as *const std::ffi::c_void,
+                out.buf.ptr as *mut std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                out_spatial as i32,
+                (c_out * out_spatial) as i64,
+                n as i32,
+                cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_32F,
+                cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            );
+            if status != cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+                panic!("cuBLAS gemm_strided_batched_ex conv2d f16: {status:?}");
+            }
         } else {
-            panic!("GPU conv2d: unsupported scalar type (f32/f64 only)");
+            panic!("GPU conv2d: unsupported scalar type (f32/f64/f16 only)");
         }
     }
     out.invalidate_cache();
@@ -408,6 +450,17 @@ pub(crate) fn cuda_conv1d<T: Scalar>(
         groups == 1,
         "GPU conv1d: groups > 1 not supported; use CPU backend"
     );
+    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp8E4M3>()
+        || std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp8E5M2>()
+        || std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp4E2M1>()
+    {
+        let in_f16 = cuda_cast::<T, half::f16>(input);
+        let w_f16 = cuda_cast::<T, half::f16>(weight);
+        let out_f16 = cuda_conv1d::<half::f16>(
+            &in_f16, &w_f16, n, c_in, l, c_out, kl, stride, padding, dilation, groups,
+        );
+        return cuda_cast::<half::f16, T>(&out_f16);
+    }
     let out_l = (l + 2 * padding - dilation * (kl - 1) - 1) / stride + 1;
     let k_cols = c_in * kl;
 
@@ -468,8 +521,39 @@ pub(crate) fn cuda_conv1d<T: Scalar>(
                 n as i32,
             )
             .or_panic("cuBLAS dgemm_strided_batched conv1d");
+        } else if TypeId::of::<T>() == TypeId::of::<half::f16>() {
+            let alpha_f = 1.0f32;
+            let beta_f = 0.0f32;
+            let status = cublas_sys::cublasGemmStridedBatchedEx(
+                ctx.blas.0,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                out_l as i32,
+                c_out as i32,
+                k_cols as i32,
+                &alpha_f as *const f32 as *const std::ffi::c_void,
+                col.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                out_l as i32,
+                (k_cols * out_l) as i64,
+                weight.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                k_cols as i32,
+                0_i64,
+                &beta_f as *const f32 as *const std::ffi::c_void,
+                out.buf.ptr as *mut std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                out_l as i32,
+                (c_out * out_l) as i64,
+                n as i32,
+                cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_32F,
+                cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            );
+            if status != cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+                panic!("cuBLAS gemm_strided_batched_ex conv1d f16: {status:?}");
+            }
         } else {
-            panic!("GPU conv1d: unsupported scalar type (f32/f64 only)");
+            panic!("GPU conv1d: unsupported scalar type (f32/f64/f16 only)");
         }
     }
     out.invalidate_cache();
@@ -498,6 +582,18 @@ pub(crate) fn cuda_conv3d<T: Scalar>(
         groups == 1,
         "GPU conv3d: groups > 1 not supported; use CPU backend"
     );
+    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp8E4M3>()
+        || std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp8E5M2>()
+        || std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::scalar::Fp4E2M1>()
+    {
+        let in_f16 = cuda_cast::<T, half::f16>(input);
+        let w_f16 = cuda_cast::<T, half::f16>(weight);
+        let out_f16 = cuda_conv3d::<half::f16>(
+            &in_f16, &w_f16, n, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation,
+            groups,
+        );
+        return cuda_cast::<half::f16, T>(&out_f16);
+    }
     let (sd, sh, sw) = stride;
     let (pd, ph, pw) = padding;
     let (dd, dh, dw) = dilation;
@@ -568,8 +664,39 @@ pub(crate) fn cuda_conv3d<T: Scalar>(
                 n as i32,
             )
             .or_panic("cuBLAS dgemm_strided_batched conv3d");
+        } else if TypeId::of::<T>() == TypeId::of::<half::f16>() {
+            let alpha_f = 1.0f32;
+            let beta_f = 0.0f32;
+            let status = cublas_sys::cublasGemmStridedBatchedEx(
+                ctx.blas.0,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                out_vol as i32,
+                c_out as i32,
+                k_vol as i32,
+                &alpha_f as *const f32 as *const std::ffi::c_void,
+                col.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                out_vol as i32,
+                (k_vol * out_vol) as i64,
+                weight.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                k_vol as i32,
+                0_i64,
+                &beta_f as *const f32 as *const std::ffi::c_void,
+                out.buf.ptr as *mut std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                out_vol as i32,
+                (c_out * out_vol) as i64,
+                n as i32,
+                cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_32F,
+                cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            );
+            if status != cublas_sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+                panic!("cuBLAS gemm_strided_batched_ex conv3d f16: {status:?}");
+            }
         } else {
-            panic!("GPU conv3d: unsupported scalar type (f32/f64 only)");
+            panic!("GPU conv3d: unsupported scalar type (f32/f64/f16 only)");
         }
     }
     out.invalidate_cache();
@@ -577,10 +704,21 @@ pub(crate) fn cuda_conv3d<T: Scalar>(
 }
 
 pub(super) fn reduce_func_idx<T: Scalar>(base: usize) -> usize {
-    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+    use std::any::TypeId;
+    if TypeId::of::<T>() == TypeId::of::<f32>() {
         base
-    } else {
+    } else if TypeId::of::<T>() == TypeId::of::<half::f16>() {
         base + 3
+    } else if TypeId::of::<T>() == TypeId::of::<f64>() {
+        base + 6
+    } else if TypeId::of::<T>() == TypeId::of::<crate::scalar::Fp8E4M3>() {
+        base + 9
+    } else if TypeId::of::<T>() == TypeId::of::<crate::scalar::Fp8E5M2>() {
+        base + 12
+    } else if TypeId::of::<T>() == TypeId::of::<crate::scalar::Fp4E2M1>() {
+        base + 15
+    } else {
+        panic!("CUDA reduction: unsupported scalar type");
     }
 }
 

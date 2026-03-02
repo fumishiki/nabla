@@ -219,7 +219,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::from_storage(B::matmul_epilogue::<T>(&a.storage, &b.storage, epilogue_id))
     }
 
-    /// Fused map-reduce: apply a pointwise expression then reduce along `axis`.
+    /// Fused `(self @ b) + bias` — single cublasLt dispatch on CUDA f32, fallback elsewhere.
+    #[inline]
+    pub fn matmul_bias(a: &Self, b: &Self, bias: &Self) -> Self {
+        Self::from_storage(B::matmul_bias::<T>(&a.storage, &b.storage, &bias.storage))
+    }
+
+
     ///
     /// `reduce_op`:
     /// - `0` -> sum

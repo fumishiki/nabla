@@ -1,5 +1,6 @@
 
 #include <cuda_device_runtime_api.h>
+#include <cuda_fp16.h>
 
 extern "C" __global__ void k_cond_set_f32(
     unsigned long long handle,
@@ -33,3 +34,18 @@ extern "C" __global__ void k_cond_set_f64(
     }
 }
 
+extern "C" __global__ void k_cond_set_f16(
+    unsigned long long handle,
+    const __half* __restrict__ val,
+    unsigned cmp,
+    float threshold
+) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        float v = __half2float(val[0]);
+        unsigned cond;
+        if (cmp == 0u) { cond = (v > 0.0f) ? 1u : 0u; }
+        else if (cmp == 1u) { cond = (v == 0.0f) ? 1u : 0u; }
+        else { cond = (v < threshold) ? 1u : 0u; }
+        cudaGraphSetConditional((cudaGraphConditionalHandle)handle, cond);
+    }
+}

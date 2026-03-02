@@ -409,6 +409,61 @@ pub(super) fn hip_rms_norm<T: Scalar>(
     HipStorage::new(rows, cols, out_buf)
 }
 
+pub(super) fn hip_group_norm<T: Scalar>(
+    a: &HipStorage<T>,
+    gamma: &HipStorage<T>,
+    beta: &HipStorage<T>,
+    groups: usize,
+    eps: T,
+) -> HipStorage<T> {
+    let ctx = get_ctx();
+    let rows = a.nrows;
+    let cols = a.ncols;
+    let func = get_kernel_by_id(ctx, kernel_id::<T>("group_norm"));
+    let out_buf = HipBuffer::alloc_zeros(rows * cols * core::mem::size_of::<T>())
+        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let rows_u32 = rows as u32;
+    let cols_u32 = cols as u32;
+    let groups_u32 = groups as u32;
+    let eps_f = eps.to_f64();
+    let grid_x = (rows * groups) as u32;
+    if type_suffix::<T>() == "f32" {
+        let eps_val = eps_f as f32;
+        hip_launch(
+            func,
+            [grid_x, 1, 1],
+            [BLOCK_SIZE, 1, 1],
+            &mut [
+                (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&gamma.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&beta.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&rows_u32 as *const u32).cast_mut().cast(),
+                (&cols_u32 as *const u32).cast_mut().cast(),
+                (&groups_u32 as *const u32).cast_mut().cast(),
+                (&eps_val as *const f32).cast_mut().cast(),
+            ],
+        );
+    } else {
+        hip_launch(
+            func,
+            [grid_x, 1, 1],
+            [BLOCK_SIZE, 1, 1],
+            &mut [
+                (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&gamma.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&beta.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&rows_u32 as *const u32).cast_mut().cast(),
+                (&cols_u32 as *const u32).cast_mut().cast(),
+                (&groups_u32 as *const u32).cast_mut().cast(),
+                (&eps_f as *const f64).cast_mut().cast(),
+            ],
+        );
+    }
+    HipStorage::new(rows, cols, out_buf)
+}
+
 pub(super) fn hip_batch_norm_train<T: Scalar>(
     a: &HipStorage<T>,
     gamma: &HipStorage<T>,
