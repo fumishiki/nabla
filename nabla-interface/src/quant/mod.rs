@@ -340,3 +340,53 @@ pub fn recommended_quant_for_layer(name: &str) -> GgufQuantType {
         GgufQuantType::Q4_K_M
     }
 }
+
+impl std::str::FromStr for GgufQuantType {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "F32" => Ok(Self::F32), "F16" => Ok(Self::F16), "BF16" => Ok(Self::BF16),
+            "Q4_0" => Ok(Self::Q4_0), "Q4_1" => Ok(Self::Q4_1),
+            "Q5_0" => Ok(Self::Q5_0), "Q5_1" => Ok(Self::Q5_1),
+            "Q8_0" => Ok(Self::Q8_0), "Q8_1" => Ok(Self::Q8_1),
+            "Q2_K" => Ok(Self::Q2_K),
+            "Q3_K_S" => Ok(Self::Q3_K_S), "Q3_K_M" => Ok(Self::Q3_K_M), "Q3_K_L" => Ok(Self::Q3_K_L),
+            "Q4_K_S" => Ok(Self::Q4_K_S), "Q4_K_M" => Ok(Self::Q4_K_M),
+            "Q5_K_S" => Ok(Self::Q5_K_S), "Q5_K_M" => Ok(Self::Q5_K_M),
+            "Q6_K" => Ok(Self::Q6_K),
+            "IQ1_S" => Ok(Self::IQ1_S), "IQ1_M" => Ok(Self::IQ1_M),
+            "IQ2_XXS" => Ok(Self::IQ2_XXS), "IQ2_XS" => Ok(Self::IQ2_XS),
+            "IQ2_S" => Ok(Self::IQ2_S), "IQ3_XXS" => Ok(Self::IQ3_XXS),
+            "IQ3_S" => Ok(Self::IQ3_S), "IQ4_NL" => Ok(Self::IQ4_NL),
+            "IQ4_XS" => Ok(Self::IQ4_XS),
+            "TQ1_0" => Ok(Self::TQ1_0), "TQ2_0" => Ok(Self::TQ2_0),
+            "F64" => Ok(Self::F64),
+            _ => Err(format!("unknown quant type: {s}")),
+        }
+    }
+}
+
+impl std::fmt::Display for GgufQuantType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::F32 => "F32", Self::F16 => "F16", Self::BF16 => "BF16",
+            Self::Q4_0 => "Q4_0", Self::Q4_1 => "Q4_1",
+            Self::Q5_0 => "Q5_0", Self::Q5_1 => "Q5_1",
+            Self::Q8_0 => "Q8_0", Self::Q8_1 => "Q8_1",
+            Self::Q2_K => "Q2_K",
+            Self::Q3_K_S => "Q3_K_S", Self::Q3_K_M => "Q3_K_M", Self::Q3_K_L => "Q3_K_L",
+            Self::Q4_K_S => "Q4_K_S", Self::Q4_K_M => "Q4_K_M",
+            Self::Q5_K_S => "Q5_K_S", Self::Q5_K_M => "Q5_K_M",
+            Self::Q6_K => "Q6_K",
+            Self::IQ1_S => "IQ1_S", Self::IQ1_M => "IQ1_M",
+            Self::IQ2_XXS => "IQ2_XXS", Self::IQ2_XS => "IQ2_XS",
+            Self::IQ2_S => "IQ2_S", Self::IQ3_XXS => "IQ3_XXS",
+            Self::IQ3_S => "IQ3_S", Self::IQ4_NL => "IQ4_NL",
+            Self::IQ4_XS => "IQ4_XS",
+            Self::TQ1_0 => "TQ1_0", Self::TQ2_0 => "TQ2_0",
+            Self::F64 => "F64",
+            Self::I8 => "I8", Self::I16 => "I16", Self::I32 => "I32", Self::I64 => "I64",
+        };
+        f.write_str(s)
+    }
+}

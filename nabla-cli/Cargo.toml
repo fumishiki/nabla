@@ -1,0 +1,26 @@
+[package]
+name = "nabla-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88.0"
+license = "Apache-2.0 OR MIT"
+description = "nabla CLI — hardware info, benchmarks, model export, and inference"
+keywords = ["nabla", "cli", "benchmark", "gguf", "inference"]
+categories = ["command-line-utilities", "science"]
+
+[[bin]]
+name = "nabla"
+path = "src/main.rs"
+
+[features]
+default = ["cpu"]
+cpu    = ["nabla/cpu", "nabla-train/cpu", "nabla-interface/cpu"]
+cuda   = ["nabla/cuda", "nabla-train/cuda", "nabla-interface/cuda", "dep:cudarc"]
+llama  = ["nabla-interface/llama"]
+
+[dependencies]
+nabla           = { path = "../nabla-ml",        default-features = false }
+nabla-core      = { path = "../nabla-core",      default-features = false }
+nabla-train     = { path = "../nabla-train",     default-features = false }
+nabla-interface = { path = "../nabla-interface", default-features = false }
+cudarc          = { version = "0.19", optional = true, features = ["driver"] }

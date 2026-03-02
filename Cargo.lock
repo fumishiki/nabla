@@ -644,6 +644,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nabla-cli"
+version = "0.1.0"
+dependencies = [
+ "cudarc",
+ "nabla",
+ "nabla-core",
+ "nabla-interface",
+ "nabla-train",
+]
+
+[[package]]
 name = "nabla-core"
 version = "0.1.0"
 dependencies = [
