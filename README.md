@@ -100,37 +100,35 @@ Switch to GPU: change `features = ["cpu"]` to `features = ["cuda"]` in `Cargo.to
 
 The number that matters for real training workloads — a full step (forward + backward + optimizer):
 
-| Batch size | nabla eager | nabla CUDA Graph | PyTorch eager | PyTorch CUDA Graph | nabla eager speedup |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 0.112 ms | **0.070 ms** | 0.693 ms | 0.045 ms | **6.2×** |
-| 32 | 0.134 ms | **0.086 ms** | 0.941 ms | 0.072 ms | **7.0×** |
-| 128 | 0.134 ms | **0.088 ms** | 0.955 ms | 0.129 ms | **7.1×** |
-| 256 | 0.140 ms | **0.094 ms** | 0.957 ms | 0.136 ms | **6.8×** |
-| 512 | 0.148 ms | **0.109 ms** | 0.951 ms | 0.142 ms | **6.4×** |
-| 1024 | 0.170 ms | **0.130 ms** | 0.966 ms | 0.160 ms | **5.7×** |
+| Batch size | nabla eager | nabla CUDA Graph | PyTorch eager | PyTorch compile | PyTorch CUDA Graph | nabla eager speedup |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0.112 ms | **0.070 ms** | 0.771 ms | 0.598 ms | 0.046 ms | **6.9×** |
+| 32 | 0.134 ms | **0.086 ms** | 0.852 ms | 0.592 ms | 0.072 ms | **6.4×** |
+| 128 | 0.134 ms | **0.088 ms** | 0.863 ms | 0.592 ms | 0.129 ms | **6.4×** |
+| 256 | 0.140 ms | **0.094 ms** | 0.822 ms | 0.582 ms | 0.136 ms | **5.9×** |
+| 512 | 0.148 ms | **0.109 ms** | 0.851 ms | 0.583 ms | 0.143 ms | **5.8×** |
+| 1024 | 0.170 ms | **0.130 ms** | 0.887 ms | 0.583 ms | 0.168 ms | **5.2×** |
 
 > Model: MLP 784→256→128→10, MSE sum loss, SGD. Same model and loss on both sides — no `allow_tf32` manipulation.
-> All numbers measured on the same GH200; script: [`benchmarks/bench_pytorch.py`](benchmarks/bench_pytorch.py) vs [`benchmarks/src/profile_train_graph.rs`](benchmarks/src/profile_train_graph.rs).
-> `torch.compile` (inductor) was unavailable on this Lambda instance due to a triton version conflict (PyTorch 2.7 + system triton 3.5); CUDA Graph manual capture is equivalent and included above.
+> PyTorch 2.10.0+cu128 / triton 3.6.0, GH200. Scripts: [`benchmarks/bench_pytorch.py`](benchmarks/bench_pytorch.py) vs [`benchmarks/src/profile_train_graph.rs`](benchmarks/src/profile_train_graph.rs).
 
-nabla eager is **5.7–7.1× faster** than PyTorch eager in realistic training. At batch ≥ 128, nabla CUDA Graph also beats PyTorch CUDA Graph (1.0–1.5×).
+nabla eager is **5.2–6.9× faster** than PyTorch eager, and **3.5–4.4× faster** than `torch.compile`. nabla CUDA Graph beats PyTorch CUDA Graph by **1.4–1.9×**.
 
 **Single-op and matmul benchmarks (for reference):**
 
-| Workload | nabla | PyTorch 2.7 (default) | PyTorch 2.7 (TF32=ON) | PyTorch 2.7 (FP16) |
+| Workload | nabla | PyTorch 2.10 (default) | PyTorch 2.10 (TF32=ON) | PyTorch 2.10 (FP16) |
 |---|---|---|---|---|
-| matmul 4096×4096 (f32) | 0.372 ms | 2.675 ms | 0.332 ms — ~parity | — |
-| matmul 4096×4096 (f16) | **0.189 ms** | — | — | 0.210 ms |
-| matmul 1024×1024 | 0.036 ms | 0.058 ms | — | — |
+| matmul 4096×4096 (f32) | 0.372 ms | 2.664 ms | 0.326 ms — ~parity | — |
+| matmul 4096×4096 (f16) | **0.189 ms** | — | — | 0.168 ms |
+| matmul 1024×1024 | 0.036 ms | 0.057 ms | — | — |
 | `exp` + `sin` fused | **0.041 ms** | 0.081 ms | — | — |
 | `sin` / `cos` / `tanh` | 0.040 ms | 0.041 ms | ~parity | — |
 | `add` / `sub` / element-wise | 0.058 ms | 0.058 ms | ~parity | — |
 | 4-op `fuse!` speedup vs unfused | **3.38×** | — | — | — |
 
-> **Transparency note on the matmul numbers:**
 > nabla explicitly enables TF32 Tensor Core math (`CUBLAS_TF32_TENSOR_OP_MATH`) at init.
-> PyTorch 2.7.0 ships with `allow_tf32 = False` by default (verified on GH200). When both use TF32=ON, performance is ~equal.
-> **FP16 is the fairest single-op comparison:** nabla 0.189 ms vs PyTorch 0.210 ms — nabla wins by ~1.1×.
+> PyTorch 2.10.0 ships with `allow_tf32 = False` by default (verified on GH200). When both use TF32=ON, performance is ~equal.
+> **FP16 is the fairest single-op comparison:** nabla 0.189 ms vs PyTorch 0.168 ms — ~parity (within measurement noise).
 > Single-op comparisons don't show the full picture; the training table above does.
 
 #### Why: Python costs ~7 µs per kernel launch
@@ -284,7 +282,7 @@ This is why nabla is already faster than PyTorch in eager mode, before CUDA Grap
 
 Putting the benchmark numbers in context:
 
-- **5.7–7.1× eager gap** — primarily factors 1 (no interpreter) + 4 (fused kernels)
+- **5.2–6.9× eager gap** — primarily factors 1 (no interpreter) + 4 (fused kernels)
 - **1.0–1.4× CUDA Graph gap** — factors 2 (`fuse!`) + 4 still apply even when Python overhead is gone
 
 Reproduce locally: `cd benchmarks && bash run.sh`
