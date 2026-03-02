@@ -4,7 +4,6 @@ mod bench;
 mod export;
 mod info;
 mod inspect;
-mod serve;
 #[cfg(feature = "llama")]
 mod run;
 
@@ -20,7 +19,6 @@ fn main() {
         "bench"   => bench::run(rest),
         "export"  => export::run(rest),
         "inspect" => inspect::run(rest),
-        "serve"   => serve::run(rest),
         "run"     => {
             #[cfg(feature = "llama")]
             { run::run(rest) }
@@ -48,7 +46,6 @@ Subcommands:
   bench    Run matmul / MLP training-step benchmarks
   inspect  Inspect a nabla checkpoint (tensor shapes, stats)
   export   Export a trained nabla model to GGUF or ONNX
-  serve    OpenAI-compatible HTTP inference server (requires --features llama)
   run      Run text generation from a GGUF file (requires --features llama)
 
 Run `nabla <SUBCOMMAND> --help` for subcommand options."#,
