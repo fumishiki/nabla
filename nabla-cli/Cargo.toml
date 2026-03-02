@@ -16,6 +16,8 @@ path = "src/main.rs"
 default = ["cpu"]
 cpu    = ["nabla/cpu", "nabla-train/cpu", "nabla-interface/cpu"]
 cuda   = ["nabla/cuda", "nabla-train/cuda", "nabla-interface/cuda", "dep:cudarc"]
+hip    = ["dep:hip-runtime-sys"]
+wgpu   = ["dep:wgpu"]
 llama  = ["nabla-interface/llama"]
 
 [dependencies]
@@ -24,3 +26,5 @@ nabla-core      = { path = "../nabla-core",      default-features = false }
 nabla-train     = { path = "../nabla-train",     default-features = false }
 nabla-interface = { path = "../nabla-interface", default-features = false }
 cudarc          = { version = "0.19", optional = true, features = ["driver"] }
+hip-runtime-sys = { version = "0.1",  optional = true }
+wgpu            = { version = "24",   optional = true }

@@ -13,6 +13,7 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
             Options:\n  \
             --format   gguf|onnx            (required)\n  \
             --quant    <TYPE>               GGUF quant type (default: Q4_K_M)\n  \
+            --imatrix  <PATH>               Importance matrix for IQ4_NL/IQ4_XS quantization\n  \
             --out      <PATH>               Output path (default: <model>.<format>)\n  \
             --arch     <NAME>               GGUF architecture tag (default: generic)\n  \
             --ctx-len  <N>                  Context length metadata (default: 0)\n  \
@@ -53,7 +54,7 @@ fn export_gguf(
     model_path: &Path,
     out_path: &Path,
 ) -> std::result::Result<(), Box<dyn Error>> {
-    use nabla_interface::{GgufArchConfig, QuantOverride, export_gguf};
+    use nabla_interface::{GgufArchConfig, Imatrix, QuantOverride, load_imatrix};
     use nabla_interface::quant::GgufQuantType;
 
     if flag_str(args, "--format") == Some("onnx") {
@@ -92,15 +93,27 @@ fn export_gguf(
     let refs: Vec<(&str, &nabla_core::tensor::Tensor<f64, DefaultBackend>)> =
         tensors.iter().map(|(n, t)| (n.as_str(), t)).collect();
 
+    // Load imatrix if provided (enables IQ4_NL / IQ4_XS with importance-weighted scales).
+    let imatrix: Option<Imatrix> = flag_str(args, "--imatrix")
+        .map(|p| load_imatrix(std::path::Path::new(p)))
+        .transpose()
+        .map_err(|e| format!("load_imatrix: {e}"))?;
+
     eprintln!(
-        "Exporting {} tensors → {} ({})",
+        "Exporting {} tensors → {} ({}{})",
         refs.len(),
         out_path.display(),
-        quant
+        quant,
+        imatrix.as_ref().map_or(String::new(), |im| format!(", imatrix {} entries", im.len())),
     );
 
-    export_gguf(&refs, out_path, quant, &config, &[] as &[QuantOverride])
-        .map_err(|e| format!("export_gguf: {e}"))?;
+    if let Some(im) = &imatrix {
+        nabla_interface::export_gguf_with_imatrix(&refs, out_path, quant, &config, &[] as &[QuantOverride], im)
+            .map_err(|e| format!("export_gguf_with_imatrix: {e}"))?;
+    } else {
+        nabla_interface::export_gguf(&refs, out_path, quant, &config, &[] as &[QuantOverride])
+            .map_err(|e| format!("export_gguf: {e}"))?;
+    }
 
     let size = std::fs::metadata(out_path)?.len();
     eprintln!(

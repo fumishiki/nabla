@@ -191,6 +191,8 @@ impl GgufQuantType {
                 | Self::Q5_K_S
                 | Self::Q5_K_M
                 | Self::Q6_K
+                | Self::IQ4_NL
+                | Self::IQ4_XS
         )
     }
 }
@@ -244,9 +246,27 @@ pub fn quantize(data: &[f32], qtype: GgufQuantType) -> Result<Vec<u8>> {
         GgufQuantType::Q4_K_S | GgufQuantType::Q4_K_M => quantize_q4_k(data),
         GgufQuantType::Q5_K_S | GgufQuantType::Q5_K_M => quantize_q5_k(data),
         GgufQuantType::Q6_K => quantize_q6_k(data),
+        GgufQuantType::IQ4_NL => quantize_iq4_nl(data, None),
+        GgufQuantType::IQ4_XS => quantize_iq4_xs(data, None),
         _ => Err(Error::Quant(format!(
             "{qtype:?} requires importance matrix or is not quantizable"
         ))),
+    }
+}
+
+/// Quantize with optional per-column importance scores (for IQ types).
+///
+/// # Errors
+/// Returns `Error::Quant` if length is invalid or type is not quantizable.
+pub fn quantize_with_importance(
+    data: &[f32],
+    qtype: GgufQuantType,
+    importance: Option<&[f32]>,
+) -> Result<Vec<u8>> {
+    match qtype {
+        GgufQuantType::IQ4_NL => quantize_iq4_nl(data, importance),
+        GgufQuantType::IQ4_XS => quantize_iq4_xs(data, importance),
+        _ => quantize(data, qtype),
     }
 }
 
@@ -389,4 +409,105 @@ impl std::fmt::Display for GgufQuantType {
         };
         f.write_str(s)
     }
+}
+
+// ---------------------------------------------------------------------------
+// IQ4_NL — 4-bit non-linear quantization (block size 32)
+// ---------------------------------------------------------------------------
+// Non-linear codebook from llama.cpp (ggml-quants.h).
+const KVALUES_IQ4_NL: [i8; 16] = [-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113];
+
+#[inline(always)]
+fn nearest_iq4_idx(scaled: f32) -> u8 {
+    KVALUES_IQ4_NL
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            let da = (**a as f32 - scaled).abs();
+            let db = (**b as f32 - scaled).abs();
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i as u8)
+        .unwrap_or(0)
+}
+
+fn quantize_iq4_nl(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> {
+    const QK: usize = 32;
+    const BLOCK_BYTES: usize = 18; // 2 (f16 delta) + 16 (4-bit qs for 32 values)
+    if data.len() % QK != 0 {
+        return Err(Error::Quant(format!("IQ4_NL: len {} not divisible by {QK}", data.len())));
+    }
+    let n_blocks = data.len() / QK;
+    let mut out = vec![0u8; n_blocks * BLOCK_BYTES];
+    for (b, block) in data.chunks_exact(QK).enumerate() {
+        let imp = importance.map(|im| &im[b * QK..(b + 1) * QK]);
+        let amax = block.iter().enumerate().map(|(i, &v)| {
+            let w = imp.map_or(1.0_f32, |im| im[i].abs().max(1e-9));
+            (v * w).abs()
+        }).fold(0.0_f32, f32::max);
+        let d = amax / 127.0;
+        let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+        let base = b * BLOCK_BYTES;
+        out[base..base + 2].copy_from_slice(&half::f16::from_f32(d).to_le_bytes());
+        for i in 0..QK {
+            let idx = nearest_iq4_idx(block[i] * id);
+            if i % 2 == 0 { out[base + 2 + i / 2]  = idx & 0x0f; }
+            else           { out[base + 2 + i / 2] |= idx << 4;   }
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// IQ4_XS — 4-bit non-linear quantization with super-blocks (block size 256)
+// ---------------------------------------------------------------------------
+fn quantize_iq4_xs(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> {
+    const QK: usize = 256;
+    const QK_SUB: usize = 32;
+    const N_SUB: usize = QK / QK_SUB; // 8
+    const BLOCK_BYTES: usize = 2 + 4 + 128; // f16 d + 4-bit sub-scales (8×4b) + 4-bit qs
+    if data.len() % QK != 0 {
+        return Err(Error::Quant(format!("IQ4_XS: len {} not divisible by {QK}", data.len())));
+    }
+    let n_super = data.len() / QK;
+    let mut out = vec![0u8; n_super * BLOCK_BYTES];
+    for (s, super_block) in data.chunks_exact(QK).enumerate() {
+        let imp_sup = importance.map(|im| &im[s * QK..(s + 1) * QK]);
+        // Compute per-sub-block amax.
+        let mut sub_amaxes = [0.0_f32; N_SUB];
+        for (sub, sb) in super_block.chunks_exact(QK_SUB).enumerate() {
+            let imp_sub = imp_sup.map(|im| &im[sub * QK_SUB..(sub + 1) * QK_SUB]);
+            sub_amaxes[sub] = sb.iter().enumerate().map(|(i, &v)| {
+                let w = imp_sub.map_or(1.0_f32, |im| im[i].abs().max(1e-9));
+                (v * w).abs()
+            }).fold(0.0_f32, f32::max);
+        }
+        let super_amax = sub_amaxes.iter().cloned().fold(0.0_f32, f32::max);
+        // Super-block scale: maps sub-block amaxes to 4-bit (0–15).
+        let d_super = super_amax / (15.0 * 127.0);
+        let id_super = if d_super > 0.0 { 1.0 / d_super } else { 0.0 };
+        let base = s * BLOCK_BYTES;
+        out[base..base + 2].copy_from_slice(&half::f16::from_f32(d_super).to_le_bytes());
+        // 4-bit sub-block scales packed 2 per byte.
+        let mut sub_scales = [0u8; N_SUB];
+        for sub in 0..N_SUB {
+            let sc = (sub_amaxes[sub] * id_super / 127.0).round().clamp(0.0, 15.0) as u8;
+            sub_scales[sub] = sc;
+            if sub % 2 == 0 { out[base + 2 + sub / 2]  = sc & 0x0f; }
+            else             { out[base + 2 + sub / 2] |= sc << 4;   }
+        }
+        // 4-bit quants.
+        let qs_offset = base + 2 + 4;
+        for (sub, sb) in super_block.chunks_exact(QK_SUB).enumerate() {
+            let d_sub = d_super * sub_scales[sub] as f32;
+            let id_sub = if d_sub > 0.0 { 1.0 / d_sub } else { 0.0 };
+            for i in 0..QK_SUB {
+                let gi = sub * QK_SUB + i;
+                let idx = nearest_iq4_idx(sb[i] * id_sub);
+                if gi % 2 == 0 { out[qs_offset + gi / 2]  = idx & 0x0f; }
+                else            { out[qs_offset + gi / 2] |= idx << 4;   }
+            }
+        }
+    }
+    Ok(out)
 }

@@ -11,14 +11,16 @@
 
 pub mod convert;
 pub mod gguf;
+pub mod imatrix;
 #[cfg(feature = "llama")]
 pub mod llama;
 pub mod quant;
 #[cfg(feature = "llama")]
 pub mod serve;
 
-pub use convert::{GgufArchConfig, QuantOverride, export_gguf};
+pub use convert::{GgufArchConfig, QuantOverride, export_gguf, export_gguf_with_imatrix};
 pub use gguf::GgufWriter;
+pub use imatrix::{Imatrix, load_imatrix};
 pub use quant::GgufQuantType;
 
 #[cfg(feature = "llama")]

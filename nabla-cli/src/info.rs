@@ -1,6 +1,6 @@
 //! `nabla info` — hardware diagnostics.
 //!
-//! Probes available backends in order: CUDA → CPU.
+//! Probes available backends in order: CUDA → HIP → wgpu → CPU.
 //! Outputs a human-readable table or `--json`.
 
 use std::error::Error;
@@ -15,21 +15,20 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut entries: Vec<InfoEntry> = Vec::new();
 
     #[cfg(feature = "cuda")]
-    {
-        entries.extend(probe_cuda()?);
-    }
+    entries.extend(probe_cuda()?);
+
+    #[cfg(feature = "hip")]
+    entries.extend(probe_hip()?);
+
+    #[cfg(feature = "wgpu")]
+    entries.extend(probe_wgpu());
 
     entries.push(probe_cpu());
 
-    if json {
-        print_json(&entries);
-    } else {
-        print_table(&entries);
-    }
+    if json { print_json(&entries); } else { print_table(&entries); }
 
-    // Exit 1 if no GPU found (CPU-only).
-    let has_gpu = entries.iter().any(|e| e.kind != "CPU");
-    if !has_gpu {
+    // Exit 1 if no GPU found (CLI-INFO-06).
+    if !entries.iter().any(|e| e.kind != "CPU") {
         std::process::exit(1);
     }
     Ok(())
@@ -111,6 +110,82 @@ fn probe_cuda() -> Result<Vec<InfoEntry>, Box<dyn Error>> {
         });
     }
     Ok(entries)
+}
+
+// ---------------------------------------------------------------------------
+// HIP/ROCm probing
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "hip")]
+fn probe_hip() -> Result<Vec<InfoEntry>, Box<dyn Error>> {
+    use hip_runtime_sys::{hipGetDeviceCount, hipGetDeviceProperties, hipMemGetInfo, hipError_t};
+
+    let mut entries = Vec::new();
+    let mut count: i32 = 0;
+    let rc = unsafe { hipGetDeviceCount(&mut count) };
+    if rc != hipError_t::hipSuccess || count == 0 {
+        return Ok(entries);
+    }
+
+    for dev in 0..count {
+        let mut prop: hip_runtime_sys::hipDeviceProp_t = unsafe { std::mem::zeroed() };
+        unsafe { hipGetDeviceProperties(&mut prop, dev) };
+        let name = unsafe {
+            std::ffi::CStr::from_ptr(prop.name.as_ptr())
+                .to_string_lossy()
+                .into_owned()
+        };
+        let mut free: usize = 0;
+        let mut total: usize = 0;
+        // hipMemGetInfo requires an active context; best-effort only.
+        unsafe { hipMemGetInfo(&mut free, &mut total) };
+        let arch = unsafe {
+            std::ffi::CStr::from_ptr(prop.gcnArchName.as_ptr())
+                .to_string_lossy()
+                .into_owned()
+        };
+        entries.push(InfoEntry {
+            kind: "HIP",
+            name,
+            mem_total_mib: Some((total / (1024 * 1024)) as u64),
+            mem_free_mib: Some((free / (1024 * 1024)) as u64),
+            extra: vec![("Arch", arch)],
+        });
+    }
+    Ok(entries)
+}
+
+// ---------------------------------------------------------------------------
+// wgpu probing
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "wgpu")]
+fn probe_wgpu() -> Vec<InfoEntry> {
+    use wgpu::{Backends, Instance, InstanceDescriptor};
+
+    let instance = Instance::new(&InstanceDescriptor {
+        backends: Backends::all(),
+        ..Default::default()
+    });
+    instance
+        .enumerate_adapters(Backends::all())
+        .into_iter()
+        .filter_map(|adapter| {
+            let info = adapter.get_info();
+            // Skip software/CPU adapters (e.g. Lavapipe, SwiftShader).
+            if info.device_type == wgpu::DeviceType::Cpu {
+                return None;
+            }
+            let backend = format!("{:?}", info.backend);
+            Some(InfoEntry {
+                kind: "wgpu",
+                name: info.name,
+                mem_total_mib: None,
+                mem_free_mib: None,
+                extra: vec![("Backend", backend)],
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

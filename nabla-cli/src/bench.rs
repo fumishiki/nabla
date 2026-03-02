@@ -1,7 +1,8 @@
 //! `nabla bench` — matmul and MLP training-step benchmarks.
 //!
 //! Usage: nabla bench [--workload matmul|mlp|all] [--batch 128,512]
-//!                    [--sizes 1024,4096] [--iters 100] [--warmup 10] [--json]
+//!                    [--sizes 1024,4096] [--iters 100] [--warmup 10]
+//!                    [--backend cuda|hip|wgpu|cpu] [--json]
 
 use std::error::Error;
 use std::time::Instant;
@@ -13,6 +14,14 @@ use nabla_train::prelude::{Optimizer, Sgd};
 // Re-export the standard Tape/Variable via nabla crate (not the prelude to avoid Result alias clash).
 use nabla::autograd::Tape;
 
+/// Return the name of the compiled-in default backend.
+fn compiled_backend() -> &'static str {
+    #[cfg(feature = "cuda")] { return "cuda"; }
+    #[cfg(feature = "hip")]  { return "hip"; }
+    #[cfg(feature = "wgpu")] { return "wgpu"; }
+    "cpu"
+}
+
 pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
@@ -23,9 +32,21 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
             --sizes    <n,n,...>        Matmul matrix sizes (default: 1024,4096)\n  \
             --iters    <n>              Iterations per measurement (default: 100)\n  \
             --warmup   <n>              Warmup iterations (default: 10)\n  \
+            --backend  cuda|hip|wgpu|cpu  Select backend (must match compiled features)\n  \
             --json                     Emit JSON output"
         );
         return Ok(());
+    }
+
+    // Validate --backend if provided.
+    if let Some(requested) = flag_str(args, "--backend") {
+        let available = compiled_backend();
+        if requested != available {
+            return Err(format!(
+                "backend `{requested}` is not compiled in (this binary has `{available}`); \
+                 rebuild with --features {requested}"
+            ).into());
+        }
     }
 
     let workload = flag_str(args, "--workload").unwrap_or("all");
@@ -34,6 +55,13 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
     let iters    = flag_usize(args, "--iters").unwrap_or(100);
     let warmup   = flag_usize(args, "--warmup").unwrap_or(10);
     let json     = args.iter().any(|a| a == "--json");
+
+    let backend = compiled_backend().to_uppercase();
+    if !json {
+        println!("nabla bench  [{backend}]");
+        println!("{:<26} {}", "Workload", "Time (µs)");
+        println!("{}", "─".repeat(36));
+    }
 
     let mut records: Vec<BenchRecord> = Vec::new();
 
@@ -52,7 +80,7 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
         return Err(format!("unknown workload `{workload}` — use matmul, mlp, or all").into());
     }
 
-    if json { print_json(&records); } else { print_table(&records); }
+    if json { print_json(&records); } else { print_rows(&records); }
     Ok(())
 }
 
@@ -157,14 +185,10 @@ fn kaiming(rows: usize, cols: usize) -> Tensor<f32, DefaultBackend> {
 // Output
 // ---------------------------------------------------------------------------
 
-fn print_table(records: &[BenchRecord]) {
-    let backend = if cfg!(feature = "cuda") { "CUDA" } else { "CPU" };
-    println!("nabla bench  [{backend}]");
-    println!("{:<22} {:>12}", "Workload", "Time (µs)");
-    println!("{}", "─".repeat(36));
+fn print_rows(records: &[BenchRecord]) {
     for r in records {
         println!(
-            "{:<22} {:>11.1} µs",
+            "{:<26} {:>9.1} µs",
             format!("{} {}", r.workload, r.label),
             r.eager_us
         );
