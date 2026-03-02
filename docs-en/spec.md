@@ -518,3 +518,42 @@ Generated 64 tokens in 1.2 s (53.3 tok/s)
 - `nabla-cli/tests/bench.rs`: `nabla bench --workload matmul --iters 5 --warmup 1` completes without error; JSON output schema matches
 - `nabla-cli/tests/export.rs`: export small Linear model to GGUF Q4_0 and ONNX; verify file exists and size > 0
 - `nabla-cli/tests/run.rs`: skipped unless `features = ["llama"]` and GGUF fixture present
+
+---
+
+## §9 CLI — inspect + serve
+
+### §9.1 nabla inspect
+
+| REQ-ID | Requirement | Status |
+|---|---|---|
+| CLI-INSP-01 | Load nabla checkpoint and print tensor name / shape / numel per row | ✅ |
+| CLI-INSP-02 | Per-tensor stats: min, max, mean, std (skip with `--no-stats`) | ✅ |
+| CLI-INSP-03 | `--filter <pattern>` filters tensor names by substring match | ✅ |
+| CLI-INSP-04 | `--json` outputs machine-readable JSON array | ✅ |
+| CLI-INSP-05 | Footer: total parameter count | ✅ |
+
+#### Acceptance tests
+- `nabla inspect <ckpt> --help` exits 0
+- `nabla inspect <ckpt>` prints table with header row and at least one tensor
+- `nabla inspect <ckpt> --json` outputs valid JSON array
+
+### §9.2 nabla serve
+
+| REQ-ID | Requirement | Status |
+|---|---|---|
+| CLI-SERV-01 | Start HTTP server on configurable `--host` / `--port` (default 127.0.0.1:8080) | ✅ |
+| CLI-SERV-02 | `GET /health` returns `{"status":"ok"}` | ✅ |
+| CLI-SERV-03 | `GET /v1/models` returns model list | ✅ |
+| CLI-SERV-04 | `POST /v1/completions` accepts `{"model":…,"prompt":…,"max_tokens":…}` | ✅ |
+| CLI-SERV-05 | `POST /v1/chat/completions` accepts OpenAI messages array | ✅ |
+| CLI-SERV-06 | Non-llama build exits with clear error message | ✅ |
+| CLI-SERV-07 | `--ctx`, `--temp`, `--max-tokens` tune inference parameters | ✅ |
+
+#### Acceptance tests
+- `nabla serve --help` exits 0
+- `nabla serve <gguf>` (llama feature) starts listening; `curl .../health` returns 200
+
+#### Notes
+- Pure `std` networking (raw TCP), no external HTTP runtime added
+- `#[cfg(feature = "llama")]` gates real implementation
