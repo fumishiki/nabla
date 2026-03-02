@@ -20,12 +20,12 @@ nabla-train = { path = "../nabla-train" }
 
 Exactly one backend feature must be enabled — mutual exclusion enforced at compile time:
 
-| Feature | Backend | Storage | f64 | Complex |
-|---|---|---|---|---|
-| `cpu` (default) | `Cpu` | `Vec<T>` row-major | yes | yes |
-| `wgpu` | `Gpu` | `wgpu::Buffer` | no | no |
-| `cuda` | `Cuda` | `CUdeviceptr` | yes | no |
-| `hip` | `Hip` | `hipDeviceptr_t` | yes | no |
+| Feature | Backend | Storage | Scalar types |
+|---|---|---|---|
+| `cpu` (default) | `Cpu` | `Vec<T>` row-major | f32, f64, f16, bf16, c32, c64, Dual |
+| `wgpu` | `Gpu` | `wgpu::Buffer` | f32 |
+| `cuda` | `Cuda` | `CUdeviceptr` | f32, f64, f16, Fp8E4M3, Fp8E5M2, Fp4E2M1 |
+| `hip` | `Hip` | `hipDeviceptr_t` | f32, f64 |
 
 ### Minimal example
 
@@ -176,13 +176,17 @@ let s = a.sum();                // scalar sum
 let m = a.mean();               // scalar mean
 let x = a.max();                // scalar max
 let i = a.argmax();             // index of max
+let v = a.var();                // population variance (ddof=0)
+let sd = a.std();               // population std dev
 
 // Axis variants
 let row_sum = a.sum_axis(0);    // sum along rows
 let col_mean = a.mean_axis(1);  // mean along cols
 let cs = a.cumsum(0);           // cumulative sum along axis 0
 let cp = a.cumprod(1);          // cumulative product along axis 1
-let v = a.var_axis_ddof(0, 1);  // variance with ddof
+let va = a.var_axis(0);         // variance along axis 0
+let sa = a.std_axis(0);         // std dev along axis 0
+let vd = a.var_axis_ddof(0, 1); // variance with ddof=1 (sample variance)
 let n = a.norm();               // Frobenius norm
 let p = a.norm_ord(1.0);        // L1 norm
 ```
@@ -196,7 +200,8 @@ let p = a.norm_ord(1.0);        // L1 norm
 | Prod | `.prod()` | `.prod_axis(d)` |
 | Cumsum / Cumprod | — | `.cumsum(d)` / `.cumprod(d)` |
 | Norm | `.norm()` | — |
-| Variance | — | `.var_axis_ddof(d, ddof)` |
+| Variance | `.var()` | `.var_axis(d)` / `.var_axis_ddof(d, ddof)` |
+| Std Dev | `.std()` | `.std_axis(d)` |
 
 ---
 
@@ -589,9 +594,50 @@ let (y, z) = mega_fuse!(a + b; prev.exp(); inputs: a, b);
 
 Pipeline: AST -> egg EqSat (18 IEEE-754 safe rules) -> NVRTC/hiprtc JIT -> FNV-1a hash cache.
 
+### GEMV auto-dispatch (batch-1 matmul)
+
+When the output has `m=1` (single-row), the CUDA backend automatically dispatches `cuBLAS sgemv` instead of `sgemm`. This gives a significant speedup for inference-style forward passes where batch size = 1.
+
+```rust
+// Internally uses sgemv (not sgemm) when a.nrows() == 1
+let out = &a * &b;  // a: (1, k), b: (k, n) → dispatches sgemv
+```
+
+No API change required — dispatch is automatic based on shape.
+
 ### sync()
 
 `sync()` is a GPU stream barrier (no device-to-host transfer). Use before timing or cross-stream dependencies.
+
+### Low-Precision Types (fp8 / fp4)
+
+CUDA backend supports `f16`, `Fp8E4M3`, `Fp8E5M2`, `Fp4E2M1` as first-class `Scalar` types.
+
+```rust
+use nabla::prelude::*;
+
+// Cast between precisions
+let a: Tensor<f32, Cuda> = randn(64, 64);
+let a_f16: Tensor<f16, Cuda>     = a.cast::<f16>();
+let a_fp8e4: Tensor<Fp8E4M3, Cuda> = a.quantize_fp8_e4m3();  // = a.cast::<Fp8E4M3>()
+let a_fp8e5: Tensor<Fp8E5M2, Cuda> = a.quantize_fp8_e5m2();
+
+// Dequantize back to f32
+let a_back: Tensor<f32, Cuda> = a_fp8e4.dequantize_fp8_e4m3();
+
+// Blockwise fp4 (for quantization-aware training)
+let (q, scales) = a.quantize_fp4_blockwise(128);   // block_size=128
+let a_back: Tensor<f32, Cuda> = q.dequantize_fp4_blockwise(&scales, 128);
+```
+
+| Type | Format | Range | Use case |
+|---|---|---|---|
+| `f16` | IEEE 754 half | ±65504 | General mixed-precision |
+| `Fp8E4M3` | E4M3 (OCP) | ±448 | Forward pass activations |
+| `Fp8E5M2` | E5M2 (OCP) | ±57344 | Gradient storage |
+| `Fp4E2M1` | E2M1 | ±6 | Extreme compression (QAT) |
+
+All low-precision types implement `Scalar`, support `from_fn`, `fill`, `cast`, element-wise ops, and `to_vec`. cuBLAS matmul dispatches `gemm_ex` with the appropriate compute type.
 
 ---
 
