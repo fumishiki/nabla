@@ -4,6 +4,7 @@
 
 use std::error::Error;
 use std::path::Path;
+use crate::tty;
 
 pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -95,36 +96,40 @@ struct TensorEntry {
 
 fn print_table(entries: &[TensorEntry], path: &Path, no_stats: bool) {
     let total_params: usize = entries.iter().map(|e| e.numel).sum();
-    println!("checkpoint: {}", path.display());
-    println!("tensors   : {}", entries.len());
-    println!("parameters: {}", fmt_param_count(total_params));
+    println!("checkpoint: {}", tty::bold(&path.display().to_string()));
+    println!("tensors   : {}", tty::cyan(&entries.len().to_string()));
+    println!("parameters: {}", tty::cyan(&fmt_param_count(total_params)));
     println!();
 
     if no_stats {
-        println!("{:<40} {:>16}  {:>12}", "name", "shape", "params");
-        println!("{}", "─".repeat(72));
+        let header = format!("{:<40} {:>16}  {:>12}", "name", "shape", "params");
+        let sep    = tty::dim(&"─".repeat(72));
+        println!("{}", tty::dim(&header));
+        println!("{sep}");
         for e in entries {
             println!(
-                "{:<40} {:>16}  {:>12}",
-                truncate(&e.name, 40),
+                "{}  {:>16}  {:>12}",
+                tty::bold(&format!("{:<40}", truncate(&e.name, 40))),
                 format!("[{}×{}]", e.rows, e.cols),
                 fmt_param_count(e.numel),
             );
         }
     } else {
-        println!(
+        let header = format!(
             "{:<40} {:>14}  {:>10}  {:>9}  {:>9}  {:>9}  {:>9}",
             "name", "shape", "params", "min", "max", "mean", "std"
         );
-        println!("{}", "─".repeat(113));
+        let sep = tty::dim(&"─".repeat(115));
+        println!("{}", tty::dim(&header));
+        println!("{sep}");
         for e in entries {
             let (mn, mx, me, st) = e.stats.as_ref().map_or(
                 ("—".into(), "—".into(), "—".into(), "—".into()),
                 |s| (fmt_f(s.min), fmt_f(s.max), fmt_f(s.mean), fmt_f(s.std)),
             );
             println!(
-                "{:<40} {:>14}  {:>10}  {:>9}  {:>9}  {:>9}  {:>9}",
-                truncate(&e.name, 40),
+                "{}  {:>14}  {:>10}  {:>9}  {:>9}  {:>9}  {:>9}",
+                tty::bold(&format!("{:<40}", truncate(&e.name, 40))),
                 format!("[{}×{}]", e.rows, e.cols),
                 fmt_param_count(e.numel),
                 mn, mx, me, st,

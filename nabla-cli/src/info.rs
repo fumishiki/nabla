@@ -4,6 +4,7 @@
 //! Outputs a human-readable table or `--json`.
 
 use std::error::Error;
+use crate::tty;
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -239,21 +240,27 @@ fn sys_total_ram_mib() -> Option<u64> { None }
 // ---------------------------------------------------------------------------
 
 fn print_table(entries: &[InfoEntry]) {
-    println!("nabla hardware info");
-    println!("{}", "─".repeat(50));
+    let sep = tty::dim(&"─".repeat(52));
+    println!("{}", tty::bold("nabla hardware info"));
+    println!("{sep}");
     for e in entries {
         let mem = match (e.mem_total_mib, e.mem_free_mib) {
-            (Some(t), Some(f)) => format!("{t} MiB total / {f} MiB free"),
-            (Some(t), None)    => format!("{t} MiB total"),
-            _                  => "unknown".into(),
+            (Some(t), Some(f)) => tty::cyan(&format!("{t} MiB total / {f} MiB free")),
+            (Some(t), None)    => tty::cyan(&format!("{t} MiB total")),
+            _                  => tty::dim("unknown"),
         };
-        println!("Backend : {}", e.kind);
-        println!("Device  : {}", e.name);
+        let kind_colored = match e.kind {
+            "CUDA" | "HIP" => tty::green(e.kind),
+            "CPU"           => tty::dim(e.kind),
+            _               => tty::cyan(e.kind),
+        };
+        println!("Backend : {kind_colored}");
+        println!("Device  : {}", tty::bold(&e.name));
         println!("Memory  : {mem}");
         for (k, v) in &e.extra {
             println!("{k:<8}: {v}");
         }
-        println!("{}", "─".repeat(50));
+        println!("{sep}");
     }
 }
 

@@ -4,6 +4,7 @@ mod bench;
 mod export;
 mod info;
 mod inspect;
+mod tty;
 #[cfg(feature = "llama")]
 mod run;
 

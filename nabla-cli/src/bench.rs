@@ -11,10 +11,9 @@ use nabla_core::backend::DefaultBackend;
 use nabla_core::tensor::Tensor;
 use nabla_train::prelude::{Optimizer, Sgd};
 
-// Re-export the standard Tape/Variable via nabla crate (not the prelude to avoid Result alias clash).
 use nabla::autograd::Tape;
+use crate::tty;
 
-/// Return the name of the compiled-in default backend.
 fn compiled_backend() -> &'static str {
     #[cfg(feature = "cuda")] { return "cuda"; }
     #[cfg(feature = "hip")]  { return "hip"; }
@@ -38,7 +37,6 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // Validate --backend if provided.
     if let Some(requested) = flag_str(args, "--backend") {
         let available = compiled_backend();
         if requested != available {
@@ -56,23 +54,37 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
     let warmup   = flag_usize(args, "--warmup").unwrap_or(10);
     let json     = args.iter().any(|a| a == "--json");
 
-    let backend = compiled_backend().to_uppercase();
     if !json {
-        println!("nabla bench  [{backend}]");
-        println!("{:<26} {}", "Workload", "Time (µs)");
-        println!("{}", "─".repeat(36));
+        let backend = compiled_backend().to_uppercase();
+        println!("{}", tty::bold(&format!("nabla bench  [{backend}]")));
+        let header = format!("{:<28}  {:>12}", "Workload", "Time (µs)");
+        println!("{}", tty::dim(&"─".repeat(44)));
+        println!("{}", tty::dim(&header));
+        println!("{}", tty::dim(&"─".repeat(44)));
     }
 
     let mut records: Vec<BenchRecord> = Vec::new();
 
     if workload == "matmul" || workload == "all" {
         for &n in &sizes {
-            records.push(bench_matmul(n, warmup, iters));
+            let label = format!("matmul {n}×{n} f32");
+            let rec = {
+                let _sp = (!json).then(|| tty::Spinner::new(&label));
+                bench_matmul(n, warmup, iters)
+            };
+            if !json { print_row(&rec); }
+            records.push(rec);
         }
     }
     if workload == "mlp" || workload == "all" {
         for &b in &batches {
-            records.push(bench_mlp(b, warmup, iters));
+            let label = format!("mlp batch={b}");
+            let rec = {
+                let _sp = (!json).then(|| tty::Spinner::new(&label));
+                bench_mlp(b, warmup, iters)
+            };
+            if !json { print_row(&rec); }
+            records.push(rec);
         }
     }
 
@@ -80,7 +92,7 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
         return Err(format!("unknown workload `{workload}` — use matmul, mlp, or all").into());
     }
 
-    if json { print_json(&records); } else { print_rows(&records); }
+    if json { print_json(&records); }
     Ok(())
 }
 
@@ -185,14 +197,15 @@ fn kaiming(rows: usize, cols: usize) -> Tensor<f32, DefaultBackend> {
 // Output
 // ---------------------------------------------------------------------------
 
-fn print_rows(records: &[BenchRecord]) {
-    for r in records {
-        println!(
-            "{:<26} {:>9.1} µs",
-            format!("{} {}", r.workload, r.label),
-            r.eager_us
-        );
-    }
+fn print_row(r: &BenchRecord) {
+    let label = format!("{} {}", r.workload, r.label);
+    // Pad label to 28 chars before coloring to preserve column alignment.
+    let label_padded = format!("{label:<28}");
+    println!(
+        "{}  {}",
+        tty::bold(&label_padded),
+        tty::cyan(&format!("{:>10.1} µs", r.eager_us)),
+    );
 }
 
 fn print_json(records: &[BenchRecord]) {
