@@ -137,11 +137,28 @@ fn main() {
     println!("\n--- MatMul ---");
     let m1 = rand_tensor(1024, 1024);
     let m2 = rand_tensor(1024, 1024);
-    bench("matmul 1024", || &m1 * &m2);
+    bench("matmul f32 1024", || &m1 * &m2);
 
     let m3 = rand_tensor(2048, 2048);
     let m4 = rand_tensor(2048, 2048);
-    bench("matmul 2048", || &m3 * &m4);
+    bench("matmul f32 2048", || &m3 * &m4);
+
+    let m5 = rand_tensor(4096, 4096);
+    let m6 = rand_tensor(4096, 4096);
+    bench("matmul f32 4096", || &m5 * &m6);
+
+    // FP16 matmul via Tensor Cores (CUBLAS_COMPUTE_16F)
+    let h1: Tensor<f16> = Tensor::from_fn(4096, 4096, |_, _| f16::from_f32(0.01));
+    let h2: Tensor<f16> = Tensor::from_fn(4096, 4096, |_, _| f16::from_f32(0.01));
+    let mut ring_f16: Vec<Tensor<f16>> = (0..WARMUP).map(|_| &h1 * &h2).collect();
+    gpu_sync();
+    let start_f16 = Instant::now();
+    for i in 0..ITERS {
+        ring_f16[i % WARMUP] = &h1 * &h2;
+    }
+    gpu_sync();
+    let ms_f16 = start_f16.elapsed().as_micros() as f64 / ITERS as f64 / 1000.0;
+    println!("{:<25} {:>8.3} ms", "matmul f16 4096", ms_f16);
 
     println!("\n{}", "=".repeat(50));
     println!("Done.");

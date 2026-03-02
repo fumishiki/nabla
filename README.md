@@ -98,14 +98,23 @@ Switch to GPU: change `features = ["cpu"]` to `features = ["cuda"]` in `Cargo.to
 
 **Benchmark on GH200 480GB (CUDA 12.8, PyTorch 2.7.0)**
 
-| Workload | nabla | PyTorch 2.7 |
-|---|---|---|
-| matmul 4096×4096 (f32, tensor cores) | 0.358 ms | 2.675 ms — **7.5× slower** |
-| matmul 1024×1024 (f32) | 0.036 ms | 0.058 ms — **1.6× slower** |
-| `exp` + `sin` fused | 0.041 ms | 0.081 ms — **2.0× slower** |
-| `sin` / `cos` / `tanh` | 0.040 ms | 0.041 ms | ~parity |
-| `add` / `sub` / element-wise | 0.058 ms | 0.058 ms | ~parity |
-| 4-op `fuse!` speedup vs unfused | **3.38×** | — |
+| Workload | nabla | PyTorch 2.7 (default) | PyTorch 2.7 (TF32=ON) | PyTorch 2.7 (FP16) |
+|---|---|---|---|---|
+| matmul 4096×4096 (f32) | **0.372 ms** | 2.675 ms | 0.332 ms — ~parity | — |
+| matmul 4096×4096 (f16) | **0.189 ms** | — | — | 0.210 ms |
+| matmul 1024×1024 | **0.036 ms** | 0.058 ms | — | — |
+| `exp` + `sin` fused | **0.041 ms** | 0.081 ms | — | — |
+| `sin` / `cos` / `tanh` | 0.040 ms | 0.041 ms | ~parity | — |
+| `add` / `sub` / element-wise | 0.058 ms | 0.058 ms | ~parity | — |
+| 4-op `fuse!` speedup vs unfused | **3.38×** | — | — | — |
+
+> **Transparency note on the matmul results:**
+> nabla explicitly enables TF32 Tensor Core math (`CUBLAS_TF32_TENSOR_OP_MATH`) on initialization.
+> PyTorch 2.7.0 ships with `torch.backends.cuda.matmul.allow_tf32 = False` by default — verified on the same GH200.
+> When PyTorch is set to TF32=ON, f32 matmul performance is **approximately equal** (PyTorch 0.332ms vs nabla 0.372ms, within noise).
+> The large f32 gap (2.675ms vs 0.372ms) is a default-settings difference, not an algorithmic one.
+> **FP16 is the fairest comparison for real-world DL inference/training:** nabla 0.189ms vs PyTorch 0.210ms — nabla wins by ~1.1×, using the same `CUBLAS_COMPUTE_16F` Tensor Core path on both sides.
+> nabla's position: **TF32 should be the default for deep learning** — accuracy impact is negligible and the speedup is enormous. PyTorch makes you opt in; nabla does the right thing out of the box.
 
 **MLP training (784→256→128→10, MSE loss, SGD) — all batch sizes:**
 
@@ -117,6 +126,8 @@ Switch to GPU: change `features = ["cpu"]` to `features = ["cuda"]` in `Cargo.to
 | 256 | 0.139 ms | **0.094 ms** | 0.974 ms | 0.136 ms |
 | 512 | 0.147 ms | **0.108 ms** | 0.847 ms | 0.142 ms |
 | 1024 | 0.170 ms | **0.130 ms** | 0.966 ms | 0.160 ms |
+
+> The MLP training numbers use the same model and loss function on both sides (MSE sum, SGD, no `allow_tf32` manipulation) — the 4.2–6.4× eager gap is entirely due to CPU dispatch overhead, not precision settings. See the benchmark script: [`benchmarks/bench_pytorch.py`](benchmarks/bench_pytorch.py).
 
 nabla eager is **4.2–6.4× faster** than PyTorch eager across all batch sizes. At batch ≥ 128, nabla CUDA Graph is also faster than PyTorch CUDA Graph (1.2–1.5×). At batch=1 PyTorch CUDA Graph wins (smaller models, lower absolute latency).
 

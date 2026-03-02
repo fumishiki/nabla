@@ -13,8 +13,12 @@ pub(crate) fn type_suffix<T: Scalar>() -> &'static str {
         "f32"
     } else if TypeId::of::<T>() == TypeId::of::<f64>() {
         "f64"
+    } else if TypeId::of::<T>() == TypeId::of::<half::f16>() {
+        "f16"
+    } else if TypeId::of::<T>() == TypeId::of::<half::bf16>() {
+        "bf16"
     } else {
-        panic!("GPU backend supports f32/f64 only")
+        panic!("GPU backend: unsupported scalar type")
     }
 }
 

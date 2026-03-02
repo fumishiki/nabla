@@ -150,8 +150,41 @@ def bench_cuda_graph(batch):
     return start.elapsed_time(end) / ITERS
 
 
+def bench_matmul(n: int, dtype):
+    """Standalone matmul benchmark: C = A @ B, [n,n] x [n,n]."""
+    a = torch.randn(n, n, device=DEVICE, dtype=dtype)
+    b = torch.randn(n, n, device=DEVICE, dtype=dtype)
+    for _ in range(WARMUP):
+        c = torch.matmul(a, b)
+    torch.cuda.synchronize()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(ITERS):
+        c = torch.matmul(a, b)
+    end.record()
+    torch.cuda.synchronize()
+    return start.elapsed_time(end) / ITERS
+
+
 def main():
     print(f"PyTorch {torch.__version__}, CUDA {torch.version.cuda}, {torch.cuda.get_device_name(0)}")
+    print(f"allow_tf32 = {torch.backends.cuda.matmul.allow_tf32}")
+    print()
+
+    # ── Matmul benchmark (FP32 TF32=OFF / FP32 TF32=ON / FP16) ──────────────
+    print("=== Matmul benchmark (4096x4096) ===")
+    for n in [1024, 2048, 4096]:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        ms_f32 = bench_matmul(n, torch.float32)
+        torch.backends.cuda.matmul.allow_tf32 = True
+        ms_tf32 = bench_matmul(n, torch.float32)
+        ms_f16 = bench_matmul(n, torch.float16)
+        ms_bf16 = bench_matmul(n, torch.bfloat16)
+        print(f"  {n}x{n}: f32(tf32=off)={ms_f32:.4f}ms  f32(tf32=on)={ms_tf32:.4f}ms  f16={ms_f16:.4f}ms  bf16={ms_bf16:.4f}ms")
+    torch.backends.cuda.matmul.allow_tf32 = False  # reset to default
+    print()
+
     print(f"MLP 784->256->128->10, leaky_relu(0.01), MSE sum, SGD lr={LR}, f32")
     print(f"Warmup={WARMUP}, Iters={ITERS}")
     print()

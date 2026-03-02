@@ -373,6 +373,59 @@ pub(super) fn cublas_gemm<T: Scalar>(
                 n,
             )
             .or_panic("cuBLAS dgemm");
+        } else if TypeId::of::<T>() == TypeId::of::<half::f16>() {
+            // FP16 input/output, FP16 accumulation via Tensor Cores.
+            // alpha/beta must be passed as fp16 bits when compute type is CUBLAS_COMPUTE_16F.
+            let alpha = half::f16::ONE;
+            let beta = half::f16::ZERO;
+            cublas_result::gemm_ex(
+                ctx.blas.0,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                n,
+                m,
+                k,
+                &alpha as *const half::f16 as *const std::ffi::c_void,
+                b.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                n,
+                a.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                k,
+                &beta as *const half::f16 as *const std::ffi::c_void,
+                out.buf.ptr as *mut std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                n,
+                cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_16F,
+                cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            )
+            .or_panic("cuBLAS gemm_ex f16");
+        } else if TypeId::of::<T>() == TypeId::of::<half::bf16>() {
+            // BF16 input/output, FP32 accumulation for numerical stability.
+            let alpha = 1.0f32;
+            let beta = 0.0f32;
+            cublas_result::gemm_ex(
+                ctx.blas.0,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                n,
+                m,
+                k,
+                &alpha as *const f32 as *const std::ffi::c_void,
+                b.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16BF,
+                n,
+                a.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16BF,
+                k,
+                &beta as *const f32 as *const std::ffi::c_void,
+                out.buf.ptr as *mut std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16BF,
+                n,
+                cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_32F,
+                cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            )
+            .or_panic("cuBLAS gemm_ex bf16");
         } else {
             cuda_matmul_tiled(ctx, out, a, b);
         }
@@ -448,6 +501,56 @@ pub(super) fn cublas_gemm_tn<T: Scalar>(
                 n,
             )
             .or_panic("cuBLAS dgemm tn");
+        } else if TypeId::of::<T>() == TypeId::of::<half::f16>() {
+            let alpha = half::f16::ONE;
+            let beta = half::f16::ZERO;
+            cublas_result::gemm_ex(
+                ctx.blas.0,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_T,
+                n,
+                m,
+                k,
+                &alpha as *const half::f16 as *const std::ffi::c_void,
+                b.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                n,
+                a.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                m,
+                &beta as *const half::f16 as *const std::ffi::c_void,
+                out.buf.ptr as *mut std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                n,
+                cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_16F,
+                cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            )
+            .or_panic("cuBLAS gemm_ex tn f16");
+        } else if TypeId::of::<T>() == TypeId::of::<half::bf16>() {
+            let alpha = 1.0f32;
+            let beta = 0.0f32;
+            cublas_result::gemm_ex(
+                ctx.blas.0,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_T,
+                n,
+                m,
+                k,
+                &alpha as *const f32 as *const std::ffi::c_void,
+                b.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16BF,
+                n,
+                a.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16BF,
+                m,
+                &beta as *const f32 as *const std::ffi::c_void,
+                out.buf.ptr as *mut std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16BF,
+                n,
+                cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_32F,
+                cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            )
+            .or_panic("cuBLAS gemm_ex tn bf16");
         } else {
             let a_t = cuda_transpose(a);
             cuda_matmul_tiled(ctx, out, &a_t, b);
@@ -514,6 +617,56 @@ pub(super) fn cublas_gemm_nt<T: Scalar>(
                 n,
             )
             .or_panic("cuBLAS dgemm nt");
+        } else if TypeId::of::<T>() == TypeId::of::<half::f16>() {
+            let alpha = half::f16::ONE;
+            let beta = half::f16::ZERO;
+            cublas_result::gemm_ex(
+                ctx.blas.0,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_T,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                n,
+                m,
+                k,
+                &alpha as *const half::f16 as *const std::ffi::c_void,
+                b.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                k,
+                a.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                k,
+                &beta as *const half::f16 as *const std::ffi::c_void,
+                out.buf.ptr as *mut std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16F,
+                n,
+                cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_16F,
+                cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            )
+            .or_panic("cuBLAS gemm_ex nt f16");
+        } else if TypeId::of::<T>() == TypeId::of::<half::bf16>() {
+            let alpha = 1.0f32;
+            let beta = 0.0f32;
+            cublas_result::gemm_ex(
+                ctx.blas.0,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_T,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                n,
+                m,
+                k,
+                &alpha as *const f32 as *const std::ffi::c_void,
+                b.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16BF,
+                k,
+                a.buf.ptr as *const std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16BF,
+                k,
+                &beta as *const f32 as *const std::ffi::c_void,
+                out.buf.ptr as *mut std::ffi::c_void,
+                cublas_sys::cudaDataType_t::CUDA_R_16BF,
+                n,
+                cublas_sys::cublasComputeType_t::CUBLAS_COMPUTE_32F,
+                cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+            )
+            .or_panic("cuBLAS gemm_ex nt bf16");
         } else {
             let b_t = cuda_transpose(b);
             cuda_matmul_tiled(ctx, out, a, &b_t);

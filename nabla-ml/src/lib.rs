@@ -266,6 +266,8 @@ pub mod prelude {
     };
     #[cfg(feature = "cpu")]
     pub use half::{bf16, f16};
+    #[cfg(all(feature = "cuda", not(feature = "cpu")))]
+    pub use half::{bf16, f16};
     #[cfg(feature = "cpu")]
     pub use nabla_core::backend::Cpu;
     #[cfg(feature = "cpu")]
