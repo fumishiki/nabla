@@ -71,10 +71,10 @@ fn probe_cuda() -> Result<Vec<InfoEntry>, Box<dyn Error>> {
     }
 
     for dev in 0..count {
-        let mut name_buf = [0i8; 256];
-        unsafe { cuDeviceGetName(name_buf.as_mut_ptr(), 256, dev) };
+        let mut name_buf = [0u8; 256];
+        unsafe { cuDeviceGetName(name_buf.as_mut_ptr() as *mut _, 256, dev) };
         let name = unsafe {
-            std::ffi::CStr::from_ptr(name_buf.as_ptr())
+            std::ffi::CStr::from_ptr(name_buf.as_ptr() as *const _)
                 .to_string_lossy()
                 .into_owned()
         };
