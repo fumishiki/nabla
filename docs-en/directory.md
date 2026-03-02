@@ -2,6 +2,15 @@
 
 > Cross-reference: [spec.md](spec.md) | [notation.md](notation.md) — full specification
 
+## 1. Documentation files
+
+| File | Role |
+|---|---|
+| [spec.md](spec.md) | Architecture, feature catalog, design decisions, performance benchmarks |
+| [notation.md](notation.md) | API reference tables (types, math notation, macros, AD, NN modules) |
+| [quick_start.md](quick_start.md) | Tutorial and code examples for all features |
+| [directory.md](directory.md) | File structure and contributor guide (this file) |
+
 ## 2. Project structure
 
 ### 2.1 Five-layer architecture

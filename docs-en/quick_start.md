@@ -710,7 +710,7 @@ fn main() {
 }
 ```
 
-## §17 GGUF Export & Inference (`nabla-interface`)
+## 17. GGUF Export & Inference (`nabla-interface`)
 
 `nabla-interface` bridges nabla's training stack with llama.cpp for deployment on Apple Silicon (Metal) and other platforms.
 
