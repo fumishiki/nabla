@@ -15,18 +15,17 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     let json = args.iter().any(|a| a == "--json");
 
-    let mut entries: Vec<InfoEntry> = Vec::new();
-
-    #[cfg(feature = "cuda")]
-    entries.extend(probe_cuda()?);
-
-    #[cfg(feature = "hip")]
-    entries.extend(probe_hip()?);
-
-    #[cfg(feature = "wgpu")]
-    entries.extend(probe_wgpu());
-
-    entries.push(probe_cpu());
+    let entries: Vec<InfoEntry> = {
+        #[allow(unused_mut)]
+        let mut v = vec![probe_cpu()];
+        #[cfg(feature = "cuda")]
+        v.extend(probe_cuda()?);
+        #[cfg(feature = "hip")]
+        v.extend(probe_hip()?);
+        #[cfg(feature = "wgpu")]
+        v.extend(probe_wgpu());
+        v
+    };
 
     if json {
         print_json(&entries);

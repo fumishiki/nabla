@@ -450,24 +450,23 @@ const KVALUES_IQ4_NL: [i8; 16] = [
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
 ];
 
-#[inline(always)]
+#[inline]
 fn nearest_iq4_idx(scaled: f32) -> u8 {
     KVALUES_IQ4_NL
         .iter()
         .enumerate()
         .min_by(|(_, a), (_, b)| {
-            let da = (**a as f32 - scaled).abs();
-            let db = (**b as f32 - scaled).abs();
+            let da = (f32::from(**a) - scaled).abs();
+            let db = (f32::from(**b) - scaled).abs();
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         })
-        .map(|(i, _)| i as u8)
-        .unwrap_or(0)
+        .map_or(0, |(i, _)| i as u8)
 }
 
 fn quantize_iq4_nl(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> {
     const QK: usize = 32;
     const BLOCK_BYTES: usize = 18; // 2 (f16 delta) + 16 (4-bit qs for 32 values)
-    if data.len() % QK != 0 {
+    if !data.len().is_multiple_of(QK) {
         return Err(Error::Quant(format!(
             "IQ4_NL: len {} not divisible by {QK}",
             data.len()
@@ -509,7 +508,7 @@ fn quantize_iq4_xs(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> 
     const QK_SUB: usize = 32;
     const N_SUB: usize = QK / QK_SUB; // 8
     const BLOCK_BYTES: usize = 2 + 4 + 128; // f16 d + 4-bit sub-scales (8×4b) + 4-bit qs
-    if data.len() % QK != 0 {
+    if !data.len().is_multiple_of(QK) {
         return Err(Error::Quant(format!(
             "IQ4_XS: len {} not divisible by {QK}",
             data.len()
@@ -522,17 +521,17 @@ fn quantize_iq4_xs(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> 
         // Compute per-sub-block amax.
         let mut sub_amaxes = [0.0_f32; N_SUB];
         for (sub, sb) in super_block.chunks_exact(QK_SUB).enumerate() {
-            let imp_sub = imp_sup.map(|im| &im[sub * QK_SUB..(sub + 1) * QK_SUB]);
+            let imp_sb = imp_sup.map(|im| &im[sub * QK_SUB..(sub + 1) * QK_SUB]);
             sub_amaxes[sub] = sb
                 .iter()
                 .enumerate()
                 .map(|(i, &v)| {
-                    let w = imp_sub.map_or(1.0_f32, |im| im[i].abs().max(1e-9));
+                    let w = imp_sb.map_or(1.0_f32, |im| im[i].abs().max(1e-9));
                     (v * w).abs()
                 })
                 .fold(0.0_f32, f32::max);
         }
-        let super_amax = sub_amaxes.iter().cloned().fold(0.0_f32, f32::max);
+        let super_amax = sub_amaxes.iter().copied().fold(0.0_f32, f32::max);
         // Super-block scale: maps sub-block amaxes to 4-bit (0–15).
         let d_super = super_amax / (15.0 * 127.0);
         let id_super = if d_super > 0.0 { 1.0 / d_super } else { 0.0 };
@@ -554,12 +553,12 @@ fn quantize_iq4_xs(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> 
         // 4-bit quants.
         let qs_offset = base + 2 + 4;
         for (sub, sb) in super_block.chunks_exact(QK_SUB).enumerate() {
-            let d_sub = d_super * sub_scales[sub] as f32;
+            let d_sub = d_super * f32::from(sub_scales[sub]);
             let id_sub = if d_sub > 0.0 { 1.0 / d_sub } else { 0.0 };
-            for i in 0..QK_SUB {
+            for (i, &v_i) in sb.iter().enumerate() {
                 let gi = sub * QK_SUB + i;
-                let idx = nearest_iq4_idx(sb[i] * id_sub);
-                if gi % 2 == 0 {
+                let idx = nearest_iq4_idx(v_i * id_sub);
+                if gi.is_multiple_of(2) {
                     out[qs_offset + gi / 2] = idx & 0x0f;
                 } else {
                     out[qs_offset + gi / 2] |= idx << 4;

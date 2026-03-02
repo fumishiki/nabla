@@ -23,7 +23,7 @@ impl<B: Backend> Tensor<f32, B> {
         let vals = self.to_vec();
         let (m, nc) = self.shape();
         let n = vals.len();
-        let num_blocks = (n + block_size - 1) / block_size;
+        let num_blocks = n.div_ceil(block_size);
         let mut scales = Vec::with_capacity(num_blocks);
         let mut scaled = Vec::with_capacity(n);
         for b in 0..num_blocks {

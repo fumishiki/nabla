@@ -58,7 +58,7 @@ pub fn load_imatrix(path: &Path) -> Result<Imatrix> {
     let mut reader = BufReader::new(file);
 
     let n_entries = read_i32(&mut reader).map_err(Error::Io)?;
-    if n_entries < 0 || n_entries > 500_000 {
+    if !(0..=500_000).contains(&n_entries) {
         return Err(Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("imatrix: implausible entry count {n_entries}"),

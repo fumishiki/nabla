@@ -36,7 +36,7 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
 
     let entries: Vec<TensorEntry> = tensors
         .iter()
-        .filter(|(name, _)| filter.map_or(true, |f| name.contains(f)))
+        .filter(|(name, _)| filter.is_none_or(|f| name.contains(f)))
         .map(|(name, t)| {
             let (rows, cols) = t.shape();
             let numel = rows * cols;

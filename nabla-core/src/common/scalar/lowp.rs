@@ -12,7 +12,7 @@ fn quantize_fp8_e4m3(v: f32) -> u8 {
     if v == 0.0 {
         return 0;
     }
-    let sign = v.is_sign_negative() as u8;
+    let sign = u8::from(v.is_sign_negative());
     let av = v.abs();
     if !av.is_finite() {
         let exp_bits = (EMAX + BIAS) as u8;
@@ -56,8 +56,8 @@ fn dequantize_fp8_e4m3(bits: u8) -> f32 {
         return 0.0;
     }
     let sign = (bits >> 7) & 1;
-    let exp_bits = ((bits >> M) & 0x0f) as i32;
-    let mant_bits = (bits & ((1 << M) - 1) as u8) as i32;
+    let exp_bits = i32::from((bits >> M) & 0x0f);
+    let mant_bits = i32::from(bits & ((1 << M) - 1) as u8);
     let exp = exp_bits - BIAS;
     let mant = 1.0 + mant_bits as f32 / (1 << M) as f32;
     let v = mant * f32::from_bits(((exp + 127) as u32) << 23);
@@ -73,7 +73,7 @@ fn quantize_fp8_e5m2(v: f32) -> u8 {
     if v == 0.0 {
         return 0;
     }
-    let sign = v.is_sign_negative() as u8;
+    let sign = u8::from(v.is_sign_negative());
     let av = v.abs();
     if !av.is_finite() {
         let exp_bits = (EMAX + BIAS) as u8;
@@ -117,8 +117,8 @@ fn dequantize_fp8_e5m2(bits: u8) -> f32 {
         return 0.0;
     }
     let sign = (bits >> 7) & 1;
-    let exp_bits = ((bits >> M) & 0x1f) as i32;
-    let mant_bits = (bits & ((1 << M) - 1) as u8) as i32;
+    let exp_bits = i32::from((bits >> M) & 0x1f);
+    let mant_bits = i32::from(bits & ((1 << M) - 1) as u8);
     let exp = exp_bits - BIAS;
     let mant = 1.0 + mant_bits as f32 / (1 << M) as f32;
     let v = mant * f32::from_bits(((exp + 127) as u32) << 23);
@@ -134,7 +134,7 @@ fn quantize_fp4_e2m1(v: f32) -> u8 {
     if v == 0.0 {
         return 0;
     }
-    let sign = v.is_sign_negative() as u8;
+    let sign = u8::from(v.is_sign_negative());
     let av = v.abs();
     if !av.is_finite() {
         let exp_bits = (EMAX + BIAS) as u8;
@@ -179,8 +179,8 @@ fn dequantize_fp4_e2m1(bits: u8) -> f32 {
         return 0.0;
     }
     let sign = (b >> 3) & 1;
-    let exp_bits = ((b >> M) & 0x03) as i32;
-    let mant_bits = (b & ((1 << M) - 1) as u8) as i32;
+    let exp_bits = i32::from((b >> M) & 0x03);
+    let mant_bits = i32::from(b & ((1 << M) - 1) as u8);
     let exp = exp_bits - BIAS;
     let mant = 1.0 + mant_bits as f32 / (1 << M) as f32;
     let v = mant * f32::from_bits(((exp + 127) as u32) << 23);
@@ -326,7 +326,7 @@ macro_rules! impl_lowp_type {
             }
             #[inline]
             fn math_erf(self) -> Self {
-                let v = self.to_f32() as f64;
+                let v = f64::from(self.to_f32());
                 let t = 1.0 / (1.0 + 0.327_591_1 * v.abs());
                 let poly = t
                     * (0.254_829_592

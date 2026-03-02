@@ -14,6 +14,7 @@ use nabla_train::prelude::{Optimizer, Sgd};
 use crate::tty;
 use nabla::autograd::Tape;
 
+#[allow(unreachable_code)]
 fn compiled_backend() -> &'static str {
     #[cfg(feature = "cuda")]
     {
