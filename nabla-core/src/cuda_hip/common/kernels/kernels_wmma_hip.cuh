@@ -1,3 +1,4 @@
+// kernels_wmma_hip.cuh — WMMA f16->f32 tiled matmul (rocwmma, HIP only, standalone)
 
 #include <rocwmma/rocwmma.hpp>
 

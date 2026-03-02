@@ -5,9 +5,17 @@ pub(crate) const REDUCE_BLOCK: u32 = BLOCK_SIZE;
 pub(crate) const REDUCE_GRID_CAP: u32 = 256;
 
 pub(crate) const KERNELS: &str = concat!(
-    include_str!("kernels_basic_ops.cuh"),
-    include_str!("kernels_norm_pool.cuh"),
-    include_str!("kernels_im2col_conv.cuh")
+    include_str!("k_basic_core.cuh"),
+    include_str!("k_basic_math.cuh"),
+    include_str!("k_basic_red32.cuh"),
+    include_str!("k_basic_red64.cuh"),
+    include_str!("k_norm_softmax.cuh"),
+    include_str!("k_norm_group.cuh"),
+    include_str!("k_norm_reduce.cuh"),
+    include_str!("k_norm_pool.cuh"),
+    include_str!("k_conv_bn_loss.cuh"),
+    include_str!("k_attn.cuh"),
+    include_str!("k_conv_misc.cuh")
 );
 #[cfg(feature = "cuda")]
 pub(crate) const WMMA_KERNELS: &str = include_str!("kernels_wmma_cuda.cuh");

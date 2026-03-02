@@ -1,3 +1,4 @@
+// kernels_cond_set.cuh — Conditional scalar set via device-side pointer (CUDA only, standalone)
 
 #include <cuda_device_runtime_api.h>
 #include <cuda_fp16.h>

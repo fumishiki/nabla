@@ -1,3 +1,4 @@
+// kernels_wmma_cuda.cuh — WMMA f16->f32 tiled matmul (nvcuda::wmma, CUDA only, standalone)
 
 #include <mma.h>
 using namespace nvcuda;
