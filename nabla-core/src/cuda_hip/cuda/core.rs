@@ -407,6 +407,7 @@ pub(super) struct CudaCtx {
     pub(super) reduce_host_ptr: SyncHostPtr,
     pub(super) reduce_host_dptr: CUdeviceptr,
     pub(super) reduce_funcs: [SyncFn; 18],
+    pub(super) d2h_mutex: Mutex<()>,
 }
 
 pub(super) fn query_compute_capability() -> (i32, i32) {
@@ -535,6 +536,7 @@ pub(super) fn get_ctx() -> &'static CudaCtx {
             reduce_host_ptr: SyncHostPtr(reduce_host_ptr),
             reduce_host_dptr,
             reduce_funcs: [SyncFn(std::ptr::null_mut()); 18],
+            d2h_mutex: Mutex::new(()),
         };
         if let Err(e) = super::compile_all_kernels(&cuda_ctx, &arch) {
             panic!("CUDA kernel compilation failed: {e}");
