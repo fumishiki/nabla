@@ -102,17 +102,17 @@ The number that matters for real training workloads — a full step (forward + b
 
 | Batch size | nabla eager | nabla CUDA Graph | PyTorch eager | PyTorch CUDA Graph | nabla eager speedup |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 0.111 ms | **0.070 ms** | 0.759 ms | 0.045 ms | **6.8×** |
-| 32 | 0.133 ms | **0.085 ms** | 0.923 ms | 0.072 ms | **6.9×** |
-| 128 | 0.133 ms | **0.088 ms** | 0.976 ms | 0.130 ms | **7.3×** |
-| 256 | 0.139 ms | **0.094 ms** | 0.974 ms | 0.136 ms | **7.0×** |
-| 512 | 0.147 ms | **0.108 ms** | 0.847 ms | 0.142 ms | **5.8×** |
-| 1024 | 0.170 ms | **0.130 ms** | 0.966 ms | 0.160 ms | **5.7×** |
+| 1 | 0.112 ms | **0.070 ms** | 0.670 ms | 0.045 ms | **6.0×** |
+| 32 | 0.135 ms | **0.086 ms** | 0.898 ms | 0.072 ms | **6.6×** |
+| 128 | 0.134 ms | **0.088 ms** | 0.740 ms | 0.128 ms | **5.5×** |
+| 256 | 0.141 ms | **0.094 ms** | 0.891 ms | 0.136 ms | **6.3×** |
+| 512 | 0.148 ms | **0.109 ms** | 0.926 ms | 0.142 ms | **6.2×** |
+| 1024 | 0.172 ms | **0.130 ms** | 0.899 ms | 0.161 ms | **5.2×** |
 
 > Model: MLP 784→256→128→10, MSE sum loss, SGD. Same model and loss on both sides — no `allow_tf32` manipulation.
-> All numbers measured on the same GH200; script: [`benchmarks/bench_pytorch.py`](benchmarks/bench_pytorch.py).
+> All numbers measured on the same GH200; script: [`benchmarks/bench_pytorch.py`](benchmarks/bench_pytorch.py) vs [`benchmarks/src/profile_train_graph.rs`](benchmarks/src/profile_train_graph.rs).
 
-nabla eager is **5.7–7.3× faster** than PyTorch eager in realistic training. At batch ≥ 128, nabla CUDA Graph also beats PyTorch CUDA Graph (1.2–1.5×).
+nabla eager is **5.2–6.6× faster** than PyTorch eager in realistic training. At batch ≥ 128, nabla CUDA Graph also beats PyTorch CUDA Graph (1.0–1.4×).
 
 **Single-op and matmul benchmarks (for reference):**
 
@@ -149,13 +149,13 @@ your Python code
 One launch is invisible. A training step with 36 kernel launches — measured:
 
 ```
-PyTorch MLP step (batch=1):   0.759 ms
-                              ├─ GPU compute:  ~0.110 ms  (same hardware as nabla)
-                              └─ Python overhead: ~0.649 ms  ≈ 36 launches × 18 µs each
+PyTorch MLP step (batch=1):   0.670 ms
+                              ├─ GPU compute:  ~0.112 ms  (same hardware as nabla)
+                              └─ Python overhead: ~0.558 ms  ≈ ~22 launches × 25 µs each
                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^
                                                               this is the cost you're paying
 
-nabla MLP step (batch=1):     0.111 ms  ← Rust calls CUDA runtime directly, no interpreter
+nabla MLP step (batch=1):     0.112 ms  ← Rust calls CUDA runtime directly, no interpreter
 ```
 
 The gap is not about GPU speed — it's about how much time Python spends telling the GPU what to do. The bigger your model (more layers, more ops per step), the more this compounds.
@@ -164,9 +164,9 @@ The gap is not about GPU speed — it's about how much time Python spends tellin
 Training throughput: nabla vs PyTorch eager
 
 Model size (kernel launches per step)
-   10 launches:  PyTorch ███░░░░   nabla ███  (~2× faster)
-   36 launches:  PyTorch █████████░░░░░░  nabla ████  (~7× faster)
-  100 launches:  PyTorch ████████████████████████░░░░░░░░  nabla ████  (~20× faster, extrapolated)
+   10 launches:  PyTorch ████░░   nabla ████  (~1.5× faster, measured: small models)
+   22 launches:  PyTorch ████████░░░░░   nabla ████  (~6× faster, measured: MLP 784→256→128→10)
+  100 launches:  PyTorch ████████████████████░░░░░░░   nabla ████  (~20× faster, extrapolated)
                  ─────── Python overhead grows linearly with op count
                          GPU compute stays constant — nabla is always in this range ────┘
 ```
@@ -283,8 +283,8 @@ This is why nabla is already faster than PyTorch in eager mode, before CUDA Grap
 
 Putting the benchmark numbers in context:
 
-- **5.7–7.3× eager gap** — primarily factors 1 (no interpreter) + 4 (fused kernels)
-- **1.2–1.5× CUDA Graph gap** — factors 2 (`fuse!`) + 4 still apply even when Python overhead is gone
+- **5.2–6.6× eager gap** — primarily factors 1 (no interpreter) + 4 (fused kernels)
+- **1.0–1.4× CUDA Graph gap** — factors 2 (`fuse!`) + 4 still apply even when Python overhead is gone
 
 Reproduce locally: `cd benchmarks && bash run.sh`
 
