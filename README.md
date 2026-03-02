@@ -105,6 +105,7 @@ Recent implementation scope update:
 
 ### Faster Than PyTorch, and Why
 
+![MLP Training Step Benchmark](assets/benchmark_mlp.png)
 
 **Benchmark on GH200 480GB (CUDA 12.8, PyTorch 2.7.0)**
 
@@ -168,8 +169,6 @@ nabla MLP step (batch=1):     66 µs  ← Rust calls CUDA runtime directly, no i
 ```
 
 The gap is not about GPU speed — it's about how much time Python spends telling the GPU what to do. The bigger your model (more layers, more ops per step), the more this compounds.
-
-![MLP Training Step Benchmark](assets/benchmark_mlp.png)
 
 > Raw data: [`assets/benchmark_mlp.csv`](assets/benchmark_mlp.csv)
 
