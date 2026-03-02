@@ -122,60 +122,90 @@ nabla eager is **4.2–6.4× faster** than PyTorch eager across all batch sizes.
 
 #### The root cause: GPU idle time
 
-A GPU is extremely fast — but it can only do work when the CPU tells it to start. In PyTorch, every single tensor operation triggers this chain:
+**GPUはとても速い。でも「仕事の指示が来るまで何もできない」。**
+
+GPUとCPUの関係は「工場（GPU）と現場監督（CPU）」に似ています。工場のラインはどんな速さでも動けますが、監督が次の指示書を持ってこないと止まるしかありません。
+
+PyTorchでは、`a + b` という1行のコードがGPUに届くまでに、このような経路をたどります：
 
 ```
-Python bytecode
-  → Python object dispatch
-    → ATen C++ operator
-      → CUDA kernel launch
+あなたのコード (Python)
+  → Pythonインタープリタが1行ずつ解釈
+    → PyTorchのPython API
+      → ATen (C++演算ライブラリ)
+        → CUDAカーネル起動
 ```
 
-Each step takes time — typically 10–50 μs per operation on the CPU side — while the GPU sits completely idle waiting for the next instruction. For a training step with hundreds of operations, this CPU overhead adds up to milliseconds of GPU stall per batch.
+この経路を通るたびに **10〜50 μs** の遅延が発生します。1回なら問題ありません。でも1回のトレーニングステップは数百〜数千の演算で構成されています。それが全部積み重なると、1バッチあたり数ミリ秒のGPU待機時間になります。
 
 ```
-PyTorch: [GPU work][GPU idle][GPU work][GPU idle][GPU work][GPU idle] ...
-                    ^^^^^^^^             ^^^^^^^^             ^^^^^^^^
-              waiting for Python to                 waiting for Python to
-              schedule next kernel                  schedule next kernel
+PyTorch: ████▓▓▓▓████▓▓▓▓████▓▓▓▓████▓▓▓▓ ...
+         ████=GPU演算中  ▓▓▓▓=Pythonが次の指示を準備中（GPUは待機）
 
-nabla:    [GPU work][GPU work][GPU work][GPU work][GPU work] ...
-          ← no idle gaps: Rust calls go directly to the CUDA runtime →
+nabla:   ████████████████████████████████ ...
+         GPUが止まらない — RustがCUDAランタイムに直接アクセス
 ```
 
-nabla eliminates this in three layers:
+nablaがこれを解決する4つの仕組み：
 
-**1. Rust removes the Python→C++ hop.** Rust compiles directly to native code. A nabla tensor call reaches the CUDA runtime in one function call with no interpreter overhead, no reference counting across a language boundary, no Python GIL.
+---
 
-**2. `fuse!` reduces the total number of kernel launches.** Each GPU kernel launch has a fixed scheduling cost. `a.sin().powf(2.0)` in PyTorch launches 2 kernels and allocates a temporary buffer between them. `fuse!` in nabla traces the expression at compile time, algebraically simplifies it, and emits a single JIT-compiled kernel — no intermediate buffer, one launch instead of two.
+**1. Rustが「通訳」を排除する**
+
+Pythonはインタープリタ言語なので、コードを実行するたびに意味を解釈する処理が挟まります。nablaはRustで書かれており、コンパイル時にネイティブコードに変換済みです。テンソル演算の呼び出しはCUDAランタイムまで一直線で届きます。Pythonインタープリタもオブジェクト変換も、Python GIL（同時実行の排他ロック）もありません。
+
+---
+
+**2. `fuse!` で「指示書の枚数」自体を減らす**
+
+PyTorchで `a.sin().powf(2.0)` を書くと、内部では：
+- `sin` 用のGPUカーネルを起動 → 結果を一時バッファに書く
+- `pow` 用のGPUカーネルを起動 → 一時バッファから読む
+
+2回の起動、1回のメモリ往復が発生します。
+
+nablaの `fuse!` はコンパイル時に式全体を解析し、**1つのGPUカーネルとして合体**させます：
 
 ```rust
-let y = fuse!(a.sin().powf(2.0));          // 1 kernel, no intermediate buffer
-let (y, z) = mega_fuse!(a+b; prev.exp(); inputs: a, b);  // multi-output, still 1 kernel
+let y = fuse!(a.sin().powf(2.0));
+// → GPUカーネル1回、中間バッファなし
 ```
 
-**3. CUDA Graph replay eliminates CPU scheduling entirely for repeated workloads.** A training loop runs the same sequence of kernels every iteration. With CUDA Graph, nabla records the full forward + backward + optimizer kernel sequence once, then replays it on every subsequent step — the CPU does essentially nothing, and the GPU runs continuously.
+---
+
+**3. CUDA Graphで「指示書を使い回す」**
+
+トレーニングループは毎ステップ同じ演算を繰り返します。CUDA Graphは「最初の1回でGPUへの指示列を丸ごと録画し、以降はそれを再生する」仕組みです。
+
+再生時のCPU側の処理コストは **約1 μs/ステップ**。通常の数百μsと比べてほぼゼロです。
 
 ```rust
-// train_step! uses CUDA Graph automatically.
-// Explicit API with PyGraphTrainingGraph — warms up for 5 iterations then auto-captures:
-use nabla_core::cuda::PyGraphTrainingGraph;
-let mut graph = PyGraphTrainingGraph::new();  // default: 5 warmup iterations
+let mut tg = PyGraphTrainingGraph::new(); // 5回ウォームアップ後、自動でキャプチャ
 for _ in 0..10_000 {
-    graph.step(&mut || {
-        // forward + backward + optimizer — same closure every step
+    tg.step(&mut || {
+        // forward + backward + optimizer
     })?;
-    // iterations 1-5: normal execution (warmup)
-    // iteration 6:    CUDA Graph captured automatically
-    // iterations 7+:  graph.launch() — CPU cost ~1 μs per step
+    // 1〜5回目: 通常実行（ウォームアップ）
+    // 6回目:    このステップの全カーネルをまとめて録画
+    // 7回目以降: 録画を再生するだけ — GPUが止まらない
 }
 ```
 
-**4. Fused loss and optimizer kernels.** A naive MSE training step is: `sub` → `square` → `sum` (3 kernels). nabla's `k_mse_sum_fwd` fuses these into one kernel, then `k_multi_axpy3` updates all parameters in a single vectorized pass instead of one kernel per parameter. These are the kernels that make the MLP eager numbers so fast, even before CUDA Graph.
+---
 
-The eager vs CUDA Graph numbers above show the remaining gap: even without Python overhead, the CPU still has to schedule each kernel per step. CUDA Graph removes that last bottleneck.
+**4. 損失関数とオプティマイザも1カーネルに融合する**
 
-Reproduce locally: `cd benchmarks && bash run.sh`
+素朴なMSE計算は `sub → square → sum` の3カーネルです。nablaの `k_mse_sum_fwd` はこれを1カーネルに融合します。さらに `k_multi_axpy3` はすべてのパラメータを1回のGPUカーネルでまとめて更新します（PyTorchはパラメータごとに1カーネル）。
+
+これが、CUDA Graph使用前の「eagerモード」でもnablaが速い理由です。
+
+---
+
+ベンチマーク表に戻ると：
+- **eager差（6.4×）** = 主に要因1（Rustの直接呼び出し）＋要因4（融合カーネル）
+- **CUDA Graph差（1.2–1.5×）** = Pythonオーバーヘッドがなくなっても残る、要因2（`fuse!`）＋要因4の効果
+
+再現: `cd benchmarks && bash run.sh`
 
 ### Autodiff: loss.backward() in Rust
 
