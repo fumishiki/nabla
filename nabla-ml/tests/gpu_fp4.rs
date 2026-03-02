@@ -29,9 +29,52 @@ mod cuda_fp4 {
         assert_shape(&eye, (3, 3));
 
         let y1 = make::<T>(1, 5).conv1d(&make::<T>(1, 3), None, 1, 1, 5, 1, 3, 1, 0, 1, 1);
-        let y2 = make::<T>(1, 9).conv2d(&make::<T>(1, 4), None, 1, 1, 3, 3, 1, 2, 2, (1, 1), (0, 0), (1, 1), 1);
-        let y3 = make::<T>(1, 8).conv3d(&Tensor::<T, Cuda>::fill(1, 8, T::one()), None, 1, 1, 2, 2, 2, 1, 2, 2, 2, (1, 1, 1), (0, 0, 0), (1, 1, 1), 1);
-        let yt = make::<T>(1, 4).conv_transpose2d(&make::<T>(1, 4), None, 1, 1, 2, 2, 1, 2, 2, (1, 1), (0, 0), (0, 0));
+        let y2 = make::<T>(1, 9).conv2d(
+            &make::<T>(1, 4),
+            None,
+            1,
+            1,
+            3,
+            3,
+            1,
+            2,
+            2,
+            (1, 1),
+            (0, 0),
+            (1, 1),
+            1,
+        );
+        let y3 = make::<T>(1, 8).conv3d(
+            &Tensor::<T, Cuda>::fill(1, 8, T::one()),
+            None,
+            1,
+            1,
+            2,
+            2,
+            2,
+            1,
+            2,
+            2,
+            2,
+            (1, 1, 1),
+            (0, 0, 0),
+            (1, 1, 1),
+            1,
+        );
+        let yt = make::<T>(1, 4).conv_transpose2d(
+            &make::<T>(1, 4),
+            None,
+            1,
+            1,
+            2,
+            2,
+            1,
+            2,
+            2,
+            (1, 1),
+            (0, 0),
+            (0, 0),
+        );
         assert_shape(&y1, (1, 3));
         assert_shape(&y2, (1, 4));
         assert_shape(&y3, (1, 1));
@@ -48,8 +91,19 @@ mod cuda_fp4 {
 
         let ln = a.layer_norm(1, T::from_f64(1e-5));
         let rn = a.rms_norm(1, &Tensor::fill(1, 3, T::one()), T::from_f64(1e-5));
-        let bn = a.batch_norm(&Tensor::fill(1, 3, T::zero()), &Tensor::fill(1, 3, T::one()), &Tensor::fill(1, 3, T::one()), &Tensor::fill(1, 3, T::zero()), T::from_f64(1e-5));
-        let gn = a.group_norm(1, &Tensor::fill(1, 3, T::one()), &Tensor::fill(1, 3, T::zero()), T::from_f64(1e-5));
+        let bn = a.batch_norm(
+            &Tensor::fill(1, 3, T::zero()),
+            &Tensor::fill(1, 3, T::one()),
+            &Tensor::fill(1, 3, T::one()),
+            &Tensor::fill(1, 3, T::zero()),
+            T::from_f64(1e-5),
+        );
+        let gn = a.group_norm(
+            1,
+            &Tensor::fill(1, 3, T::one()),
+            &Tensor::fill(1, 3, T::zero()),
+            T::from_f64(1e-5),
+        );
         assert_shape(&ln, (2, 3));
         assert_shape(&rn, (2, 3));
         assert_shape(&bn, (2, 3));
@@ -76,7 +130,8 @@ mod cuda_fp4 {
         let _ = a.log_softmax(1).nll_loss(&nll_idx);
         let q = a.softmax(1);
         let _ = a.log_softmax(1).kl_div(&q);
-        let _ = Tensor::cosine_embedding_loss(&make::<T>(1, 2), &make::<T>(1, 2), T::one(), T::zero());
+        let _ =
+            Tensor::cosine_embedding_loss(&make::<T>(1, 2), &make::<T>(1, 2), T::one(), T::zero());
 
         let emb_w = make::<T>(3, 2);
         let emb_i = make_from::<T>(&[2.0, 0.0, 1.0], 1, 3);
@@ -116,7 +171,10 @@ mod cuda_fp4 {
         let tril = a.tril(0);
         let roll = a.roll(1, 1);
         let flip = a.flip(1);
-        let (gx, gy) = Tensor::meshgrid(&Tensor::arange(T::zero(), T::one(), 3), &Tensor::arange(T::zero(), T::one(), 2));
+        let (gx, gy) = Tensor::meshgrid(
+            &Tensor::arange(T::zero(), T::one(), 3),
+            &Tensor::arange(T::zero(), T::one(), 2),
+        );
         let (topk_vals, topk_idx) = a.topk(2, 1);
         let (sort_vals, sort_idx) = a.sort(1, false);
         assert_shape(&reshaped, (3, 2));

@@ -32,18 +32,25 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         .ok_or("missing GGUF_PATH argument")?;
 
     let prompt = flag_str(args, "--prompt").ok_or("--prompt <TEXT> is required")?;
-    let max_tokens  = flag_u32(args, "--max-tokens").unwrap_or(256);
+    let max_tokens = flag_u32(args, "--max-tokens").unwrap_or(256);
     let temperature = flag_f32(args, "--temp").unwrap_or(0.8);
-    let n_ctx       = flag_u32(args, "--ctx").unwrap_or(2048);
-    let n_gpu       = flag_i32(args, "--gpu-layers").unwrap_or(-1);
-    let stream      = !args.iter().any(|a| a == "--no-stream");
+    let n_ctx = flag_u32(args, "--ctx").unwrap_or(2048);
+    let n_gpu = flag_i32(args, "--gpu-layers").unwrap_or(-1);
+    let stream = !args.iter().any(|a| a == "--no-stream");
 
-    let inference_cfg = InferenceConfig { n_ctx, n_gpu_layers: n_gpu, ..Default::default() };
-    let sampling_cfg  = SamplingConfig { temperature, ..Default::default() };
+    let inference_cfg = InferenceConfig {
+        n_ctx,
+        n_gpu_layers: n_gpu,
+        ..Default::default()
+    };
+    let sampling_cfg = SamplingConfig {
+        temperature,
+        ..Default::default()
+    };
 
     eprintln!("Loading {}…", gguf_path);
-    let mut engine = InferenceEngine::new(gguf_path, inference_cfg)
-        .map_err(|e| format!("load model: {e}"))?;
+    let mut engine =
+        InferenceEngine::new(gguf_path, inference_cfg).map_err(|e| format!("load model: {e}"))?;
 
     let start = std::time::Instant::now();
 
@@ -66,15 +73,13 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     let elapsed = start.elapsed().as_secs_f64();
     let perf = engine.perf();
-    eprintln!(
-        "─────────────────────────────────────────────",
-    );
+    eprintln!("─────────────────────────────────────────────",);
     eprintln!(
         "Generated {total} tokens in {elapsed:.1} s  \
         (prompt {pp:.1} tok/s  gen {gp:.1} tok/s)",
-        total  = perf.total_tokens,
-        pp     = perf.prompt_tok_per_sec,
-        gp     = perf.gen_tok_per_sec,
+        total = perf.total_tokens,
+        pp = perf.prompt_tok_per_sec,
+        gp = perf.gen_tok_per_sec,
     );
     Ok(())
 }
@@ -84,7 +89,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
 // ---------------------------------------------------------------------------
 
 fn flag_str<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    args.windows(2).find(|w| w[0] == flag).map(|w| w[1].as_str())
+    args.windows(2)
+        .find(|w| w[0] == flag)
+        .map(|w| w[1].as_str())
 }
 
 fn flag_u32(args: &[String], flag: &str) -> Option<u32> {

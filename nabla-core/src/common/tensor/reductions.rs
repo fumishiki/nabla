@@ -69,7 +69,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         self.sum_all() / count
     }
 
-
     /// Variance of all elements (population variance, ddof=0).
     #[must_use]
     #[inline]

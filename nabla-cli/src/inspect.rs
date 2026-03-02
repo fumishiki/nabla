@@ -1,10 +1,10 @@
 //! `nabla inspect` — inspect a nabla checkpoint.
 //!
-//! Usage: nabla inspect <MODEL_PATH> [--filter <pattern>] [--json] [--no-stats]
+//! Usage: `nabla inspect <MODEL_PATH> [--filter PATTERN] [--json] [--no-stats]`
 
+use crate::tty;
 use std::error::Error;
 use std::path::Path;
-use crate::tty;
 
 pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -24,9 +24,9 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
         .ok_or("missing MODEL_PATH — usage: nabla inspect <path>")?;
     let model_path = Path::new(model_path);
 
-    let filter     = flag_str(args, "--filter");
-    let no_stats   = args.iter().any(|a| a == "--no-stats");
-    let json       = args.iter().any(|a| a == "--json");
+    let filter = flag_str(args, "--filter");
+    let no_stats = args.iter().any(|a| a == "--no-stats");
+    let json = args.iter().any(|a| a == "--json");
 
     use nabla::module::load_tensors;
     use nabla_core::backend::DefaultBackend;
@@ -46,7 +46,13 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
                 let data = t.to_vec();
                 Some(compute_stats(&data))
             };
-            TensorEntry { name: name.clone(), rows, cols, numel, stats }
+            TensorEntry {
+                name: name.clone(),
+                rows,
+                cols,
+                numel,
+                stats,
+            }
         })
         .collect();
 
@@ -75,7 +81,12 @@ fn compute_stats(data: &[f64]) -> Stats {
     let max = data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let mean = data.iter().sum::<f64>() / n;
     let variance = data.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / n;
-    Stats { min, max, mean, std: variance.sqrt() }
+    Stats {
+        min,
+        max,
+        mean,
+        std: variance.sqrt(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +114,7 @@ fn print_table(entries: &[TensorEntry], path: &Path, no_stats: bool) {
 
     if no_stats {
         let header = format!("{:<40} {:>16}  {:>12}", "name", "shape", "params");
-        let sep    = tty::dim(&"─".repeat(72));
+        let sep = tty::dim(&"─".repeat(72));
         println!("{}", tty::dim(&header));
         println!("{sep}");
         for e in entries {
@@ -132,7 +143,10 @@ fn print_table(entries: &[TensorEntry], path: &Path, no_stats: bool) {
                 tty::bold(&format!("{:<40}", truncate(&e.name, 40))),
                 format!("[{}×{}]", e.rows, e.cols),
                 fmt_param_count(e.numel),
-                mn, mx, me, st,
+                mn,
+                mx,
+                me,
+                st,
             );
         }
     }
@@ -141,7 +155,9 @@ fn print_table(entries: &[TensorEntry], path: &Path, no_stats: bool) {
 fn print_json(entries: &[TensorEntry]) {
     print!("[");
     for (i, e) in entries.iter().enumerate() {
-        if i > 0 { print!(","); }
+        if i > 0 {
+            print!(",");
+        }
         if let Some(s) = &e.stats {
             print!(
                 "{{\"name\":{:?},\"shape\":[{},{}],\"numel\":{},\
@@ -167,15 +183,23 @@ fn fmt_f(v: f64) -> String {
 }
 
 fn fmt_param_count(n: usize) -> String {
-    if n >= 1_000_000_000 { format!("{:.2}B", n as f64 / 1e9) }
-    else if n >= 1_000_000 { format!("{:.2}M", n as f64 / 1e6) }
-    else if n >= 1_000     { format!("{:.1}K", n as f64 / 1e3) }
-    else                   { n.to_string() }
+    if n >= 1_000_000_000 {
+        format!("{:.2}B", n as f64 / 1e9)
+    } else if n >= 1_000_000 {
+        format!("{:.2}M", n as f64 / 1e6)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1e3)
+    } else {
+        n.to_string()
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_owned() }
-    else { format!("{}…", &s[..max - 1]) }
+    if s.len() <= max {
+        s.to_owned()
+    } else {
+        format!("{}…", &s[..max - 1])
+    }
 }
 
 fn flag_str<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {

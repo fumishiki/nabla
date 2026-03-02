@@ -4,9 +4,9 @@ mod bench;
 mod export;
 mod info;
 mod inspect;
-mod tty;
 #[cfg(feature = "llama")]
 mod run;
+mod tty;
 
 use std::process;
 
@@ -16,17 +16,24 @@ fn main() {
     let rest = if args.len() > 2 { &args[2..] } else { &[] };
 
     let result: Result<(), Box<dyn std::error::Error>> = match sub {
-        "info"    => info::run(rest),
-        "bench"   => bench::run(rest),
-        "export"  => export::run(rest),
+        "info" => info::run(rest),
+        "bench" => bench::run(rest),
+        "export" => export::run(rest),
         "inspect" => inspect::run(rest),
-        "run"     => {
+        "run" => {
             #[cfg(feature = "llama")]
-            { run::run(rest) }
+            {
+                run::run(rest)
+            }
             #[cfg(not(feature = "llama"))]
-            { Err("`nabla run` requires `--features llama` (link llama.cpp)".into()) }
+            {
+                Err("`nabla run` requires `--features llama` (link llama.cpp)".into())
+            }
         }
-        "--help" | "-h" | "help" => { print_usage(); Ok(()) }
+        "--help" | "-h" | "help" => {
+            print_usage();
+            Ok(())
+        }
         cmd => Err(format!("unknown subcommand: `{cmd}`\n\nRun `nabla --help` for usage.").into()),
     };
 

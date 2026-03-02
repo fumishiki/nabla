@@ -127,8 +127,14 @@ pub fn cuda_to_vec_async<T: Scalar>(storage: &CudaStorage<T>) -> CudaResult<Vec<
     }
     // Serialize concurrent D2H calls: shared streams require exclusive access.
     // Also ensures the CUDA context is current on this thread before raw driver calls.
-    let _d2h_guard = ctx.d2h_mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    ctx.stream.context().bind_to_thread().map_err(CudaError::Driver)?;
+    let _d2h_guard = ctx
+        .d2h_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ctx.stream
+        .context()
+        .bind_to_thread()
+        .map_err(CudaError::Driver)?;
     // SAFETY: event lifecycle is contained within this function; the event is
     unsafe {
         let event =

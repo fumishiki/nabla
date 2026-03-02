@@ -215,20 +215,28 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             0 => {
                 let r = self.nrows();
                 let chunk_size = r.div_ceil(n);
-                (0..n).filter_map(|i| {
-                    let start = i * chunk_size;
-                    if start >= r { return None; }
-                    Some(self.slice_rows(start..((i + 1) * chunk_size).min(r)))
-                }).collect()
+                (0..n)
+                    .filter_map(|i| {
+                        let start = i * chunk_size;
+                        if start >= r {
+                            return None;
+                        }
+                        Some(self.slice_rows(start..((i + 1) * chunk_size).min(r)))
+                    })
+                    .collect()
             }
             1 => {
                 let c = self.ncols();
                 let chunk_size = c.div_ceil(n);
-                (0..n).filter_map(|i| {
-                    let start = i * chunk_size;
-                    if start >= c { return None; }
-                    Some(self.slice_cols(start..((i + 1) * chunk_size).min(c)))
-                }).collect()
+                (0..n)
+                    .filter_map(|i| {
+                        let start = i * chunk_size;
+                        if start >= c {
+                            return None;
+                        }
+                        Some(self.slice_cols(start..((i + 1) * chunk_size).min(c)))
+                    })
+                    .collect()
             }
             _ => panic!("nabla: chunk axis {axis} out of bounds for 2-D tensor"),
         }

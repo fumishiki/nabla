@@ -37,7 +37,10 @@ impl<B: Backend> Tensor<f32, B> {
                 scaled.push(v / scale);
             }
         }
-        (Tensor::<f32, B>::from_vec(scaled, m, nc).cast::<Fp4E2M1>(), scales)
+        (
+            Tensor::<f32, B>::from_vec(scaled, m, nc).cast::<Fp4E2M1>(),
+            scales,
+        )
     }
 }
 

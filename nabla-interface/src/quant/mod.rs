@@ -365,21 +365,35 @@ impl std::str::FromStr for GgufQuantType {
     type Err = String;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "F32" => Ok(Self::F32), "F16" => Ok(Self::F16), "BF16" => Ok(Self::BF16),
-            "Q4_0" => Ok(Self::Q4_0), "Q4_1" => Ok(Self::Q4_1),
-            "Q5_0" => Ok(Self::Q5_0), "Q5_1" => Ok(Self::Q5_1),
-            "Q8_0" => Ok(Self::Q8_0), "Q8_1" => Ok(Self::Q8_1),
+            "F32" => Ok(Self::F32),
+            "F16" => Ok(Self::F16),
+            "BF16" => Ok(Self::BF16),
+            "Q4_0" => Ok(Self::Q4_0),
+            "Q4_1" => Ok(Self::Q4_1),
+            "Q5_0" => Ok(Self::Q5_0),
+            "Q5_1" => Ok(Self::Q5_1),
+            "Q8_0" => Ok(Self::Q8_0),
+            "Q8_1" => Ok(Self::Q8_1),
             "Q2_K" => Ok(Self::Q2_K),
-            "Q3_K_S" => Ok(Self::Q3_K_S), "Q3_K_M" => Ok(Self::Q3_K_M), "Q3_K_L" => Ok(Self::Q3_K_L),
-            "Q4_K_S" => Ok(Self::Q4_K_S), "Q4_K_M" => Ok(Self::Q4_K_M),
-            "Q5_K_S" => Ok(Self::Q5_K_S), "Q5_K_M" => Ok(Self::Q5_K_M),
+            "Q3_K_S" => Ok(Self::Q3_K_S),
+            "Q3_K_M" => Ok(Self::Q3_K_M),
+            "Q3_K_L" => Ok(Self::Q3_K_L),
+            "Q4_K_S" => Ok(Self::Q4_K_S),
+            "Q4_K_M" => Ok(Self::Q4_K_M),
+            "Q5_K_S" => Ok(Self::Q5_K_S),
+            "Q5_K_M" => Ok(Self::Q5_K_M),
             "Q6_K" => Ok(Self::Q6_K),
-            "IQ1_S" => Ok(Self::IQ1_S), "IQ1_M" => Ok(Self::IQ1_M),
-            "IQ2_XXS" => Ok(Self::IQ2_XXS), "IQ2_XS" => Ok(Self::IQ2_XS),
-            "IQ2_S" => Ok(Self::IQ2_S), "IQ3_XXS" => Ok(Self::IQ3_XXS),
-            "IQ3_S" => Ok(Self::IQ3_S), "IQ4_NL" => Ok(Self::IQ4_NL),
+            "IQ1_S" => Ok(Self::IQ1_S),
+            "IQ1_M" => Ok(Self::IQ1_M),
+            "IQ2_XXS" => Ok(Self::IQ2_XXS),
+            "IQ2_XS" => Ok(Self::IQ2_XS),
+            "IQ2_S" => Ok(Self::IQ2_S),
+            "IQ3_XXS" => Ok(Self::IQ3_XXS),
+            "IQ3_S" => Ok(Self::IQ3_S),
+            "IQ4_NL" => Ok(Self::IQ4_NL),
             "IQ4_XS" => Ok(Self::IQ4_XS),
-            "TQ1_0" => Ok(Self::TQ1_0), "TQ2_0" => Ok(Self::TQ2_0),
+            "TQ1_0" => Ok(Self::TQ1_0),
+            "TQ2_0" => Ok(Self::TQ2_0),
             "F64" => Ok(Self::F64),
             _ => Err(format!("unknown quant type: {s}")),
         }
@@ -389,23 +403,40 @@ impl std::str::FromStr for GgufQuantType {
 impl std::fmt::Display for GgufQuantType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            Self::F32 => "F32", Self::F16 => "F16", Self::BF16 => "BF16",
-            Self::Q4_0 => "Q4_0", Self::Q4_1 => "Q4_1",
-            Self::Q5_0 => "Q5_0", Self::Q5_1 => "Q5_1",
-            Self::Q8_0 => "Q8_0", Self::Q8_1 => "Q8_1",
+            Self::F32 => "F32",
+            Self::F16 => "F16",
+            Self::BF16 => "BF16",
+            Self::Q4_0 => "Q4_0",
+            Self::Q4_1 => "Q4_1",
+            Self::Q5_0 => "Q5_0",
+            Self::Q5_1 => "Q5_1",
+            Self::Q8_0 => "Q8_0",
+            Self::Q8_1 => "Q8_1",
             Self::Q2_K => "Q2_K",
-            Self::Q3_K_S => "Q3_K_S", Self::Q3_K_M => "Q3_K_M", Self::Q3_K_L => "Q3_K_L",
-            Self::Q4_K_S => "Q4_K_S", Self::Q4_K_M => "Q4_K_M",
-            Self::Q5_K_S => "Q5_K_S", Self::Q5_K_M => "Q5_K_M",
+            Self::Q3_K_S => "Q3_K_S",
+            Self::Q3_K_M => "Q3_K_M",
+            Self::Q3_K_L => "Q3_K_L",
+            Self::Q4_K_S => "Q4_K_S",
+            Self::Q4_K_M => "Q4_K_M",
+            Self::Q5_K_S => "Q5_K_S",
+            Self::Q5_K_M => "Q5_K_M",
             Self::Q6_K => "Q6_K",
-            Self::IQ1_S => "IQ1_S", Self::IQ1_M => "IQ1_M",
-            Self::IQ2_XXS => "IQ2_XXS", Self::IQ2_XS => "IQ2_XS",
-            Self::IQ2_S => "IQ2_S", Self::IQ3_XXS => "IQ3_XXS",
-            Self::IQ3_S => "IQ3_S", Self::IQ4_NL => "IQ4_NL",
+            Self::IQ1_S => "IQ1_S",
+            Self::IQ1_M => "IQ1_M",
+            Self::IQ2_XXS => "IQ2_XXS",
+            Self::IQ2_XS => "IQ2_XS",
+            Self::IQ2_S => "IQ2_S",
+            Self::IQ3_XXS => "IQ3_XXS",
+            Self::IQ3_S => "IQ3_S",
+            Self::IQ4_NL => "IQ4_NL",
             Self::IQ4_XS => "IQ4_XS",
-            Self::TQ1_0 => "TQ1_0", Self::TQ2_0 => "TQ2_0",
+            Self::TQ1_0 => "TQ1_0",
+            Self::TQ2_0 => "TQ2_0",
             Self::F64 => "F64",
-            Self::I8 => "I8", Self::I16 => "I16", Self::I32 => "I32", Self::I64 => "I64",
+            Self::I8 => "I8",
+            Self::I16 => "I16",
+            Self::I32 => "I32",
+            Self::I64 => "I64",
         };
         f.write_str(s)
     }
@@ -415,7 +446,9 @@ impl std::fmt::Display for GgufQuantType {
 // IQ4_NL — 4-bit non-linear quantization (block size 32)
 // ---------------------------------------------------------------------------
 // Non-linear codebook from llama.cpp (ggml-quants.h).
-const KVALUES_IQ4_NL: [i8; 16] = [-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113];
+const KVALUES_IQ4_NL: [i8; 16] = [
+    -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+];
 
 #[inline(always)]
 fn nearest_iq4_idx(scaled: f32) -> u8 {
@@ -435,24 +468,34 @@ fn quantize_iq4_nl(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> 
     const QK: usize = 32;
     const BLOCK_BYTES: usize = 18; // 2 (f16 delta) + 16 (4-bit qs for 32 values)
     if data.len() % QK != 0 {
-        return Err(Error::Quant(format!("IQ4_NL: len {} not divisible by {QK}", data.len())));
+        return Err(Error::Quant(format!(
+            "IQ4_NL: len {} not divisible by {QK}",
+            data.len()
+        )));
     }
     let n_blocks = data.len() / QK;
     let mut out = vec![0u8; n_blocks * BLOCK_BYTES];
     for (b, block) in data.chunks_exact(QK).enumerate() {
         let imp = importance.map(|im| &im[b * QK..(b + 1) * QK]);
-        let amax = block.iter().enumerate().map(|(i, &v)| {
-            let w = imp.map_or(1.0_f32, |im| im[i].abs().max(1e-9));
-            (v * w).abs()
-        }).fold(0.0_f32, f32::max);
+        let amax = block
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let w = imp.map_or(1.0_f32, |im| im[i].abs().max(1e-9));
+                (v * w).abs()
+            })
+            .fold(0.0_f32, f32::max);
         let d = amax / 127.0;
         let id = if d > 0.0 { 1.0 / d } else { 0.0 };
         let base = b * BLOCK_BYTES;
         out[base..base + 2].copy_from_slice(&half::f16::from_f32(d).to_le_bytes());
         for i in 0..QK {
             let idx = nearest_iq4_idx(block[i] * id);
-            if i % 2 == 0 { out[base + 2 + i / 2]  = idx & 0x0f; }
-            else           { out[base + 2 + i / 2] |= idx << 4;   }
+            if i % 2 == 0 {
+                out[base + 2 + i / 2] = idx & 0x0f;
+            } else {
+                out[base + 2 + i / 2] |= idx << 4;
+            }
         }
     }
     Ok(out)
@@ -467,7 +510,10 @@ fn quantize_iq4_xs(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> 
     const N_SUB: usize = QK / QK_SUB; // 8
     const BLOCK_BYTES: usize = 2 + 4 + 128; // f16 d + 4-bit sub-scales (8×4b) + 4-bit qs
     if data.len() % QK != 0 {
-        return Err(Error::Quant(format!("IQ4_XS: len {} not divisible by {QK}", data.len())));
+        return Err(Error::Quant(format!(
+            "IQ4_XS: len {} not divisible by {QK}",
+            data.len()
+        )));
     }
     let n_super = data.len() / QK;
     let mut out = vec![0u8; n_super * BLOCK_BYTES];
@@ -477,10 +523,14 @@ fn quantize_iq4_xs(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> 
         let mut sub_amaxes = [0.0_f32; N_SUB];
         for (sub, sb) in super_block.chunks_exact(QK_SUB).enumerate() {
             let imp_sub = imp_sup.map(|im| &im[sub * QK_SUB..(sub + 1) * QK_SUB]);
-            sub_amaxes[sub] = sb.iter().enumerate().map(|(i, &v)| {
-                let w = imp_sub.map_or(1.0_f32, |im| im[i].abs().max(1e-9));
-                (v * w).abs()
-            }).fold(0.0_f32, f32::max);
+            sub_amaxes[sub] = sb
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| {
+                    let w = imp_sub.map_or(1.0_f32, |im| im[i].abs().max(1e-9));
+                    (v * w).abs()
+                })
+                .fold(0.0_f32, f32::max);
         }
         let super_amax = sub_amaxes.iter().cloned().fold(0.0_f32, f32::max);
         // Super-block scale: maps sub-block amaxes to 4-bit (0–15).
@@ -491,10 +541,15 @@ fn quantize_iq4_xs(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> 
         // 4-bit sub-block scales packed 2 per byte.
         let mut sub_scales = [0u8; N_SUB];
         for sub in 0..N_SUB {
-            let sc = (sub_amaxes[sub] * id_super / 127.0).round().clamp(0.0, 15.0) as u8;
+            let sc = (sub_amaxes[sub] * id_super / 127.0)
+                .round()
+                .clamp(0.0, 15.0) as u8;
             sub_scales[sub] = sc;
-            if sub % 2 == 0 { out[base + 2 + sub / 2]  = sc & 0x0f; }
-            else             { out[base + 2 + sub / 2] |= sc << 4;   }
+            if sub % 2 == 0 {
+                out[base + 2 + sub / 2] = sc & 0x0f;
+            } else {
+                out[base + 2 + sub / 2] |= sc << 4;
+            }
         }
         // 4-bit quants.
         let qs_offset = base + 2 + 4;
@@ -504,8 +559,11 @@ fn quantize_iq4_xs(data: &[f32], importance: Option<&[f32]>) -> Result<Vec<u8>> 
             for i in 0..QK_SUB {
                 let gi = sub * QK_SUB + i;
                 let idx = nearest_iq4_idx(sb[i] * id_sub);
-                if gi % 2 == 0 { out[qs_offset + gi / 2]  = idx & 0x0f; }
-                else            { out[qs_offset + gi / 2] |= idx << 4;   }
+                if gi % 2 == 0 {
+                    out[qs_offset + gi / 2] = idx & 0x0f;
+                } else {
+                    out[qs_offset + gi / 2] |= idx << 4;
+                }
             }
         }
     }

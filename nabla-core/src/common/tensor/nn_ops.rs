@@ -241,13 +241,19 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Group normalization: divide channels into groups, normalize each group.
     #[must_use]
     pub fn group_norm(&self, num_groups: usize, weight: &Self, bias: &Self, eps: T) -> Self {
-        let (m, n) = self.shape();
+        let (_, n) = self.shape();
         assert!(
             n % num_groups == 0,
             "nabla: group_norm C={n} not divisible by groups={num_groups}"
         );
         Self {
-            storage: B::group_norm(&self.storage, &weight.storage, &bias.storage, num_groups, eps),
+            storage: B::group_norm(
+                &self.storage,
+                &weight.storage,
+                &bias.storage,
+                num_groups,
+                eps,
+            ),
             _axes: PhantomData,
         }
     }

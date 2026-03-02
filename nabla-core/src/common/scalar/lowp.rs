@@ -23,7 +23,7 @@ fn quantize_fp8_e4m3(v: f32) -> u8 {
     if exp < EMIN {
         return 0;
     }
-    let mut mant_bits: i32 = 0;
+    let mant_bits: i32;
     if exp > EMAX {
         exp = EMAX;
         mant_bits = (1 << M) - 1;
@@ -84,7 +84,7 @@ fn quantize_fp8_e5m2(v: f32) -> u8 {
     if exp < EMIN {
         return 0;
     }
-    let mut mant_bits: i32 = 0;
+    let mant_bits: i32;
     if exp > EMAX {
         exp = EMAX;
         mant_bits = (1 << M) - 1;
@@ -145,7 +145,7 @@ fn quantize_fp4_e2m1(v: f32) -> u8 {
     if exp < EMIN {
         return 0;
     }
-    let mut mant_bits: i32 = 0;
+    let mant_bits: i32;
     if exp > EMAX {
         exp = EMAX;
         mant_bits = (1 << M) - 1;
@@ -189,23 +189,28 @@ fn dequantize_fp4_e2m1(bits: u8) -> f32 {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
+/// 8-bit floating-point scalar with 4 exponent and 3 mantissa bits (E4M3).
 pub struct Fp8E4M3(pub u8);
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
+/// 8-bit floating-point scalar with 5 exponent and 2 mantissa bits (E5M2).
 pub struct Fp8E5M2(pub u8);
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
+/// 4-bit floating-point scalar with 2 exponent and 1 mantissa bit (E2M1).
 pub struct Fp4E2M1(pub u8);
 
 macro_rules! impl_lowp_type {
     ($ty:ident, $quant:ident, $dequant:ident) => {
         impl $ty {
+            /// Convert from `f32`.
             #[inline]
             pub fn from_f32(v: f32) -> Self {
                 Self($quant(v))
             }
+            /// Convert to `f32`.
             #[inline]
             pub fn to_f32(self) -> f32 {
                 $dequant(self.0)

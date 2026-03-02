@@ -267,9 +267,37 @@ const KERNEL_NAMES: &[&str] = &[
 
 const FP8_SUFFIXES: &[&str] = &["fp8e4m3", "fp8e5m2", "fp4e2m1"];
 const FP8_UNARY_OPS: &[&str] = &[
-    "neg", "recip", "exp", "ln", "log1p", "sin", "cos", "tan", "tanh", "sqrt", "abs", "ceil",
-    "floor", "round", "erf", "asin", "acos", "atan", "sinh", "cosh", "asinh", "acosh", "atanh",
-    "log2", "log10", "sigmoid", "silu", "mish", "leaky_relu", "elu", "hardswish",
+    "neg",
+    "recip",
+    "exp",
+    "ln",
+    "log1p",
+    "sin",
+    "cos",
+    "tan",
+    "tanh",
+    "sqrt",
+    "abs",
+    "ceil",
+    "floor",
+    "round",
+    "erf",
+    "asin",
+    "acos",
+    "atan",
+    "sinh",
+    "cosh",
+    "asinh",
+    "acosh",
+    "atanh",
+    "log2",
+    "log10",
+    "sigmoid",
+    "silu",
+    "mish",
+    "leaky_relu",
+    "elu",
+    "hardswish",
 ];
 const FP8_BINARY_OPS: &[&str] = &["add", "sub", "emul", "ediv"];
 const FP8_EXTRA_OPS: &[&str] = &[
@@ -319,7 +347,11 @@ pub(super) fn nvrtc_include_paths() -> Vec<String> {
         "/usr/include/aarch64-linux-gnu",
         "/usr/include/x86_64-linux-gnu",
     ];
-    candidates.iter().filter(|p| std::path::Path::new(p).is_dir()).map(|p| p.to_string()).collect()
+    candidates
+        .iter()
+        .filter(|p| std::path::Path::new(p).is_dir())
+        .map(|p| p.to_string())
+        .collect()
 }
 
 pub(super) fn compile_all_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResult<()> {
@@ -689,7 +721,13 @@ impl crate::backend::BackendBlas for crate::backend::Cuda {
                 )
             };
             let mut out_f32 = cuda_zeros::<f32>(a_f32.nrows, b_f32.ncols);
-            match cuda_matmul_epilogue(&mut out_f32, a_f32, b_f32, Epilogue::Bias, Some(bias_f32.buf.ptr)) {
+            match cuda_matmul_epilogue(
+                &mut out_f32,
+                a_f32,
+                b_f32,
+                Epilogue::Bias,
+                Some(bias_f32.buf.ptr),
+            ) {
                 Ok(()) => {
                     // SAFETY: T == f32 verified above.
                     unsafe { std::mem::transmute::<CudaStorage<f32>, CudaStorage<T>>(out_f32) }

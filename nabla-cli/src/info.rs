@@ -3,12 +3,14 @@
 //! Probes available backends in order: CUDA → HIP → wgpu → CPU.
 //! Outputs a human-readable table or `--json`.
 
-use std::error::Error;
 use crate::tty;
+use std::error::Error;
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("Usage: nabla info [--json]\n\nDetect available backends and display device info.");
+        println!(
+            "Usage: nabla info [--json]\n\nDetect available backends and display device info."
+        );
         return Ok(());
     }
     let json = args.iter().any(|a| a == "--json");
@@ -26,7 +28,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     entries.push(probe_cpu());
 
-    if json { print_json(&entries); } else { print_table(&entries); }
+    if json {
+        print_json(&entries);
+    } else {
+        print_table(&entries);
+    }
 
     // Exit 1 if no GPU found (CLI-INFO-06).
     if !entries.iter().any(|e| e.kind != "CPU") {
@@ -119,7 +125,7 @@ fn probe_cuda() -> Result<Vec<InfoEntry>, Box<dyn Error>> {
 
 #[cfg(feature = "hip")]
 fn probe_hip() -> Result<Vec<InfoEntry>, Box<dyn Error>> {
-    use hip_runtime_sys::{hipGetDeviceCount, hipGetDeviceProperties, hipMemGetInfo, hipError_t};
+    use hip_runtime_sys::{hipError_t, hipGetDeviceCount, hipGetDeviceProperties, hipMemGetInfo};
 
     let mut entries = Vec::new();
     let mut count: i32 = 0;
@@ -233,7 +239,9 @@ fn sys_total_ram_mib() -> Option<u64> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn sys_total_ram_mib() -> Option<u64> { None }
+fn sys_total_ram_mib() -> Option<u64> {
+    None
+}
 
 // ---------------------------------------------------------------------------
 // Output
@@ -246,13 +254,13 @@ fn print_table(entries: &[InfoEntry]) {
     for e in entries {
         let mem = match (e.mem_total_mib, e.mem_free_mib) {
             (Some(t), Some(f)) => tty::cyan(&format!("{t} MiB total / {f} MiB free")),
-            (Some(t), None)    => tty::cyan(&format!("{t} MiB total")),
-            _                  => tty::dim("unknown"),
+            (Some(t), None) => tty::cyan(&format!("{t} MiB total")),
+            _ => tty::dim("unknown"),
         };
         let kind_colored = match e.kind {
             "CUDA" | "HIP" => tty::green(e.kind),
-            "CPU"           => tty::dim(e.kind),
-            _               => tty::cyan(e.kind),
+            "CPU" => tty::dim(e.kind),
+            _ => tty::cyan(e.kind),
         };
         println!("Backend : {kind_colored}");
         println!("Device  : {}", tty::bold(&e.name));
@@ -267,7 +275,9 @@ fn print_table(entries: &[InfoEntry]) {
 fn print_json(entries: &[InfoEntry]) {
     print!("[");
     for (i, e) in entries.iter().enumerate() {
-        if i > 0 { print!(","); }
+        if i > 0 {
+            print!(",");
+        }
         print!(
             "{{\"backend\":{:?},\"device\":{:?},\"mem_total_mib\":{:?},\"mem_free_mib\":{:?}",
             e.kind, e.name, e.mem_total_mib, e.mem_free_mib,

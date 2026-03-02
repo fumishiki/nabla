@@ -589,8 +589,7 @@ pub(crate) fn cuda_conv3d<T: Scalar>(
         let in_f16 = cuda_cast::<T, half::f16>(input);
         let w_f16 = cuda_cast::<T, half::f16>(weight);
         let out_f16 = cuda_conv3d::<half::f16>(
-            &in_f16, &w_f16, n, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation,
-            groups,
+            &in_f16, &w_f16, n, c_in, d, h, w, c_out, kd, kh, kw, stride, padding, dilation, groups,
         );
         return cuda_cast::<half::f16, T>(&out_f16);
     }

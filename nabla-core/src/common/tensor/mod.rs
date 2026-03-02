@@ -7,6 +7,8 @@ pub mod nn_ops;
 pub use nn_conv::*;
 #[allow(unused_imports)]
 pub use nn_ops::*;
+/// Low-precision (fp8/fp4) quantize/dequantize helpers.
+pub mod lowp;
 /// Element-wise and binary tensor operations.
 pub mod ops;
 /// Reduction operations (sum, mean, max, etc.).
@@ -15,8 +17,6 @@ pub mod reductions;
 pub mod shape;
 /// Tensor variants: `NdTensor`, `StaticMatrix`, `DynTensor`, and related traits.
 pub mod variants;
-/// Low-precision (fp8/fp4) quantize/dequantize helpers.
-pub mod lowp;
 
 pub use constructors::{ColIter, RowIter, TensorView};
 pub use variants::{Array, NdTensor, StaticMatrix};
@@ -226,7 +226,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn matmul_bias(a: &Self, b: &Self, bias: &Self) -> Self {
         Self::from_storage(B::matmul_bias::<T>(&a.storage, &b.storage, &bias.storage))
     }
-
 
     ///
     /// `reduce_op`:

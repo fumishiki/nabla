@@ -114,7 +114,12 @@ impl HipBuffer {
             return Ok(buf);
         }
         let (ptr, alloc_size) = Self::alloc_from_pool(size_bytes)?;
-        Ok(Self { ptr, size: size_bytes, alloc_size, pooled: true })
+        Ok(Self {
+            ptr,
+            size: size_bytes,
+            alloc_size,
+            pooled: true,
+        })
     }
 
     fn alloc_zeros(size_bytes: usize) -> HipResult<Self> {

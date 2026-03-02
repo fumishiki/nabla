@@ -180,7 +180,7 @@ pub fn export_gguf(
 /// Export a `state_dict` to a GGUF file with importance-matrix support for IQ types.
 ///
 /// Enables `IQ4_NL` and `IQ4_XS` quantization by using per-column importance scores
-/// from the supplied [`Imatrix`] to guide scale selection.
+/// from the supplied [`crate::imatrix::Imatrix`] to guide scale selection.
 ///
 /// # Errors
 /// Returns `Error::Io` on file I/O failure or `Error::Quant` on quantization failure.
@@ -196,13 +196,34 @@ pub fn export_gguf_with_imatrix(
     let arch = &config.architecture;
     writer.add_metadata("general.architecture", MetadataValue::String(arch.clone()));
     writer.add_metadata("general.name", MetadataValue::String(config.name.clone()));
-    writer.add_metadata("general.file_type", MetadataValue::U32(quant_type.type_id()));
-    writer.add_metadata(&format!("{arch}.context_length"),        MetadataValue::U32(config.context_length));
-    writer.add_metadata(&format!("{arch}.embedding_length"),      MetadataValue::U32(config.embedding_length));
-    writer.add_metadata(&format!("{arch}.block_count"),           MetadataValue::U32(config.block_count));
-    writer.add_metadata(&format!("{arch}.attention.head_count"),  MetadataValue::U32(config.head_count));
-    writer.add_metadata(&format!("{arch}.attention.head_count_kv"), MetadataValue::U32(config.head_count_kv));
-    writer.add_metadata(&format!("{arch}.vocab_size"),            MetadataValue::U32(config.vocab_size));
+    writer.add_metadata(
+        "general.file_type",
+        MetadataValue::U32(quant_type.type_id()),
+    );
+    writer.add_metadata(
+        &format!("{arch}.context_length"),
+        MetadataValue::U32(config.context_length),
+    );
+    writer.add_metadata(
+        &format!("{arch}.embedding_length"),
+        MetadataValue::U32(config.embedding_length),
+    );
+    writer.add_metadata(
+        &format!("{arch}.block_count"),
+        MetadataValue::U32(config.block_count),
+    );
+    writer.add_metadata(
+        &format!("{arch}.attention.head_count"),
+        MetadataValue::U32(config.head_count),
+    );
+    writer.add_metadata(
+        &format!("{arch}.attention.head_count_kv"),
+        MetadataValue::U32(config.head_count_kv),
+    );
+    writer.add_metadata(
+        &format!("{arch}.vocab_size"),
+        MetadataValue::U32(config.vocab_size),
+    );
     for &(name, tensor) in state_dict {
         let gguf_name = map_tensor_name(name);
         let qtype = resolve_qtype(name, quant_type, overrides);
@@ -218,7 +239,12 @@ pub fn export_gguf_with_imatrix(
         };
         let quantized = quantize_data_with_imatrix(&gguf_name, &padded, qtype, imatrix)?;
         writer.add_tensor(
-            TensorInfo { name: gguf_name, dims: vec![ncols as u64, nrows as u64], qtype, data_size: quantized.len() },
+            TensorInfo {
+                name: gguf_name,
+                dims: vec![ncols as u64, nrows as u64],
+                qtype,
+                data_size: quantized.len(),
+            },
             quantized,
         );
     }

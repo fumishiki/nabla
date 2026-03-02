@@ -515,11 +515,18 @@ pub(super) fn cublas_gemm<T: Scalar>(
                 cublas_result::sgemv(
                     ctx.blas.0,
                     cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-                    n, k, &alpha,
-                    b.buf.ptr as *const f32, n,
-                    a.buf.ptr as *const f32, 1,
-                    &beta, out.buf.ptr as *mut f32, 1,
-                ).or_panic("cuBLAS sgemv");
+                    n,
+                    k,
+                    &alpha,
+                    b.buf.ptr as *const f32,
+                    n,
+                    a.buf.ptr as *const f32,
+                    1,
+                    &beta,
+                    out.buf.ptr as *mut f32,
+                    1,
+                )
+                .or_panic("cuBLAS sgemv");
                 return;
             }
             let alpha = 1.0f32;
@@ -657,11 +664,18 @@ pub(super) fn cublas_gemm_tn<T: Scalar>(
                 cublas_result::sgemv(
                     ctx.blas.0,
                     cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-                    n, k, &alpha,
-                    b.buf.ptr as *const f32, n,
-                    a.buf.ptr as *const f32, 1,
-                    &beta, out.buf.ptr as *mut f32, 1,
-                ).or_panic("cuBLAS sgemv tn");
+                    n,
+                    k,
+                    &alpha,
+                    b.buf.ptr as *const f32,
+                    n,
+                    a.buf.ptr as *const f32,
+                    1,
+                    &beta,
+                    out.buf.ptr as *mut f32,
+                    1,
+                )
+                .or_panic("cuBLAS sgemv tn");
                 return;
             }
             let (alpha, beta) = (1.0f32, 0.0f32);
@@ -786,11 +800,18 @@ pub(super) fn cublas_gemm_nt<T: Scalar>(
                 cublas_result::sgemv(
                     ctx.blas.0,
                     cublas_sys::cublasOperation_t::CUBLAS_OP_T,
-                    k, n, &alpha,
-                    b.buf.ptr as *const f32, k,
-                    a.buf.ptr as *const f32, 1,
-                    &beta, out.buf.ptr as *mut f32, 1,
-                ).or_panic("cuBLAS sgemv nt");
+                    k,
+                    n,
+                    &alpha,
+                    b.buf.ptr as *const f32,
+                    k,
+                    a.buf.ptr as *const f32,
+                    1,
+                    &beta,
+                    out.buf.ptr as *mut f32,
+                    1,
+                )
+                .or_panic("cuBLAS sgemv nt");
                 return;
             }
             let (alpha, beta) = (1.0f32, 0.0f32);
@@ -1512,7 +1533,10 @@ pub(crate) fn cuda_multi_axpy3_inplace<T: Scalar>(
 
 /// Broadcast-add a bias row vector `(1, n)` to each row of `a (m, n)`.
 /// Expands bias then element-wise adds using the standard `k_add` kernel.
-pub(crate) fn cuda_add_bias_row<T: Scalar>(a: &CudaStorage<T>, bias: &CudaStorage<T>) -> CudaStorage<T> {
+pub(crate) fn cuda_add_bias_row<T: Scalar>(
+    a: &CudaStorage<T>,
+    bias: &CudaStorage<T>,
+) -> CudaStorage<T> {
     let mut bias_expanded = cuda_zeros::<T>(a.nrows, a.ncols);
     cuda_expand(&mut bias_expanded, bias, 1, bias.ncols);
     launch_binary(a, &bias_expanded, "add")

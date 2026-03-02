@@ -1,7 +1,7 @@
 //! `nabla export` — convert a nabla checkpoint to GGUF or ONNX.
 //!
-//! Usage: nabla export <MODEL_PATH> --format gguf|onnx
-//!                     [--quant Q4_K_M] [--out <PATH>] [--arch <NAME>]
+//! Usage: `nabla export <MODEL_PATH> --format gguf|onnx`
+//!        `[--quant Q4_K_M] [--out PATH] [--arch NAME]`
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
     match format {
         "gguf" => export_gguf(args, model_path, &out_path),
         "onnx" => export_onnx(model_path, &out_path),
-        other  => Err(format!("unknown format `{other}` — use gguf or onnx").into()),
+        other => Err(format!("unknown format `{other}` — use gguf or onnx").into()),
     }
 }
 
@@ -54,8 +54,8 @@ fn export_gguf(
     model_path: &Path,
     out_path: &Path,
 ) -> std::result::Result<(), Box<dyn Error>> {
-    use nabla_interface::{GgufArchConfig, Imatrix, QuantOverride, load_imatrix};
     use nabla_interface::quant::GgufQuantType;
+    use nabla_interface::{GgufArchConfig, Imatrix, QuantOverride, load_imatrix};
 
     if flag_str(args, "--format") == Some("onnx") {
         return Err("--quant is not supported with --format onnx".into());
@@ -66,21 +66,21 @@ fn export_gguf(
         .parse()
         .map_err(|e: String| -> Box<dyn Error> { e.into() })?;
 
-    let arch     = flag_str(args, "--arch").unwrap_or("generic").to_owned();
-    let ctx_len  = flag_u32(args, "--ctx-len").unwrap_or(0);
-    let emb_len  = flag_u32(args, "--emb-len").unwrap_or(0);
-    let blocks   = flag_u32(args, "--blocks").unwrap_or(0);
-    let heads    = flag_u32(args, "--heads").unwrap_or(0);
+    let arch = flag_str(args, "--arch").unwrap_or("generic").to_owned();
+    let ctx_len = flag_u32(args, "--ctx-len").unwrap_or(0);
+    let emb_len = flag_u32(args, "--emb-len").unwrap_or(0);
+    let blocks = flag_u32(args, "--blocks").unwrap_or(0);
+    let heads = flag_u32(args, "--heads").unwrap_or(0);
 
     let config = GgufArchConfig {
-        architecture:     arch.clone(),
-        name:             arch,
-        context_length:   ctx_len,
+        architecture: arch.clone(),
+        name: arch,
+        context_length: ctx_len,
         embedding_length: emb_len,
-        block_count:      blocks,
-        head_count:       heads,
-        head_count_kv:    heads,
-        vocab_size:       0,
+        block_count: blocks,
+        head_count: heads,
+        head_count_kv: heads,
+        vocab_size: 0,
     };
 
     use nabla::module::load_tensors;
@@ -104,12 +104,22 @@ fn export_gguf(
         refs.len(),
         out_path.display(),
         quant,
-        imatrix.as_ref().map_or(String::new(), |im| format!(", imatrix {} entries", im.len())),
+        imatrix.as_ref().map_or(String::new(), |im| format!(
+            ", imatrix {} entries",
+            im.len()
+        )),
     );
 
     if let Some(im) = &imatrix {
-        nabla_interface::export_gguf_with_imatrix(&refs, out_path, quant, &config, &[] as &[QuantOverride], im)
-            .map_err(|e| format!("export_gguf_with_imatrix: {e}"))?;
+        nabla_interface::export_gguf_with_imatrix(
+            &refs,
+            out_path,
+            quant,
+            &config,
+            &[] as &[QuantOverride],
+            im,
+        )
+        .map_err(|e| format!("export_gguf_with_imatrix: {e}"))?;
     } else {
         nabla_interface::export_gguf(&refs, out_path, quant, &config, &[] as &[QuantOverride])
             .map_err(|e| format!("export_gguf: {e}"))?;
@@ -142,7 +152,11 @@ fn export_onnx(model_path: &Path, out_path: &Path) -> std::result::Result<(), Bo
         .iter()
         .filter_map(|(n, _)| {
             n.split_once('.').and_then(|(idx, rest)| {
-                if rest == "weight" { idx.parse::<usize>().ok() } else { None }
+                if rest == "weight" {
+                    idx.parse::<usize>().ok()
+                } else {
+                    None
+                }
             })
         })
         .max()
@@ -191,7 +205,9 @@ fn export_onnx(model_path: &Path, out_path: &Path) -> std::result::Result<(), Bo
 // ---------------------------------------------------------------------------
 
 fn flag_str<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    args.windows(2).find(|w| w[0] == flag).map(|w| w[1].as_str())
+    args.windows(2)
+        .find(|w| w[0] == flag)
+        .map(|w| w[1].as_str())
 }
 
 fn flag_u32(args: &[String], flag: &str) -> Option<u32> {

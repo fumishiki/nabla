@@ -11,13 +11,22 @@ use nabla_core::backend::DefaultBackend;
 use nabla_core::tensor::Tensor;
 use nabla_train::prelude::{Optimizer, Sgd};
 
-use nabla::autograd::Tape;
 use crate::tty;
+use nabla::autograd::Tape;
 
 fn compiled_backend() -> &'static str {
-    #[cfg(feature = "cuda")] { return "cuda"; }
-    #[cfg(feature = "hip")]  { return "hip"; }
-    #[cfg(feature = "wgpu")] { return "wgpu"; }
+    #[cfg(feature = "cuda")]
+    {
+        return "cuda";
+    }
+    #[cfg(feature = "hip")]
+    {
+        return "hip";
+    }
+    #[cfg(feature = "wgpu")]
+    {
+        return "wgpu";
+    }
     "cpu"
 }
 
@@ -43,16 +52,17 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
             return Err(format!(
                 "backend `{requested}` is not compiled in (this binary has `{available}`); \
                  rebuild with --features {requested}"
-            ).into());
+            )
+            .into());
         }
     }
 
     let workload = flag_str(args, "--workload").unwrap_or("all");
-    let batches  = parse_usize_list(flag_str(args, "--batch").unwrap_or("128,512"));
-    let sizes    = parse_usize_list(flag_str(args, "--sizes").unwrap_or("1024,4096"));
-    let iters    = flag_usize(args, "--iters").unwrap_or(100);
-    let warmup   = flag_usize(args, "--warmup").unwrap_or(10);
-    let json     = args.iter().any(|a| a == "--json");
+    let batches = parse_usize_list(flag_str(args, "--batch").unwrap_or("128,512"));
+    let sizes = parse_usize_list(flag_str(args, "--sizes").unwrap_or("1024,4096"));
+    let iters = flag_usize(args, "--iters").unwrap_or(100);
+    let warmup = flag_usize(args, "--warmup").unwrap_or(10);
+    let json = args.iter().any(|a| a == "--json");
 
     if !json {
         let backend = compiled_backend().to_uppercase();
@@ -72,7 +82,9 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
                 let _sp = (!json).then(|| tty::Spinner::new(&label));
                 bench_matmul(n, warmup, iters)
             };
-            if !json { print_row(&rec); }
+            if !json {
+                print_row(&rec);
+            }
             records.push(rec);
         }
     }
@@ -83,7 +95,9 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
                 let _sp = (!json).then(|| tty::Spinner::new(&label));
                 bench_mlp(b, warmup, iters)
             };
-            if !json { print_row(&rec); }
+            if !json {
+                print_row(&rec);
+            }
             records.push(rec);
         }
     }
@@ -92,7 +106,9 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
         return Err(format!("unknown workload `{workload}` — use matmul, mlp, or all").into());
     }
 
-    if json { print_json(&records); }
+    if json {
+        print_json(&records);
+    }
     Ok(())
 }
 
@@ -102,7 +118,7 @@ pub fn run(args: &[String]) -> std::result::Result<(), Box<dyn Error>> {
 
 struct BenchRecord {
     workload: &'static str,
-    label:    String,
+    label: String,
     eager_us: f64,
 }
 
@@ -114,15 +130,23 @@ fn bench_matmul(n: usize, warmup: usize, iters: usize) -> BenchRecord {
     let a: Tensor<f32, DefaultBackend> = Tensor::randn(n, n, 42);
     let b: Tensor<f32, DefaultBackend> = Tensor::randn(n, n, 43);
 
-    for _ in 0..warmup { let _ = &a * &b; }
+    for _ in 0..warmup {
+        let _ = &a * &b;
+    }
     gpu_sync();
 
     let t = Instant::now();
-    for _ in 0..iters { let _ = &a * &b; }
+    for _ in 0..iters {
+        let _ = &a * &b;
+    }
     gpu_sync();
     let us = t.elapsed().as_secs_f64() * 1_000_000.0 / iters as f64;
 
-    BenchRecord { workload: "matmul", label: format!("{n}x{n} f32"), eager_us: us }
+    BenchRecord {
+        workload: "matmul",
+        label: format!("{n}x{n} f32"),
+        eager_us: us,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,18 +161,26 @@ fn bench_mlp(batch: usize, warmup: usize, iters: usize) -> BenchRecord {
     let mut sgd: Sgd<f32, DefaultBackend> = Sgd::from_params(0.001, &params);
     drop(params);
 
-    let x      = Tensor::<f32, DefaultBackend>::randn(batch, 784, 1);
+    let x = Tensor::<f32, DefaultBackend>::randn(batch, 784, 1);
     let target = Tensor::<f32, DefaultBackend>::randn(batch, 10, 2).map(|v| v * 0.1);
 
-    for _ in 0..warmup { mlp_step(&mut w1, &mut w2, &mut w3, &mut sgd, &x, &target); }
+    for _ in 0..warmup {
+        mlp_step(&mut w1, &mut w2, &mut w3, &mut sgd, &x, &target);
+    }
     gpu_sync();
 
     let t = Instant::now();
-    for _ in 0..iters { mlp_step(&mut w1, &mut w2, &mut w3, &mut sgd, &x, &target); }
+    for _ in 0..iters {
+        mlp_step(&mut w1, &mut w2, &mut w3, &mut sgd, &x, &target);
+    }
     gpu_sync();
     let us = t.elapsed().as_secs_f64() * 1_000_000.0 / iters as f64;
 
-    BenchRecord { workload: "mlp", label: format!("batch={batch}"), eager_us: us }
+    BenchRecord {
+        workload: "mlp",
+        label: format!("batch={batch}"),
+        eager_us: us,
+    }
 }
 
 fn mlp_step(
@@ -160,16 +192,16 @@ fn mlp_step(
     target: &Tensor<f32, DefaultBackend>,
 ) {
     let tape = Tape::new();
-    let xv  = tape.variable(x.clone()).expect("tape var");
+    let xv = tape.variable(x.clone()).expect("tape var");
     let w1v = tape.variable(w1.clone()).expect("tape var");
     let w2v = tape.variable(w2.clone()).expect("tape var");
     let w3v = tape.variable(w3.clone()).expect("tape var");
-    let tv  = tape.variable(target.clone()).expect("tape var");
+    let tv = tape.variable(target.clone()).expect("tape var");
 
-    let h1  = xv.matmul(&w1v).leaky_relu(0.01);
-    let h2  = h1.matmul(&w2v).leaky_relu(0.01);
+    let h1 = xv.matmul(&w1v).leaky_relu(0.01);
+    let h2 = h1.matmul(&w2v).leaky_relu(0.01);
     let out = h2.matmul(&w3v);
-    let d   = out.sub_var(&tv);
+    let d = out.sub_var(&tv);
     let loss = d.emul(&d).sum_axis(1).sum_axis(0);
     let _ = loss.backward_unchecked();
 
@@ -188,10 +220,14 @@ fn kaiming(rows: usize, cols: usize) -> Tensor<f32, DefaultBackend> {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "cuda")]
-#[inline] fn gpu_sync() { nabla_core::cuda_synchronize(); }
+#[inline]
+fn gpu_sync() {
+    nabla_core::cuda_synchronize();
+}
 
 #[cfg(not(feature = "cuda"))]
-#[inline] fn gpu_sync() {}
+#[inline]
+fn gpu_sync() {}
 
 // ---------------------------------------------------------------------------
 // Output
@@ -211,7 +247,9 @@ fn print_row(r: &BenchRecord) {
 fn print_json(records: &[BenchRecord]) {
     print!("[");
     for (i, r) in records.iter().enumerate() {
-        if i > 0 { print!(","); }
+        if i > 0 {
+            print!(",");
+        }
         print!(
             "{{\"workload\":{:?},\"label\":{:?},\"eager_us\":{:.2}}}",
             r.workload, r.label, r.eager_us
@@ -225,7 +263,9 @@ fn print_json(records: &[BenchRecord]) {
 // ---------------------------------------------------------------------------
 
 fn flag_str<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    args.windows(2).find(|w| w[0] == flag).map(|w| w[1].as_str())
+    args.windows(2)
+        .find(|w| w[0] == flag)
+        .map(|w| w[1].as_str())
 }
 
 fn flag_usize(args: &[String], flag: &str) -> Option<usize> {
