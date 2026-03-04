@@ -11,6 +11,7 @@ categories = ["command-line-utilities", "science"]
 [[bin]]
 name = "nabla"
 path = "src/main.rs"
+doc = false
 
 [features]
 default = ["cpu"]
