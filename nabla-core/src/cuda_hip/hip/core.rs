@@ -373,19 +373,11 @@ pub(crate) fn hip_fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> HipStor
 }
 
 pub(crate) fn hip_from_fn<T: Scalar>(
-    nrows: usize,
-    ncols: usize,
-    mut f: impl FnMut(usize, usize) -> T,
+    _nrows: usize,
+    _ncols: usize,
+    _f: impl FnMut(usize, usize) -> T,
 ) -> HipStorage<T> {
-    let n = nrows * ncols;
-    let mut data = Vec::with_capacity(n);
-    for r in 0..nrows {
-        for c in 0..ncols {
-            data.push(f(r, c));
-        }
-    }
-    let buf = hip_or_panic(HipBuffer::from_host(&data), "HIP upload");
-    HipStorage::new_cached(nrows, ncols, buf, data)
+    panic!("nabla: Tensor::from_fn is CPU-only; HIP fallback is forbidden");
 }
 
 pub(crate) fn hip_from_vec_async<T: Scalar>(

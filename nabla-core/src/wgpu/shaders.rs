@@ -15,6 +15,8 @@ pub(super) fn generate_shader(key: PipelineKey) -> String {
         ShaderOp::ReduceSum => gen_reduce_sum(wg),
         ShaderOp::ReduceMax => gen_reduce_max(wg),
         ShaderOp::ReduceMin => gen_reduce_min(wg),
+        ShaderOp::ReduceProd => gen_reduce_prod(wg),
+        ShaderOp::ReduceCountNonzero => gen_reduce_count_nonzero(wg),
         ShaderOp::Argmax => gen_argmax(wg),
         ShaderOp::Argmin => gen_argmin(wg),
         ShaderOp::Matmul { tile } => gen_matmul(tile),
@@ -468,6 +470,77 @@ fn main(
             if wg_mem[k] < acc {{ acc = wg_mem[k]; }}
         }}
         out[wgid.x] = acc;
+    }}
+}}
+"
+    )
+}
+
+fn gen_reduce_prod(wg: u32) -> String {
+    format!(
+        r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+var<workgroup> scratch: array<f32, {wg}>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id) wg_id: vec3<u32>) {{
+    let n = params[0];
+    let i = gid.x;
+    let li = lid.x;
+    var v: f32 = 1.0;
+    if i < n {{ v = a[i]; }}
+    scratch[li] = v;
+    workgroupBarrier();
+    var stride = {wg}u / 2u;
+    while (stride > 0u) {{
+        if li < stride {{
+            scratch[li] = scratch[li] * scratch[li + stride];
+        }}
+        workgroupBarrier();
+        stride = stride / 2u;
+    }}
+    if li == 0u {{
+        out[wg_id.x] = scratch[0];
+    }}
+}}
+"
+    )
+}
+
+fn gen_reduce_count_nonzero(wg: u32) -> String {
+    format!(
+        r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+var<workgroup> scratch: array<f32, {wg}>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id) wg_id: vec3<u32>) {{
+    let n = params[0];
+    let i = gid.x;
+    let li = lid.x;
+    var v: f32 = 0.0;
+    if i < n {{
+        let x = a[i];
+        v = select(0.0, 1.0, x != 0.0);
+    }}
+    scratch[li] = v;
+    workgroupBarrier();
+    var stride = {wg}u / 2u;
+    while (stride > 0u) {{
+        if li < stride {{
+            scratch[li] = scratch[li] + scratch[li + stride];
+        }}
+        workgroupBarrier();
+        stride = stride / 2u;
+    }}
+    if li == 0u {{
+        out[wg_id.x] = scratch[0];
     }}
 }}
 "

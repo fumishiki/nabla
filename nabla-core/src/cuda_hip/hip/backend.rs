@@ -409,6 +409,8 @@ impl crate::backend::BackendReduce for crate::backend::Hip {
     }
 }
 
+impl crate::backend::BackendShape for crate::backend::Hip {}
+
 impl crate::backend::BackendBlas for crate::backend::Hip {
     #[inline]
     fn matmul_into<T: Scalar>(out: &mut HipStorage<T>, a: &HipStorage<T>, b: &HipStorage<T>) {

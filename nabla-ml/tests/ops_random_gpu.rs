@@ -177,6 +177,7 @@ mod cpu {
 mod gpu {
     //! GPU backend integration tests (wgpu direct).
 
+    use nabla::backend::Backend;
     use nabla::backend::Cpu;
     use nabla::prelude::*;
 
@@ -184,6 +185,20 @@ mod gpu {
 
     fn approx_eq_f32(a: f32, b: f32) -> bool {
         (a - b).abs() < TOL_F32
+    }
+
+    fn make_f32<B: Backend>(
+        rows: usize,
+        cols: usize,
+        f: impl Fn(usize, usize) -> f32,
+    ) -> Tensor<f32, B> {
+        let mut data = Vec::with_capacity(rows * cols);
+        for i in 0..rows {
+            for j in 0..cols {
+                data.push(f(i, j));
+            }
+        }
+        Tensor::from_vec(data, rows, cols)
     }
 
     fn tensors_close_f32(gpu: &Tensor<f32, Gpu>, cpu: &Tensor<f32, Cpu>) {
@@ -205,16 +220,16 @@ mod gpu {
         ($name:ident, $op:ident, $rows:expr, $cols:expr, $gen:expr) => {
             #[test]
             fn $name() {
-                let a_gpu = Tensor::<f32, Gpu>::from_fn($rows, $cols, $gen);
-                let a_cpu = Tensor::<f32, Cpu>::from_fn($rows, $cols, $gen);
+                let a_gpu = make_f32::<Gpu>($rows, $cols, $gen);
+                let a_cpu = make_f32::<Cpu>($rows, $cols, $gen);
                 tensors_close_f32(&a_gpu.$op(), &a_cpu.$op());
             }
         };
         ($name:ident, $op:ident ($($arg:expr),*), $rows:expr, $cols:expr, $gen:expr) => {
             #[test]
             fn $name() {
-                let a_gpu = Tensor::<f32, Gpu>::from_fn($rows, $cols, $gen);
-                let a_cpu = Tensor::<f32, Cpu>::from_fn($rows, $cols, $gen);
+                let a_gpu = make_f32::<Gpu>($rows, $cols, $gen);
+                let a_cpu = make_f32::<Cpu>($rows, $cols, $gen);
                 tensors_close_f32(&a_gpu.$op($($arg),*), &a_cpu.$op($($arg),*));
             }
         };
@@ -268,7 +283,7 @@ mod gpu {
 
     #[test]
     fn get_after_from_fn() {
-        let t = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i as f32) * 10.0 + j as f32);
+        let t = make_f32::<Gpu>(4, 4, |i, j| (i as f32) * 10.0 + j as f32);
         assert_eq!(t.get(2, 3), 23.0f32);
         assert_eq!(t.get(0, 0), 0.0f32);
     }
@@ -283,40 +298,40 @@ mod gpu {
 
     #[test]
     fn add_f32_matches_cpu() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i + j) as f32);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i + j) as f32);
+        let a_gpu = make_f32::<Gpu>(4, 4, |i, j| (i * 4 + j) as f32);
+        let b_gpu = make_f32::<Gpu>(4, 4, |i, j| (i + j) as f32);
+        let a_cpu = make_f32::<Cpu>(4, 4, |i, j| (i * 4 + j) as f32);
+        let b_cpu = make_f32::<Cpu>(4, 4, |i, j| (i + j) as f32);
         tensors_close_f32(&(&a_gpu + &b_gpu), &(&a_cpu + &b_cpu));
     }
 
     #[test]
     fn sub_f32_matches_cpu() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |_i, j| (j + 1) as f32);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |_i, j| (j + 1) as f32);
+        let a_gpu = make_f32::<Gpu>(4, 4, |i, j| (i * 4 + j + 1) as f32);
+        let b_gpu = make_f32::<Gpu>(4, 4, |_i, j| (j + 1) as f32);
+        let a_cpu = make_f32::<Cpu>(4, 4, |i, j| (i * 4 + j + 1) as f32);
+        let b_cpu = make_f32::<Cpu>(4, 4, |_i, j| (j + 1) as f32);
         tensors_close_f32(&(&a_gpu - &b_gpu), &(&a_cpu - &b_cpu));
     }
 
     #[test]
     fn neg_f32_matches_cpu() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(3, 4, |i, j| (i as f32) - (j as f32) * 0.5);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(3, 4, |i, j| (i as f32) - (j as f32) * 0.5);
+        let a_gpu = make_f32::<Gpu>(3, 4, |i, j| (i as f32) - (j as f32) * 0.5);
+        let a_cpu = make_f32::<Cpu>(3, 4, |i, j| (i as f32) - (j as f32) * 0.5);
         tensors_close_f32(&(-&a_gpu), &(-&a_cpu));
     }
 
     #[test]
     fn scale_f32_matches_cpu() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32);
+        let a_gpu = make_f32::<Gpu>(4, 4, |i, j| (i * 4 + j) as f32);
+        let a_cpu = make_f32::<Cpu>(4, 4, |i, j| (i * 4 + j) as f32);
         tensors_close_f32(&(&a_gpu * 2.0f32), &(&a_cpu * 2.0f32));
     }
 
     #[test]
     fn transpose_f32_shape_and_values() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(3, 5, |i, j| (i * 5 + j) as f32);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(3, 5, |i, j| (i * 5 + j) as f32);
+        let a_gpu = make_f32::<Gpu>(3, 5, |i, j| (i * 5 + j) as f32);
+        let a_cpu = make_f32::<Cpu>(3, 5, |i, j| (i * 5 + j) as f32);
         let t_gpu = a_gpu.t();
         let t_cpu = a_cpu.t();
         assert_eq!(t_gpu.shape(), (5, 3));
@@ -325,22 +340,22 @@ mod gpu {
 
     #[test]
     fn matmul_f32_matches_cpu() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(2, 3, |i, j| (i * 3 + j + 1) as f32);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(3, 2, |i, j| (i * 2 + j + 1) as f32);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(2, 3, |i, j| (i * 3 + j + 1) as f32);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(3, 2, |i, j| (i * 2 + j + 1) as f32);
+        let a_gpu = make_f32::<Gpu>(2, 3, |i, j| (i * 3 + j + 1) as f32);
+        let b_gpu = make_f32::<Gpu>(3, 2, |i, j| (i * 2 + j + 1) as f32);
+        let a_cpu = make_f32::<Cpu>(2, 3, |i, j| (i * 3 + j + 1) as f32);
+        let b_cpu = make_f32::<Cpu>(3, 2, |i, j| (i * 2 + j + 1) as f32);
         tensors_close_f32(&(&a_gpu * &b_gpu), &(&a_cpu * &b_cpu));
     }
 
     #[test]
     fn chained_add_matmul_f32() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(3, 3, |i, j| (i + j) as f32);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(3, 3, |i, j| (i * j) as f32);
-        let d_gpu = Tensor::<f32, Gpu>::from_fn(3, 3, |i, j| if i == j { 2.0 } else { 1.0 });
+        let a_gpu = make_f32::<Gpu>(3, 3, |i, j| (i + j) as f32);
+        let b_gpu = make_f32::<Gpu>(3, 3, |i, j| (i * j) as f32);
+        let d_gpu = make_f32::<Gpu>(3, 3, |i, j| if i == j { 2.0 } else { 1.0 });
 
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(3, 3, |i, j| (i + j) as f32);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(3, 3, |i, j| (i * j) as f32);
-        let d_cpu = Tensor::<f32, Cpu>::from_fn(3, 3, |i, j| if i == j { 2.0 } else { 1.0 });
+        let a_cpu = make_f32::<Cpu>(3, 3, |i, j| (i + j) as f32);
+        let b_cpu = make_f32::<Cpu>(3, 3, |i, j| (i * j) as f32);
+        let d_cpu = make_f32::<Cpu>(3, 3, |i, j| if i == j { 2.0 } else { 1.0 });
 
         let c_gpu = &(&a_gpu + &b_gpu) * &d_gpu;
         let c_cpu = &(&a_cpu + &b_cpu) * &d_cpu;
@@ -349,34 +364,34 @@ mod gpu {
 
     #[test]
     fn emul_f32_matches_cpu() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.5);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i + j + 1) as f32);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32 * 0.5);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i + j + 1) as f32);
+        let a_gpu = make_f32::<Gpu>(4, 4, |i, j| (i * 4 + j) as f32 * 0.5);
+        let b_gpu = make_f32::<Gpu>(4, 4, |i, j| (i + j + 1) as f32);
+        let a_cpu = make_f32::<Cpu>(4, 4, |i, j| (i * 4 + j) as f32 * 0.5);
+        let b_cpu = make_f32::<Cpu>(4, 4, |i, j| (i + j + 1) as f32);
         tensors_close_f32(&a_gpu.emul(&b_gpu), &a_cpu.emul(&b_cpu));
     }
 
     #[test]
     fn ediv_f32_matches_cpu() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i + j + 1) as f32);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i + j + 1) as f32);
+        let a_gpu = make_f32::<Gpu>(4, 4, |i, j| (i * 4 + j) as f32);
+        let b_gpu = make_f32::<Gpu>(4, 4, |i, j| (i + j + 1) as f32);
+        let a_cpu = make_f32::<Cpu>(4, 4, |i, j| (i * 4 + j) as f32);
+        let b_cpu = make_f32::<Cpu>(4, 4, |i, j| (i + j + 1) as f32);
         tensors_close_f32(&a_gpu.ediv(&b_gpu), &a_cpu.ediv(&b_cpu));
     }
 
     #[test]
     fn chained_exp_mul_f32() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(3, 3, |i, j| (i + j) as f32 * 0.5);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(3, 3, |i, j| (i * j + 1) as f32);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(3, 3, |i, j| (i + j) as f32 * 0.5);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(3, 3, |i, j| (i * j + 1) as f32);
+        let a_gpu = make_f32::<Gpu>(3, 3, |i, j| (i + j) as f32 * 0.5);
+        let b_gpu = make_f32::<Gpu>(3, 3, |i, j| (i * j + 1) as f32);
+        let a_cpu = make_f32::<Cpu>(3, 3, |i, j| (i + j) as f32 * 0.5);
+        let b_cpu = make_f32::<Cpu>(3, 3, |i, j| (i * j + 1) as f32);
         tensors_close_f32(&a_gpu.exp().emul(&b_gpu), &a_cpu.exp().emul(&b_cpu));
     }
 
     #[test]
     fn clone_produces_equal_tensor() {
-        let a = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j) as f32);
+        let a = make_f32::<Gpu>(4, 4, |i, j| (i * 4 + j) as f32);
         let b = a.clone();
         assert_eq!(a.shape(), b.shape());
         let (r, c) = a.shape();
@@ -389,7 +404,7 @@ mod gpu {
 
     #[test]
     fn clone_is_independent() {
-        let a = Tensor::<f32, Gpu>::from_fn(3, 3, |i, j| (i * 3 + j) as f32);
+        let a = make_f32::<Gpu>(3, 3, |i, j| (i * 3 + j) as f32);
         let mut b = a.clone();
         b.set(0, 0, 99.0);
         assert_eq!(a.get(0, 0), 0.0f32);
@@ -398,28 +413,28 @@ mod gpu {
 
     #[test]
     fn tiled_matmul_square_f32_matches_cpu() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(4, 4, |i, j| (i + j * 2 + 1) as f32);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i * 4 + j + 1) as f32);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(4, 4, |i, j| (i + j * 2 + 1) as f32);
+        let a_gpu = make_f32::<Gpu>(4, 4, |i, j| (i * 4 + j + 1) as f32);
+        let b_gpu = make_f32::<Gpu>(4, 4, |i, j| (i + j * 2 + 1) as f32);
+        let a_cpu = make_f32::<Cpu>(4, 4, |i, j| (i * 4 + j + 1) as f32);
+        let b_cpu = make_f32::<Cpu>(4, 4, |i, j| (i + j * 2 + 1) as f32);
         tensors_close_f32(&(&a_gpu * &b_gpu), &(&a_cpu * &b_cpu));
     }
 
     #[test]
     fn tiled_matmul_non_square_f32_matches_cpu() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(3, 5, |i, j| (i + j + 1) as f32);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(5, 2, |i, j| (i * 2 + j + 1) as f32);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(3, 5, |i, j| (i + j + 1) as f32);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(5, 2, |i, j| (i * 2 + j + 1) as f32);
+        let a_gpu = make_f32::<Gpu>(3, 5, |i, j| (i + j + 1) as f32);
+        let b_gpu = make_f32::<Gpu>(5, 2, |i, j| (i * 2 + j + 1) as f32);
+        let a_cpu = make_f32::<Cpu>(3, 5, |i, j| (i + j + 1) as f32);
+        let b_cpu = make_f32::<Cpu>(5, 2, |i, j| (i * 2 + j + 1) as f32);
         tensors_close_f32(&(&a_gpu * &b_gpu), &(&a_cpu * &b_cpu));
     }
 
     #[test]
     fn tiled_matmul_large_f32_matches_cpu() {
-        let a_gpu = Tensor::<f32, Gpu>::from_fn(20, 20, |i, j| (i + j + 1) as f32 * 0.1);
-        let b_gpu = Tensor::<f32, Gpu>::from_fn(20, 20, |_i, j| (j + 1) as f32 * 0.1);
-        let a_cpu = Tensor::<f32, Cpu>::from_fn(20, 20, |i, j| (i + j + 1) as f32 * 0.1);
-        let b_cpu = Tensor::<f32, Cpu>::from_fn(20, 20, |_i, j| (j + 1) as f32 * 0.1);
+        let a_gpu = make_f32::<Gpu>(20, 20, |i, j| (i + j + 1) as f32 * 0.1);
+        let b_gpu = make_f32::<Gpu>(20, 20, |_i, j| (j + 1) as f32 * 0.1);
+        let a_cpu = make_f32::<Cpu>(20, 20, |i, j| (i + j + 1) as f32 * 0.1);
+        let b_cpu = make_f32::<Cpu>(20, 20, |_i, j| (j + 1) as f32 * 0.1);
         tensors_close_f32(&(&a_gpu * &b_gpu), &(&a_cpu * &b_cpu));
     }
 
@@ -446,20 +461,8 @@ mod gpu {
     }
 
     #[test]
-    fn gpu_identity_f32() {
-        let eye = Tensor::<f32, Gpu>::identity(4);
-        assert_eq!(eye.shape(), (4, 4));
-        for i in 0..4 {
-            for j in 0..4 {
-                let expected = if i == j { 1.0_f32 } else { 0.0_f32 };
-                assert!((eye.get(i, j) - expected).abs() < 1e-6);
-            }
-        }
-    }
-
-    #[test]
     fn gpu_sum_all() {
-        let a = Tensor::<f32, Gpu>::from_fn(4, 4, |r, c| (r * 4 + c + 1) as f32);
+        let a = make_f32::<Gpu>(4, 4, |r, c| (r * 4 + c + 1) as f32);
         let sum = a.sum_all();
         let expected: f32 = (1..=16).map(|x| x as f32).sum();
         assert!((sum - expected).abs() < 1e-4);
@@ -467,25 +470,25 @@ mod gpu {
 
     #[test]
     fn gpu_max_all() {
-        let a = Tensor::<f32, Gpu>::from_fn(4, 4, |r, c| (r * 4 + c + 1) as f32);
+        let a = make_f32::<Gpu>(4, 4, |r, c| (r * 4 + c + 1) as f32);
         assert!((a.max_all() - 16.0_f32).abs() < 1e-5);
     }
 
     #[test]
     fn gpu_min_all() {
-        let a = Tensor::<f32, Gpu>::from_fn(4, 4, |r, c| (r * 4 + c + 1) as f32);
+        let a = make_f32::<Gpu>(4, 4, |r, c| (r * 4 + c + 1) as f32);
         assert!((a.min_all() - 1.0_f32).abs() < 1e-5);
     }
 
     #[test]
     fn gpu_argmax_all() {
-        let a = Tensor::<f32, Gpu>::from_fn(4, 4, |r, c| (r * 4 + c + 1) as f32);
+        let a = make_f32::<Gpu>(4, 4, |r, c| (r * 4 + c + 1) as f32);
         assert_eq!(a.argmax(), (3, 3));
     }
 
     #[test]
     fn gpu_argmin_all() {
-        let a = Tensor::<f32, Gpu>::from_fn(4, 4, |r, c| (r * 4 + c + 1) as f32);
+        let a = make_f32::<Gpu>(4, 4, |r, c| (r * 4 + c + 1) as f32);
         assert_eq!(a.argmin(), (0, 0));
     }
 }

@@ -4,7 +4,7 @@ use std::any::TypeId;
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 
-use super::{Tensor, assert_cpu_only, resolve_range, two};
+use super::{Tensor, resolve_range, two};
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Validate two tensors have the same shape.
@@ -83,14 +83,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         col_start: usize,
         col_end: usize,
     ) -> Self {
-        assert_cpu_only::<B>("Tensor::submatrix");
         Self::check_half_open("submatrix row", row_start, row_end, self.nrows());
         Self::check_half_open("submatrix col", col_start, col_end, self.ncols());
         let nrows = row_end - row_start;
         let ncols = col_end - col_start;
-        Self::from_storage(B::from_fn(nrows, ncols, |r, c| {
-            self.get(row_start + r, col_start + c)
-        }))
+        Self::from_storage(B::submatrix(
+            &self.storage,
+            row_start,
+            col_start,
+            nrows,
+            ncols,
+        ))
     }
 
     /// Slice by row and column ranges, returning a new `Tensor` (copy).
@@ -146,7 +149,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         cols: impl RangeBounds<usize>,
         src: &Self,
     ) {
-        assert_cpu_only::<B>("Tensor::slice_set");
         let (rs, re) = resolve_range(rows, self.nrows());
         let (cs, ce) = resolve_range(cols, self.ncols());
         let h = re - rs;
@@ -163,11 +165,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             "slice_set: src ncols {scn} != region width {w}",
             scn = src.ncols()
         );
-        for r in 0..h {
-            for c in 0..w {
-                self.set(rs + r, cs + c, src.get(r, c));
-            }
-        }
+        B::slice_set(&mut self.storage, rs, cs, &src.storage);
     }
 
     // ---- Scalar extraction ----
@@ -233,34 +231,23 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn epow(&self, other: &Self) -> Self {
         self.assert_same_shape(other, "nabla: epow");
-        assert_cpu_only::<B>("Tensor::epow");
         let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| self.get(r, c).math_powf(other.get(r, c)))
-    }
-
-    /// Apply a closure element-wise, returning a new tensor.
-    #[must_use]
-    pub fn map<F>(&self, f: F) -> Self
-    where
-        F: Fn(T) -> T + Send + Sync,
-    {
-        #[cfg(feature = "cuda")]
-        assert!(
-            TypeId::of::<B>() != TypeId::of::<crate::backend::Cuda>(),
-            "nabla: Tensor::map is CPU-only on CUDA; use fuse!/math! or explicit Tensor ops"
-        );
-        #[cfg(feature = "hip")]
-        assert!(
-            TypeId::of::<B>() != TypeId::of::<crate::backend::Hip>(),
-            "nabla: Tensor::map is CPU-only on HIP; use fuse!/math! or explicit Tensor ops"
-        );
-        #[cfg(feature = "gpu")]
-        assert!(
-            TypeId::of::<B>() != TypeId::of::<crate::backend::Gpu>(),
-            "nabla: Tensor::map is CPU-only on WGPU; use fuse!/math! or explicit Tensor ops"
-        );
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| f(self.get(r, c)))
+        let inputs = [self.__storage_ptr(), other.__storage_ptr()];
+        let expr = if TypeId::of::<T>() == TypeId::of::<f32>() {
+            "powf(in0[i], in1[i])"
+        } else {
+            "pow(in0[i], in1[i])"
+        };
+        Self::__fuse_elementwise(
+            &inputs,
+            m,
+            n,
+            |r, c| self.get(r, c).math_powf(other.get(r, c)),
+            expr,
+            "epow",
+            2,
+            0,
+        )
     }
 
     /// Element-wise clamp: values below `lo` become `lo`, above `hi` become `hi`.
@@ -329,11 +316,18 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
                 0,
             );
         }
-        Self::from_fn(m, n, |r, c| {
-            let a = self.get(r, c).to_f64();
-            let b = rhs.get(r, c).to_f64();
-            T::from_f64(a % b)
-        })
+        #[cfg(feature = "cpu")]
+        {
+            Self::from_fn(m, n, |r, c| {
+                let a = self.get(r, c).to_f64();
+                let b = rhs.get(r, c).to_f64();
+                T::from_f64(a % b)
+            })
+        }
+        #[cfg(not(feature = "cpu"))]
+        {
+            panic!("nabla: rem is CPU-only for non-f32/f64 scalars");
+        }
     }
 
     /// Element-wise remainder with a scalar divisor.
@@ -344,8 +338,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             let rhs_t = Tensor::fill(1, 1, rhs).expand(m, n);
             return self.rem(&rhs_t);
         }
-        let b = rhs.to_f64();
-        Self::from_fn(m, n, |r, c| T::from_f64(self.get(r, c).to_f64() % b))
+        #[cfg(feature = "cpu")]
+        {
+            let b = rhs.to_f64();
+            Self::from_fn(m, n, |r, c| T::from_f64(self.get(r, c).to_f64() % b))
+        }
+        #[cfg(not(feature = "cpu"))]
+        {
+            let _ = rhs;
+            panic!("nabla: rem_scalar is CPU-only for non-f32/f64 scalars");
+        }
     }
 
     /// Hadamard (element-wise) product. Alias for [`Tensor::emul`].
@@ -425,14 +427,20 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Return the conjugate transpose (adjoint / Hermitian transpose).
     #[must_use]
     pub fn adjoint(&self) -> Self {
-        let (r, c) = self.shape();
-        Self::from_storage(if T::IS_REAL {
-            B::transpose(&self.storage)
-        } else {
-            B::from_fn(c, r, |i, j| {
+        if T::IS_REAL {
+            return Self::from_storage(B::transpose(&self.storage));
+        }
+        #[cfg(feature = "cpu")]
+        {
+            let (r, c) = self.shape();
+            Self::from_storage(B::from_fn(c, r, |i, j| {
                 crate::scalar::math_utils::conj(&self.get(j, i))
-            })
-        })
+            }))
+        }
+        #[cfg(not(feature = "cpu"))]
+        {
+            panic!("nabla: adjoint for complex scalars is CPU-only");
+        }
     }
 
     /// Short alias for conjugate transpose.
@@ -504,12 +512,26 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// Fused matmul + element-wise activation.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn matmul_fused<F>(a: &Self, b: &Self, act: F) -> Self
     where
         F: Fn(T) -> T + Send + Sync,
     {
         let c = a * b;
-        c.map(act)
+        let (m, n) = c.shape();
+        Self::from_storage(B::from_fn(m, n, |r, col| act(c.get(r, col))))
+    }
+}
+
+impl<T: Scalar, B: Backend> Tensor<T, B> {
+    /// Apply a closure element-wise, returning a new tensor.
+    #[must_use]
+    pub fn map<F>(&self, f: F) -> Self
+    where
+        F: Fn(T) -> T + Send + Sync,
+    {
+        let (m, n) = self.shape();
+        Self::from_storage(B::from_fn(m, n, |r, c| f(self.get(r, c))))
     }
 }
 

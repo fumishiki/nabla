@@ -343,6 +343,441 @@ impl crate::backend::BackendReduce for Cpu {
     }
 }
 
+impl crate::backend::BackendShape for Cpu {
+    fn reshape_copy<T: Scalar>(
+        a: &CpuStorage<T>,
+        out_rows: usize,
+        out_cols: usize,
+    ) -> CpuStorage<T> {
+        let total = out_rows * out_cols;
+        assert_eq!(
+            total,
+            a.nrows * a.ncols,
+            "reshape: {}x{} cannot reshape to {}x{}",
+            a.nrows,
+            a.ncols,
+            out_rows,
+            out_cols
+        );
+        let mut data = Vec::with_capacity(total);
+        for r in 0..out_rows {
+            for c in 0..out_cols {
+                let flat = r * out_cols + c;
+                let src_r = flat / a.ncols;
+                let src_c = flat % a.ncols;
+                data.push(a.get_unchecked(src_r, src_c));
+            }
+        }
+        CpuStorage {
+            data,
+            nrows: out_rows,
+            ncols: out_cols,
+        }
+    }
+
+    fn submatrix<T: Scalar>(
+        a: &CpuStorage<T>,
+        row_start: usize,
+        col_start: usize,
+        out_rows: usize,
+        out_cols: usize,
+    ) -> CpuStorage<T> {
+        let mut data = Vec::with_capacity(out_rows * out_cols);
+        for r in 0..out_rows {
+            for c in 0..out_cols {
+                data.push(a.get_unchecked(row_start + r, col_start + c));
+            }
+        }
+        CpuStorage {
+            data,
+            nrows: out_rows,
+            ncols: out_cols,
+        }
+    }
+
+    fn slice_set<T: Scalar>(
+        dst: &mut CpuStorage<T>,
+        row_start: usize,
+        col_start: usize,
+        src: &CpuStorage<T>,
+    ) {
+        for r in 0..src.nrows {
+            for c in 0..src.ncols {
+                dst.set_unchecked(row_start + r, col_start + c, src.get_unchecked(r, c));
+            }
+        }
+    }
+
+    fn repeat<T: Scalar>(a: &CpuStorage<T>, row_reps: usize, col_reps: usize) -> CpuStorage<T> {
+        let out_rows = a.nrows * row_reps;
+        let out_cols = a.ncols * col_reps;
+        let mut data = Vec::with_capacity(out_rows * out_cols);
+        for r in 0..out_rows {
+            for c in 0..out_cols {
+                let src_r = r % a.nrows;
+                let src_c = c % a.ncols;
+                data.push(a.get_unchecked(src_r, src_c));
+            }
+        }
+        CpuStorage {
+            data,
+            nrows: out_rows,
+            ncols: out_cols,
+        }
+    }
+
+    fn pad<T: Scalar>(
+        a: &CpuStorage<T>,
+        left: usize,
+        right: usize,
+        top: usize,
+        bottom: usize,
+        value: T,
+    ) -> CpuStorage<T> {
+        let out_rows = a.nrows + top + bottom;
+        let out_cols = a.ncols + left + right;
+        let mut data = Vec::with_capacity(out_rows * out_cols);
+        for r in 0..out_rows {
+            for c in 0..out_cols {
+                let v = if r >= top && r < top + a.nrows && c >= left && c < left + a.ncols {
+                    a.get_unchecked(r - top, c - left)
+                } else {
+                    value
+                };
+                data.push(v);
+            }
+        }
+        CpuStorage {
+            data,
+            nrows: out_rows,
+            ncols: out_cols,
+        }
+    }
+
+    fn triu<T: Scalar>(a: &CpuStorage<T>, diagonal: isize) -> CpuStorage<T> {
+        let mut data = Vec::with_capacity(a.nrows * a.ncols);
+        for r in 0..a.nrows {
+            for c in 0..a.ncols {
+                let keep = (c as isize) >= (r as isize) + diagonal;
+                data.push(if keep {
+                    a.get_unchecked(r, c)
+                } else {
+                    T::zero()
+                });
+            }
+        }
+        CpuStorage {
+            data,
+            nrows: a.nrows,
+            ncols: a.ncols,
+        }
+    }
+
+    fn tril<T: Scalar>(a: &CpuStorage<T>, diagonal: isize) -> CpuStorage<T> {
+        let mut data = Vec::with_capacity(a.nrows * a.ncols);
+        for r in 0..a.nrows {
+            for c in 0..a.ncols {
+                let keep = (c as isize) <= (r as isize) + diagonal;
+                data.push(if keep {
+                    a.get_unchecked(r, c)
+                } else {
+                    T::zero()
+                });
+            }
+        }
+        CpuStorage {
+            data,
+            nrows: a.nrows,
+            ncols: a.ncols,
+        }
+    }
+
+    fn roll<T: Scalar>(a: &CpuStorage<T>, shift: isize, axis: usize) -> CpuStorage<T> {
+        let mut data = Vec::with_capacity(a.nrows * a.ncols);
+        match axis {
+            0 => {
+                for r in 0..a.nrows {
+                    let src_r = ((r as isize - shift).rem_euclid(a.nrows as isize)) as usize;
+                    for c in 0..a.ncols {
+                        data.push(a.get_unchecked(src_r, c));
+                    }
+                }
+            }
+            1 => {
+                for r in 0..a.nrows {
+                    for c in 0..a.ncols {
+                        let src_c = ((c as isize - shift).rem_euclid(a.ncols as isize)) as usize;
+                        data.push(a.get_unchecked(r, src_c));
+                    }
+                }
+            }
+            _ => panic!("nabla: roll axis must be 0 or 1, got {axis}"),
+        }
+        CpuStorage {
+            data,
+            nrows: a.nrows,
+            ncols: a.ncols,
+        }
+    }
+
+    fn flip<T: Scalar>(a: &CpuStorage<T>, axis: usize) -> CpuStorage<T> {
+        let mut data = Vec::with_capacity(a.nrows * a.ncols);
+        match axis {
+            0 => {
+                for r in 0..a.nrows {
+                    let src_r = a.nrows - 1 - r;
+                    for c in 0..a.ncols {
+                        data.push(a.get_unchecked(src_r, c));
+                    }
+                }
+            }
+            1 => {
+                for r in 0..a.nrows {
+                    for c in 0..a.ncols {
+                        let src_c = a.ncols - 1 - c;
+                        data.push(a.get_unchecked(r, src_c));
+                    }
+                }
+            }
+            _ => panic!("nabla: flip axis must be 0 or 1, got {axis}"),
+        }
+        CpuStorage {
+            data,
+            nrows: a.nrows,
+            ncols: a.ncols,
+        }
+    }
+
+    fn from_diag<T: Scalar>(v: &CpuStorage<T>) -> CpuStorage<T> {
+        let n = v.nrows.max(v.ncols);
+        let mut data = vec![T::zero(); n * n];
+        for i in 0..n {
+            let val = if v.nrows >= v.ncols {
+                v.get_unchecked(i, 0)
+            } else {
+                v.get_unchecked(0, i)
+            };
+            data[i * n + i] = val;
+        }
+        CpuStorage {
+            data,
+            nrows: n,
+            ncols: n,
+        }
+    }
+
+    fn gather_rows<T: Scalar>(a: &CpuStorage<T>, indices: &[usize]) -> CpuStorage<T> {
+        let mut data = Vec::with_capacity(indices.len() * a.ncols);
+        for &r in indices {
+            for c in 0..a.ncols {
+                data.push(a.get_unchecked(r, c));
+            }
+        }
+        CpuStorage {
+            data,
+            nrows: indices.len(),
+            ncols: a.ncols,
+        }
+    }
+
+    fn gather<T: Scalar>(a: &CpuStorage<T>, axis: usize, index: &CpuStorage<T>) -> CpuStorage<T> {
+        let (m, n) = (index.nrows, index.ncols);
+        let mut data = Vec::with_capacity(m * n);
+        match axis {
+            0 => {
+                for r in 0..m {
+                    for c in 0..n {
+                        let idx = index.get_unchecked(r, c).to_f64() as usize;
+                        data.push(a.get_unchecked(idx, c));
+                    }
+                }
+            }
+            1 => {
+                for r in 0..m {
+                    for c in 0..n {
+                        let idx = index.get_unchecked(r, c).to_f64() as usize;
+                        data.push(a.get_unchecked(r, idx));
+                    }
+                }
+            }
+            _ => panic!("nabla: gather axis must be 0 or 1, got {axis}"),
+        }
+        CpuStorage {
+            data,
+            nrows: m,
+            ncols: n,
+        }
+    }
+
+    fn scatter<T: Scalar>(
+        a: &CpuStorage<T>,
+        axis: usize,
+        index: &CpuStorage<T>,
+        src: &CpuStorage<T>,
+    ) -> CpuStorage<T> {
+        let mut out = CpuStorage {
+            data: a.data.clone(),
+            nrows: a.nrows,
+            ncols: a.ncols,
+        };
+        for r in 0..index.nrows {
+            for c in 0..index.ncols {
+                let idx = index.get_unchecked(r, c).to_f64() as usize;
+                let val = src.get_unchecked(r, c);
+                match axis {
+                    0 => out.set_unchecked(idx, c, val),
+                    1 => out.set_unchecked(r, idx, val),
+                    _ => panic!("nabla: scatter axis must be 0 or 1, got {axis}"),
+                }
+            }
+        }
+        out
+    }
+
+    fn index_select<T: Scalar>(
+        a: &CpuStorage<T>,
+        axis: usize,
+        index: &CpuStorage<T>,
+    ) -> CpuStorage<T> {
+        let k = index.nrows * index.ncols;
+        let get_idx = |i: usize| -> usize {
+            if index.nrows == 1 {
+                index.get_unchecked(0, i).to_f64() as usize
+            } else {
+                index.get_unchecked(i, 0).to_f64() as usize
+            }
+        };
+        match axis {
+            0 => {
+                let mut data = Vec::with_capacity(k * a.ncols);
+                for r in 0..k {
+                    let src_r = get_idx(r);
+                    for c in 0..a.ncols {
+                        data.push(a.get_unchecked(src_r, c));
+                    }
+                }
+                CpuStorage {
+                    data,
+                    nrows: k,
+                    ncols: a.ncols,
+                }
+            }
+            1 => {
+                let mut data = Vec::with_capacity(a.nrows * k);
+                for r in 0..a.nrows {
+                    for c in 0..k {
+                        let src_c = get_idx(c);
+                        data.push(a.get_unchecked(r, src_c));
+                    }
+                }
+                CpuStorage {
+                    data,
+                    nrows: a.nrows,
+                    ncols: k,
+                }
+            }
+            _ => panic!("nabla: index_select axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    fn sort_rows<T: Scalar>(a: &CpuStorage<T>, descending: bool) -> (CpuStorage<T>, CpuStorage<T>) {
+        let rows = a.nrows;
+        let cols = a.ncols;
+        let mut vals = vec![T::zero(); rows * cols];
+        let mut idxs = vec![T::zero(); rows * cols];
+        for r in 0..rows {
+            let mut pairs: Vec<(T, usize)> =
+                (0..cols).map(|c| (a.get_unchecked(r, c), c)).collect();
+            pairs.sort_by(|a, b| {
+                let va = a.0.to_f64();
+                let vb = b.0.to_f64();
+                if descending {
+                    vb.total_cmp(&va)
+                } else {
+                    va.total_cmp(&vb)
+                }
+            });
+            for c in 0..cols {
+                vals[r * cols + c] = pairs[c].0;
+                idxs[r * cols + c] = T::from_f64(pairs[c].1 as f64);
+            }
+        }
+        (
+            CpuStorage {
+                data: vals,
+                nrows: rows,
+                ncols: cols,
+            },
+            CpuStorage {
+                data: idxs,
+                nrows: rows,
+                ncols: cols,
+            },
+        )
+    }
+
+    fn meshgrid<T: Scalar>(x: &CpuStorage<T>, y: &CpuStorage<T>) -> (CpuStorage<T>, CpuStorage<T>) {
+        let nx = x.nrows * x.ncols;
+        let ny = y.nrows * y.ncols;
+        let mut gx = Vec::with_capacity(nx * ny);
+        let mut gy = Vec::with_capacity(nx * ny);
+        for r in 0..ny {
+            for c in 0..nx {
+                gx.push(x.data[c]);
+                gy.push(y.data[r]);
+            }
+        }
+        (
+            CpuStorage {
+                data: gx,
+                nrows: ny,
+                ncols: nx,
+            },
+            CpuStorage {
+                data: gy,
+                nrows: ny,
+                ncols: nx,
+            },
+        )
+    }
+
+    fn scatter_add_dim0<T: Scalar>(
+        dst: &mut CpuStorage<T>,
+        indices: &[usize],
+        src: &CpuStorage<T>,
+    ) {
+        for (r, &target_r) in indices.iter().enumerate() {
+            for c in 0..src.ncols {
+                let idx = dst.idx(target_r, c);
+                dst.data[idx] = dst.data[idx] + src.get_unchecked(r, c);
+            }
+        }
+    }
+
+    fn kron<T: Scalar>(
+        a: &CpuStorage<T>,
+        b: &CpuStorage<T>,
+        m: usize,
+        n: usize,
+        p: usize,
+        q: usize,
+    ) -> CpuStorage<T> {
+        let mut data = Vec::with_capacity(m * p * n * q);
+        for i in 0..(m * p) {
+            for j in 0..(n * q) {
+                let av = a.get_unchecked(i / p, j / q);
+                let bv = b.get_unchecked(i % p, j % q);
+                data.push(av * bv);
+            }
+        }
+        CpuStorage {
+            data,
+            nrows: m * p,
+            ncols: n * q,
+        }
+    }
+}
+
 impl crate::backend::BackendBlas for Cpu {
     #[allow(clippy::many_single_char_names)]
     fn matmul_into<T: Scalar>(out: &mut CpuStorage<T>, a: &CpuStorage<T>, b: &CpuStorage<T>) {

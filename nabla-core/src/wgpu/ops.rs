@@ -31,6 +31,18 @@ fn workgroups(n: usize, wg_size: u32) -> u32 {
     }
 }
 
+#[allow(dead_code)]
+fn run_custom_shader(
+    ctx: &GpuContext,
+    shader_src: &str,
+    buffers: &[(&wgpu::Buffer, bool)],
+    workgroups_x: u32,
+) {
+    let pipeline = compile_pipeline(ctx, shader_src);
+    let bg = bind_group(ctx, &pipeline, buffers);
+    dispatch_and_wait(ctx, &pipeline, &bg, workgroups_x);
+}
+
 #[allow(clippy::cast_possible_truncation)]
 fn run_1in(
     ctx: &GpuContext,
@@ -578,15 +590,11 @@ pub(crate) fn gpu_identity<T: Scalar>(n: usize) -> GpuStorage<T> {
 }
 
 pub(crate) fn gpu_from_fn<T: Scalar>(
-    nrows: usize,
-    ncols: usize,
-    mut f: impl FnMut(usize, usize) -> T,
+    _nrows: usize,
+    _ncols: usize,
+    _f: impl FnMut(usize, usize) -> T,
 ) -> GpuStorage<T> {
-    assert_is_f32::<T>();
-    let data: Vec<T> = (0..nrows * ncols)
-        .map(|i| f(i / ncols, i % ncols))
-        .collect();
-    GpuStorage::upload(nrows, ncols, data)
+    panic!("nabla: Tensor::from_fn is CPU-only; WGPU fallback is forbidden");
 }
 
 pub(crate) fn gpu_get<T: Scalar>(s: &GpuStorage<T>, r: usize, c: usize) -> T {
@@ -692,6 +700,270 @@ pub(crate) fn gpu_transpose<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
     let ctx = get_context();
     let buf = run_transpose_f32(ctx, &a.buffer, a.nrows, a.ncols);
     GpuStorage::from_buffer(a.ncols, a.nrows, buf)
+}
+
+#[allow(dead_code)]
+pub(crate) fn gpu_reshape_copy<T: Scalar>(
+    a: &GpuStorage<T>,
+    out_rows: usize,
+    out_cols: usize,
+) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let n = out_rows * out_cols;
+    let buf = run_copy_f32(ctx, &a.buffer, n);
+    GpuStorage::from_buffer(out_rows, out_cols, buf)
+}
+
+#[allow(dead_code)]
+pub(crate) fn gpu_submatrix<T: Scalar>(
+    a: &GpuStorage<T>,
+    row_start: usize,
+    col_start: usize,
+    out_rows: usize,
+    out_cols: usize,
+) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let total = out_rows * out_cols;
+    let wg = ctx.wg_size;
+    let shader = format!(
+        r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let out_rows = params[0];
+    let out_cols = params[1];
+    let src_cols = params[2];
+    let row_start = params[3];
+    let col_start = params[4];
+    if i >= out_rows * out_cols {{ return; }}
+    let r = i / out_cols;
+    let c = i - r * out_cols;
+    let src_r = r + row_start;
+    let src_c = c + col_start;
+    out[i] = a[src_r * src_cols + src_c];
+}}
+"
+    );
+    let params = params_buf(&[
+        out_rows as u32,
+        out_cols as u32,
+        a.ncols as u32,
+        row_start as u32,
+        col_start as u32,
+    ]);
+    let out = GpuStorage::<f32>::empty_buf((total * 4) as u64);
+    run_custom_shader(
+        ctx,
+        &shader,
+        &[(&a.buffer, true), (&out, false), (&params, true)],
+        workgroups(total, wg),
+    );
+    GpuStorage::from_buffer(out_rows, out_cols, out)
+}
+
+#[allow(dead_code)]
+pub(crate) fn gpu_slice_set<T: Scalar>(
+    dst: &mut GpuStorage<T>,
+    row_start: usize,
+    col_start: usize,
+    src: &GpuStorage<T>,
+) {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let total = src.nrows * src.ncols;
+    let wg = ctx.wg_size;
+    let shader = format!(
+        r"
+@group(0) @binding(0) var<storage, read> src: array<f32>;
+@group(0) @binding(1) var<storage, read_write> dst: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let src_rows = params[0];
+    let src_cols = params[1];
+    let dst_cols = params[2];
+    let row_start = params[3];
+    let col_start = params[4];
+    if i >= src_rows * src_cols {{ return; }}
+    let r = i / src_cols;
+    let c = i - r * src_cols;
+    let dst_r = r + row_start;
+    let dst_c = c + col_start;
+    dst[dst_r * dst_cols + dst_c] = src[i];
+}}
+"
+    );
+    let params = params_buf(&[
+        src.nrows as u32,
+        src.ncols as u32,
+        dst.ncols as u32,
+        row_start as u32,
+        col_start as u32,
+    ]);
+    run_custom_shader(
+        ctx,
+        &shader,
+        &[(&src.buffer, true), (&dst.buffer, false), (&params, true)],
+        workgroups(total, wg),
+    );
+    *lock_or_recover(&dst.host_cache) = None;
+}
+
+#[allow(dead_code)]
+pub(crate) fn gpu_repeat<T: Scalar>(
+    a: &GpuStorage<T>,
+    row_reps: usize,
+    col_reps: usize,
+) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let out_rows = a.nrows * row_reps;
+    let out_cols = a.ncols * col_reps;
+    let total = out_rows * out_cols;
+    let ctx = get_context();
+    let wg = ctx.wg_size;
+    let shader = format!(
+        r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let out_rows = params[0];
+    let out_cols = params[1];
+    let src_rows = params[2];
+    let src_cols = params[3];
+    if i >= out_rows * out_cols {{ return; }}
+    let r = i / out_cols;
+    let c = i - r * out_cols;
+    let src_r = r % src_rows;
+    let src_c = c % src_cols;
+    out[i] = a[src_r * src_cols + src_c];
+}}
+"
+    );
+    let params = params_buf(&[
+        out_rows as u32,
+        out_cols as u32,
+        a.nrows as u32,
+        a.ncols as u32,
+    ]);
+    let out = GpuStorage::<f32>::empty_buf((total * 4) as u64);
+    run_custom_shader(
+        ctx,
+        &shader,
+        &[(&a.buffer, true), (&out, false), (&params, true)],
+        workgroups(total, wg),
+    );
+    GpuStorage::from_buffer(out_rows, out_cols, out)
+}
+
+#[allow(dead_code)]
+pub(crate) fn gpu_pad<T: Scalar>(
+    a: &GpuStorage<T>,
+    left: usize,
+    right: usize,
+    top: usize,
+    bottom: usize,
+    value: T,
+) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let out_rows = a.nrows + top + bottom;
+    let out_cols = a.ncols + left + right;
+    let total = out_rows * out_cols;
+    let ctx = get_context();
+    let wg = ctx.wg_size;
+    // SAFETY: T is f32.
+    #[allow(clippy::borrow_as_ptr, clippy::ptr_cast_constness)]
+    let val_f32: f32 = unsafe { *std::ptr::from_ref(&value).cast::<f32>() };
+    let shader = format!(
+        r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let out_rows = params[0];
+    let out_cols = params[1];
+    let src_rows = params[2];
+    let src_cols = params[3];
+    let left = params[4];
+    let top = params[5];
+    let fill = bitcast<f32>(params[6]);
+    if i >= out_rows * out_cols {{ return; }}
+    let r = i / out_cols;
+    let c = i - r * out_cols;
+    if r >= top && r < top + src_rows && c >= left && c < left + src_cols {{
+        let src_r = r - top;
+        let src_c = c - left;
+        out[i] = a[src_r * src_cols + src_c];
+    }} else {{
+        out[i] = fill;
+    }}
+}}
+"
+    );
+    let params = params_buf(&[
+        out_rows as u32,
+        out_cols as u32,
+        a.nrows as u32,
+        a.ncols as u32,
+        left as u32,
+        top as u32,
+        val_f32.to_bits(),
+    ]);
+    let out = GpuStorage::<f32>::empty_buf((total * 4) as u64);
+    run_custom_shader(
+        ctx,
+        &shader,
+        &[(&a.buffer, true), (&out, false), (&params, true)],
+        workgroups(total, wg),
+    );
+    GpuStorage::from_buffer(out_rows, out_cols, out)
+}
+
+#[allow(dead_code)]
+pub(crate) fn gpu_triu<T: Scalar>(a: &GpuStorage<T>, diagonal: isize) -> GpuStorage<T> {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let total = a.nrows * a.ncols;
+    let wg = ctx.wg_size;
+    let shader = format!(
+        r"
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let rows = params[0];
+    let cols = params[1];
+    let diag = i32(bitcast<i32>(params[2]));
+    if i >= rows * cols {{ return; }}
+    let r = i / cols;
+    let c = i - r * cols;
+    let keep = (i32(c) - i32(r)) >= diag;
+    out[i] = select(0.0, a[i], keep);
+}}
+"
+    );
+    let diag_bits = (diagonal as i32) as u32;
+    let params = params_buf(&[a.nrows as u32, a.ncols as u32, diag_bits]);
+    let out = GpuStorage::<f32>::empty_buf((total * 4) as u64);
+    run_custom_shader(
+        ctx,
+        &shader,
+        &[(&a.buffer, true), (&out, false), (&params, true)],
+        workgroups(total, wg),
+    );
+    GpuStorage::from_buffer(a.nrows, a.ncols, out)
 }
 
 pub(crate) fn gpu_matmul<T: Scalar>(out: &mut GpuStorage<T>, a: &GpuStorage<T>, b: &GpuStorage<T>) {
@@ -1009,6 +1281,9 @@ impl crate::backend::BackendReduce for crate::backend::Gpu {
         gpu_max_axis1(a)
     }
 }
+
+#[cfg(feature = "gpu")]
+impl crate::backend::BackendShape for crate::backend::Gpu {}
 
 #[cfg(feature = "gpu")]
 impl crate::backend::BackendBlas for crate::backend::Gpu {

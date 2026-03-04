@@ -82,7 +82,7 @@ nabla eager is **8.3–11.6× faster** than PyTorch eager, and **5.4–6.8× fas
 - **Kernel fusion via `fuse!`.** `a.sin().powf(2.0)` in PyTorch launches two kernels with an intermediate buffer. `fuse!` JIT-compiles a single kernel at compile time — no round-trip to GPU memory.
 - **CUDA Graph replay.** A training loop runs the same kernel sequence every iteration. nabla records it once and replays the recording — ~1 µs total scheduling cost instead of hundreds of µs.
 - **Fused loss and optimizer kernels.** `k_mse_sum_fwd` folds `sub → square → sum` into one kernel. `k_multi_axpy3` updates all parameters in a single vectorized pass.
-- **No CPU fallback.** In nabla, GPU builds never silently run on CPU. CPU-only APIs (e.g., `Tensor::map`, reshape/concat/index/sort/topk/argsort, `TensorView::get`, `map!`) error on GPU instead of doing a D2H round-trip.
+- **No CPU fallback.** In nabla, GPU builds never silently run on CPU. CPU-only APIs (e.g., `Tensor::map`, `map!`, `TensorView::get`, `NdTensor`, `filter_sum`/`count_where`) are available only with the `cpu` feature; CUDA implements reshape/concat/index/sort/topk/argsort with GPU kernels instead of D2H loops.
 
 Reproduce locally: `cd benchmarks && bash run.sh`
 
@@ -421,7 +421,7 @@ nabla run ./model.Q4_K_M.gguf --prompt "Explain nabla in one sentence" --stream
 
 ## Installation
 
-Pick exactly one backend. CUDA builds do not require `nvcc` at build time, but the CUDA runtime + NVRTC (and CUDA headers for NVRTC) must be available at runtime; GPU libraries are loaded dynamically via `libloading`.
+Pick exactly one backend. CUDA builds do not require `nvcc`, but they do require the CUDA Toolkit (driver + runtime libraries + NVRTC + headers) to be installed and discoverable at build time; runtime libraries are loaded dynamically via `libloading`.
 
 ```toml
 [dependencies]

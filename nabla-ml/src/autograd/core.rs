@@ -456,9 +456,9 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
             move |g| {
                 let one = T::one_impl();
                 let (m, n) = a_data.shape();
-                let a_pow_bm1 = Tensor::from_fn(m, n, |r, c| {
-                    a_data.get(r, c).math_powf(b_data.get(r, c) - one)
-                });
+                let one_t = Tensor::fill(1, 1, one).expand(m, n);
+                let b_minus_one = &*b_data - &one_t;
+                let a_pow_bm1 = a_data.epow(&b_minus_one);
                 Self::prop(&lr, &g.emul(&b_data.emul(&a_pow_bm1)));
                 Self::prop(&rr, &g.emul(&result.emul(&a_data.ln())));
             },

@@ -1,7 +1,7 @@
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 
-use super::{Tensor, assert_cpu_only, two};
+use super::Tensor;
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     fn axis_len(&self, axis: usize, op: &str) -> usize {
@@ -24,24 +24,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             "nabla: {op} axis {axis} out of range for 2-D tensor"
         );
         resolved
-    }
-
-    /// Reduce along axis with a custom fold function, seeded from the first element.
-    fn reduce_axis<F: Fn(T, T) -> T>(&self, axis: usize, f: F) -> Self {
-        match axis {
-            0 => Self::from_fn(1, self.ncols(), |_, c| {
-                // Start from index 1 to avoid double-counting the first element.
-                (1..self.nrows())
-                    .map(|r| self.get(r, c))
-                    .fold(self.get(0, c), &f)
-            }),
-            1 => Self::from_fn(self.nrows(), 1, |r, _| {
-                (1..self.ncols())
-                    .map(|c| self.get(r, c))
-                    .fold(self.get(r, 0), &f)
-            }),
-            _ => panic!("nabla: reduce_axis axis must be 0 or 1, got {axis}"),
-        }
     }
 
     // ---- Scalar reductions ----
@@ -135,6 +117,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// Lp norm: `(sum |x_i|^p)^(1/p)`, or `max|x_i|` for p=inf.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn norm_lp(&self, p: T) -> T {
         B::norm_lp(&self.storage, p)
     }
@@ -150,7 +133,14 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         } else if p.is_infinite() {
             self.linf_norm()
         } else {
-            self.norm_lp(T::from_f64(p))
+            #[cfg(feature = "cpu")]
+            {
+                self.norm_lp(T::from_f64(p))
+            }
+            #[cfg(not(feature = "cpu"))]
+            {
+                panic!("nabla: norm_ord for p != 1/2/inf is CPU-only");
+            }
         }
     }
 
@@ -193,12 +183,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Kronecker product: `A (x) B`. Returns (m*p, n*q) tensor.
     #[must_use]
     pub fn kron(&self, other: &Self) -> Self {
-        assert_cpu_only::<B>("Tensor::kron");
         let (m, n) = self.shape();
         let (p, q) = other.shape();
-        Self::from_fn(m * p, n * q, |i, j| {
-            self.get(i / p, j / q) * other.get(i % p, j % q)
-        })
+        Self::from_storage(B::kron(&self.storage, &other.storage, m, n, p, q))
     }
 
     /// Normalize to unit vector (L2 norm = 1). Returns clone if norm is zero.
@@ -396,8 +383,19 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Product along axis: axis 0 -> (1, ncols), axis 1 -> (nrows, 1).
     #[must_use]
     pub fn prod_axis(&self, axis: usize) -> Self {
-        assert_cpu_only::<B>("Tensor::prod_axis");
-        self.reduce_axis(axis, |a, b| a * b)
+        match axis {
+            0 => {
+                let t = self.t();
+                let cp = t.cumprod(1);
+                let last = cp.slice_cols((t.ncols() - 1)..t.ncols());
+                last.t()
+            }
+            1 => {
+                let cp = self.cumprod(1);
+                cp.slice_cols((self.ncols() - 1)..self.ncols())
+            }
+            _ => panic!("nabla: prod_axis axis must be 0 or 1, got {axis}"),
+        }
     }
 
     /// Product of all elements.
@@ -406,8 +404,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         B::prod_all(&self.storage)
     }
 
-    /// Count of non-zero elements.
+    /// Count of non-zero elements (CPU-only).
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn count_nonzero(&self) -> usize {
         B::count_nonzero(&self.storage)
     }
@@ -477,37 +476,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Argmax along axis. Returns indices tensor.
     #[must_use]
     pub fn argmax_axis(&self, axis: usize) -> Self {
-        assert_cpu_only::<B>("Tensor::argmax_axis");
-        let two = two::<T>();
         match axis {
-            0 => Self::from_fn(1, self.ncols(), |_, c| {
-                let mut best_idx = 0usize;
-                let mut best_val = self.get(0, c);
-                for r in 1..self.nrows() {
-                    let v = self.get(r, c);
-                    let diff = v - best_val;
-                    let is_gt = (diff + diff.math_abs()) / two;
-                    if is_gt.to_f64() > 0.0 {
-                        best_val = v;
-                        best_idx = r;
-                    }
-                }
-                T::from_f64(best_idx as f64)
-            }),
-            1 => Self::from_fn(self.nrows(), 1, |r, _| {
-                let mut best_idx = 0usize;
-                let mut best_val = self.get(r, 0);
-                for c in 1..self.ncols() {
-                    let v = self.get(r, c);
-                    let diff = v - best_val;
-                    let is_gt = (diff + diff.math_abs()) / two;
-                    if is_gt.to_f64() > 0.0 {
-                        best_val = v;
-                        best_idx = c;
-                    }
-                }
-                T::from_f64(best_idx as f64)
-            }),
+            0 => {
+                let t = self.t();
+                let (_, idxs) = t.sort(1, true);
+                let first = idxs.slice_cols(0..1);
+                first.t()
+            }
+            1 => {
+                let (_, idxs) = self.sort(1, true);
+                idxs.slice_cols(0..1)
+            }
             _ => panic!("nabla: argmax_axis axis must be 0 or 1, got {axis}"),
         }
     }
@@ -521,8 +500,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// Sum of all elements satisfying `pred`.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn filter_sum(&self, pred: impl Fn(T) -> bool) -> T {
-        assert_cpu_only::<B>("Tensor::filter_sum");
         let (m, n) = self.shape();
         let mut acc = T::zero();
         for r in 0..m {
@@ -538,8 +517,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// Count of elements satisfying `pred`.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn count_where(&self, pred: impl Fn(T) -> bool) -> usize {
-        assert_cpu_only::<B>("Tensor::count_where");
         let (m, n) = self.shape();
         let mut count = 0usize;
         for r in 0..m {

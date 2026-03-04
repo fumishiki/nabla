@@ -1,6 +1,8 @@
 use crate::backend::Backend;
 use crate::scalar::Scalar;
-use crate::tensor::{Tensor, two};
+use crate::tensor::Tensor;
+#[cfg(feature = "cpu")]
+use crate::tensor::two;
 #[cfg(any(feature = "cuda", feature = "hip", feature = "gpu"))]
 use std::any::TypeId;
 
@@ -178,6 +180,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// im2col: unfold input patches for convolution.
     #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "cpu")]
     fn im2col(
         x: &Self,
         c_in: usize,
@@ -246,13 +249,21 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         ));
         if let Some(bi) = bias {
             Self::assert_bias_cpu("conv2d");
-            let out_h = (h + 2 * padding.0 - dilation.0 * (kh - 1) - 1) / stride.0 + 1;
-            let out_w = (w + 2 * padding.1 - dilation.1 * (kw - 1) - 1) / stride.1 + 1;
-            let out_spatial = out_h * out_w;
-            let bias_exp = B::from_fn(n_batch * c_out, out_spatial, |row, _col| {
-                B::get(&bi.storage, 0, row % c_out)
-            });
-            Self::from_storage(B::add(&out.storage, &bias_exp))
+            #[cfg(feature = "cpu")]
+            {
+                let out_h = (h + 2 * padding.0 - dilation.0 * (kh - 1) - 1) / stride.0 + 1;
+                let out_w = (w + 2 * padding.1 - dilation.1 * (kw - 1) - 1) / stride.1 + 1;
+                let out_spatial = out_h * out_w;
+                let bias_exp = B::from_fn(n_batch * c_out, out_spatial, |row, _col| {
+                    B::get(&bi.storage, 0, row % c_out)
+                });
+                Self::from_storage(B::add(&out.storage, &bias_exp))
+            }
+            #[cfg(not(feature = "cpu"))]
+            {
+                let _ = &bi;
+                panic!("nabla: conv2d bias is CPU-only; GPU path needs a dedicated bias kernel");
+            }
         } else {
             out
         }
@@ -291,11 +302,20 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         ));
         if let Some(bi) = bias {
             Self::assert_bias_cpu("conv1d");
-            let out_len = (length + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1;
-            let bias_exp = B::from_fn(n_batch * c_out, out_len, |row, _col| {
-                B::get(&bi.storage, 0, row % c_out)
-            });
-            Self::from_storage(B::add(&out.storage, &bias_exp))
+            #[cfg(feature = "cpu")]
+            {
+                let out_len =
+                    (length + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1;
+                let bias_exp = B::from_fn(n_batch * c_out, out_len, |row, _col| {
+                    B::get(&bi.storage, 0, row % c_out)
+                });
+                Self::from_storage(B::add(&out.storage, &bias_exp))
+            }
+            #[cfg(not(feature = "cpu"))]
+            {
+                let _ = &bi;
+                panic!("nabla: conv1d bias is CPU-only; GPU path needs a dedicated bias kernel");
+            }
         } else {
             out
         }
@@ -381,8 +401,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         padding: (usize, usize),
         output_padding: (usize, usize),
     ) -> Self {
-        let out_h = (h - 1) * stride.0 - 2 * padding.0 + kh + output_padding.0;
-        let out_w = (w - 1) * stride.1 - 2 * padding.1 + kw + output_padding.1;
         let out = Self::from_storage(B::conv_transpose2d(
             &self.storage,
             &weight.storage,
@@ -399,10 +417,22 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         ));
         if let Some(bi) = bias {
             Self::assert_bias_cpu("conv_transpose2d");
-            let bias_exp = B::from_fn(n_batch * c_out, out_h * out_w, |row, _col| {
-                B::get(&bi.storage, 0, row % c_out)
-            });
-            Self::from_storage(B::add(&out.storage, &bias_exp))
+            #[cfg(feature = "cpu")]
+            {
+                let out_h = (h - 1) * stride.0 - 2 * padding.0 + kh + output_padding.0;
+                let out_w = (w - 1) * stride.1 - 2 * padding.1 + kw + output_padding.1;
+                let bias_exp = B::from_fn(n_batch * c_out, out_h * out_w, |row, _col| {
+                    B::get(&bi.storage, 0, row % c_out)
+                });
+                Self::from_storage(B::add(&out.storage, &bias_exp))
+            }
+            #[cfg(not(feature = "cpu"))]
+            {
+                let _ = &bi;
+                panic!(
+                    "nabla: conv_transpose2d bias is CPU-only; GPU path needs a dedicated bias kernel"
+                );
+            }
         } else {
             out
         }
@@ -432,10 +462,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         groups: usize,
     ) -> Self {
         assert!(c_in.is_multiple_of(groups) && c_out.is_multiple_of(groups));
-        let out_d = (d + 2 * padding.0 - dilation.0 * (kd - 1) - 1) / stride.0 + 1;
-        let out_h = (h + 2 * padding.1 - dilation.1 * (kh - 1) - 1) / stride.1 + 1;
-        let out_w = (w + 2 * padding.2 - dilation.2 * (kw - 1) - 1) / stride.2 + 1;
-        let out_spatial = out_d * out_h * out_w;
         let out = Self::from_storage(B::conv3d(
             &self.storage,
             &weight.storage,
@@ -455,10 +481,22 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         ));
         if let Some(bi) = bias {
             Self::assert_bias_cpu("conv3d");
-            let bias_exp = B::from_fn(n_batch * c_out, out_spatial, |row, _col| {
-                B::get(&bi.storage, 0, row % c_out)
-            });
-            Self::from_storage(B::add(&out.storage, &bias_exp))
+            #[cfg(feature = "cpu")]
+            {
+                let out_d = (d + 2 * padding.0 - dilation.0 * (kd - 1) - 1) / stride.0 + 1;
+                let out_h = (h + 2 * padding.1 - dilation.1 * (kh - 1) - 1) / stride.1 + 1;
+                let out_w = (w + 2 * padding.2 - dilation.2 * (kw - 1) - 1) / stride.2 + 1;
+                let out_spatial = out_d * out_h * out_w;
+                let bias_exp = B::from_fn(n_batch * c_out, out_spatial, |row, _col| {
+                    B::get(&bi.storage, 0, row % c_out)
+                });
+                Self::from_storage(B::add(&out.storage, &bias_exp))
+            }
+            #[cfg(not(feature = "cpu"))]
+            {
+                let _ = &bi;
+                panic!("nabla: conv3d bias is CPU-only; GPU path needs a dedicated bias kernel");
+            }
         } else {
             out
         }
@@ -586,6 +624,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// 1-D max pooling.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn max_pool1d(
         &self,
         length: usize,
@@ -617,6 +656,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// 1-D average pooling.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn avg_pool1d(
         &self,
         length: usize,

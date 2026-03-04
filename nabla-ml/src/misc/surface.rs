@@ -5,10 +5,12 @@ pub mod constructors {
     //! performing basic mathematical operations. All functions are re-exported
     //! from the crate root via `pub use constructors::*;`.
 
+    #[cfg(feature = "cpu")]
     use std::cell::Cell;
 
     use crate::{scalar, tensor};
 
+    #[cfg(feature = "cpu")]
     thread_local! {
         static GLOBAL_SEED: Cell<Option<u64>> = const { Cell::new(None) };
     }
@@ -24,17 +26,20 @@ pub mod constructors {
     /// nabla::set_seed(42);
     /// let a = nabla::rand::<f64>(3, 3); // deterministic
     /// ```
+    #[cfg(feature = "cpu")]
     pub fn set_seed(seed: u64) {
         GLOBAL_SEED.with(|s| s.set(Some(seed)));
     }
 
     /// Clear the global RNG seed, reverting to time-based seeding.
+    #[cfg(feature = "cpu")]
     pub fn clear_seed() {
         GLOBAL_SEED.with(|s| s.set(None));
     }
 
     #[inline]
     #[allow(clippy::cast_possible_truncation)]
+    #[cfg(feature = "cpu")]
     pub(crate) fn default_seed() -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
         SystemTime::now()
@@ -47,6 +52,7 @@ pub mod constructors {
     }
 
     #[inline]
+    #[cfg(feature = "cpu")]
     pub(crate) fn seed_or_default() -> u64 {
         GLOBAL_SEED.with(|s| {
             if let Some(seed) = s.get() {
@@ -65,6 +71,7 @@ pub mod constructors {
     }
 
     #[inline]
+    #[cfg(feature = "cpu")]
     fn xorshift64(state: &mut u64) -> u64 {
         *state ^= *state << 13;
         *state ^= *state >> 7;
@@ -93,16 +100,18 @@ pub mod constructors {
         tensor::Tensor::fill(nrows, ncols, value)
     }
 
-    /// Allocate an identity matrix of size `n x n`.
+    /// Allocate an identity matrix of size `n x n` (CPU-only).
     #[must_use]
     #[inline]
+    #[cfg(feature = "cpu")]
     pub fn eye<T: scalar::Scalar>(n: usize) -> tensor::Tensor<T> {
         tensor::Tensor::identity(n)
     }
 
-    /// Allocate a tensor whose element `(r, c)` is `f(r, c)`.
+    /// Allocate a tensor whose element `(r, c)` is `f(r, c)` (CPU-only).
     #[must_use]
     #[inline]
+    #[cfg(feature = "cpu")]
     pub fn from_fn<T: scalar::Scalar>(
         nrows: usize,
         ncols: usize,
@@ -111,15 +120,17 @@ pub mod constructors {
         tensor::Tensor::from_fn(nrows, ncols, f)
     }
 
-    /// Allocate a zero-filled N-D tensor.
+    /// Allocate a zero-filled N-D tensor (CPU-only).
     #[must_use]
     #[inline]
+    #[cfg(feature = "cpu")]
     pub fn nd_zeros<T: scalar::Scalar>(shape: &[usize]) -> tensor::NdTensor<T> {
         tensor::NdTensor::zeros(shape)
     }
 
-    /// Uniform random tensor in `[0, 1)`.
+    /// Uniform random tensor in `[0, 1)` (CPU-only).
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn rand<T: scalar::Scalar>(nrows: usize, ncols: usize) -> tensor::Tensor<T> {
         let mut s = seed_or_default();
         tensor::Tensor::from_fn(nrows, ncols, |_, _| {
@@ -128,8 +139,9 @@ pub mod constructors {
         })
     }
 
-    /// Standard normal random tensor (`mean=0`, `std=1`).
+    /// Standard normal random tensor (`mean=0`, `std=1`) (CPU-only).
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn randn<T: scalar::Scalar>(nrows: usize, ncols: usize) -> tensor::Tensor<T> {
         let mut s = seed_or_default();
         let mut xorshift = || {
@@ -167,22 +179,25 @@ pub mod constructors {
         ones(n, 1)
     }
 
-    /// Uniform random column vector in `[0, 1)` with shape `(n, 1)`.
+    /// Uniform random column vector in `[0, 1)` with shape `(n, 1)` (CPU-only).
     #[must_use]
     #[inline]
+    #[cfg(feature = "cpu")]
     pub fn rand_vec<T: scalar::Scalar>(n: usize) -> tensor::Tensor<T> {
         rand(n, 1)
     }
 
-    /// Standard normal random column vector with shape `(n, 1)`.
+    /// Standard normal random column vector with shape `(n, 1)` (CPU-only).
     #[must_use]
     #[inline]
+    #[cfg(feature = "cpu")]
     pub fn randn_vec<T: scalar::Scalar>(n: usize) -> tensor::Tensor<T> {
         randn(n, 1)
     }
 
-    /// 1-D half-open range tensor: `[start, start+step, ..., < stop]`.
+    /// 1-D half-open range tensor: `[start, start+step, ..., < stop]` (CPU-only).
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn arange<T: scalar::Scalar>(start: T, stop: T, step: T) -> tensor::Tensor<T> {
         let step_f = step.to_f64();
         assert!(
@@ -202,17 +217,19 @@ pub mod constructors {
         tensor::Tensor::arange(start, step, n)
     }
 
-    /// 1-D tensor of `n` evenly spaced values from `start` to `stop` (inclusive).
+    /// 1-D tensor of `n` evenly spaced values from `start` to `stop` (inclusive) (CPU-only).
     #[must_use]
     #[inline]
+    #[cfg(feature = "cpu")]
     pub fn linspace<T: scalar::Scalar>(start: T, stop: T, n: usize) -> tensor::Tensor<T> {
         tensor::Tensor::linspace(start, stop, n)
     }
 
-    /// 1-D tensor of `n` points logarithmically spaced from `10^start` to `10^stop`.
+    /// 1-D tensor of `n` points logarithmically spaced from `10^start` to `10^stop` (CPU-only).
     ///
     /// Equivalent to NumPy's `np.logspace(start, stop, n)`.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn logspace<T: scalar::Scalar>(start: f64, stop: f64, n: usize) -> tensor::Tensor<T> {
         match n {
             0 => tensor::Tensor::zeros(1, 0),
@@ -229,7 +246,7 @@ pub mod constructors {
         }
     }
 
-    /// 1-D tensor of `n` points geometrically spaced from `start` to `stop`.
+    /// 1-D tensor of `n` points geometrically spaced from `start` to `stop` (CPU-only).
     ///
     /// Both `start` and `stop` must be non-zero and have the same sign.
     /// Equivalent to NumPy's `np.geomspace(start, stop, n)`.
@@ -238,6 +255,7 @@ pub mod constructors {
     ///
     /// Panics if `start` or `stop` is zero, or if they have different signs.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn geomspace<T: scalar::Scalar>(start: f64, stop: f64, n: usize) -> tensor::Tensor<T> {
         assert!(
             start != 0.0 && stop != 0.0,
@@ -289,9 +307,10 @@ pub mod constructors {
         tensor::Tensor::from_diag(v)
     }
 
-    /// 3D cross product of two 3-element vectors.
+    /// 3D cross product of two 3-element vectors (CPU-only).
     /// Both must be (3,1) or (1,3) tensors.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn cross<T: scalar::Scalar>(
         a: &tensor::Tensor<T>,
         b: &tensor::Tensor<T>,
@@ -354,10 +373,11 @@ pub mod constructors {
         a.tr()
     }
 
-    /// Check approximate equality of two tensors within absolute tolerance `atol`.
+    /// Check approximate equality of two tensors within absolute tolerance `atol` (CPU-only).
     ///
     /// Returns `false` if shapes differ or any element pair exceeds `atol`.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn approx_eq<T: scalar::Scalar>(
         a: &tensor::Tensor<T>,
         b: &tensor::Tensor<T>,

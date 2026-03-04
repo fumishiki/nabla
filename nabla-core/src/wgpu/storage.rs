@@ -37,6 +37,7 @@ pub(super) struct GpuContext {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
 pub(super) enum ShaderOp {
     Binary,
     Scale,
@@ -50,6 +51,8 @@ pub(super) enum ShaderOp {
     ReduceSum,
     ReduceMax,
     ReduceMin,
+    ReduceProd,
+    ReduceCountNonzero,
     Argmax,
     Argmin,
     Matmul {
@@ -265,6 +268,7 @@ impl<T: Scalar> GpuStorage<T> {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn from_buffer_cached(
         nrows: usize,
         ncols: usize,
@@ -279,6 +283,7 @@ impl<T: Scalar> GpuStorage<T> {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn upload(nrows: usize, ncols: usize, data: Vec<T>) -> Self {
         let ctx = get_context();
         // SAFETY: T is a Scalar POD type; reinterpreted as bytes for GPU upload.

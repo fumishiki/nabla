@@ -38,20 +38,11 @@ pub(crate) fn cuda_fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> CudaSt
 }
 
 pub(crate) fn cuda_from_fn<T: Scalar>(
-    nrows: usize,
-    ncols: usize,
-    mut f: impl FnMut(usize, usize) -> T,
+    _nrows: usize,
+    _ncols: usize,
+    _f: impl FnMut(usize, usize) -> T,
 ) -> CudaStorage<T> {
-    let ctx = get_ctx();
-    let n = nrows * ncols;
-    let mut data = Vec::with_capacity(n);
-    for r in 0..nrows {
-        for c in 0..ncols {
-            data.push(f(r, c));
-        }
-    }
-    let buf = expect_ok(CuBuffer::from_host(&ctx.stream, &data), "CUDA upload");
-    CudaStorage::new_cached(nrows, ncols, buf, data)
+    panic!("nabla: Tensor::from_fn is CPU-only; CUDA fallback is forbidden");
 }
 
 pub(crate) fn cuda_from_vec_async<T: Scalar>(

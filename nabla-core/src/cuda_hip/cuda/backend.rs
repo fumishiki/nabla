@@ -675,6 +675,150 @@ impl crate::backend::BackendReduce for crate::backend::Cuda {
     }
 }
 
+impl crate::backend::BackendShape for crate::backend::Cuda {
+    #[inline]
+    fn reshape_copy<T: Scalar>(
+        a: &CudaStorage<T>,
+        out_rows: usize,
+        out_cols: usize,
+    ) -> CudaStorage<T> {
+        cuda_copy_reshape(a, out_rows, out_cols)
+    }
+
+    #[inline]
+    fn submatrix<T: Scalar>(
+        a: &CudaStorage<T>,
+        row_start: usize,
+        col_start: usize,
+        out_rows: usize,
+        out_cols: usize,
+    ) -> CudaStorage<T> {
+        cuda_submatrix(a, row_start, col_start, out_rows, out_cols)
+    }
+
+    #[inline]
+    fn slice_set<T: Scalar>(
+        dst: &mut CudaStorage<T>,
+        row_start: usize,
+        col_start: usize,
+        src: &CudaStorage<T>,
+    ) {
+        cuda_slice_set(dst, row_start, col_start, src);
+    }
+
+    #[inline]
+    fn repeat<T: Scalar>(a: &CudaStorage<T>, row_reps: usize, col_reps: usize) -> CudaStorage<T> {
+        cuda_repeat(a, row_reps, col_reps)
+    }
+
+    #[inline]
+    fn pad<T: Scalar>(
+        a: &CudaStorage<T>,
+        left: usize,
+        right: usize,
+        top: usize,
+        bottom: usize,
+        value: T,
+    ) -> CudaStorage<T> {
+        cuda_pad(a, left, right, top, bottom, value)
+    }
+
+    #[inline]
+    fn triu<T: Scalar>(a: &CudaStorage<T>, diagonal: isize) -> CudaStorage<T> {
+        cuda_triu(a, diagonal)
+    }
+
+    #[inline]
+    fn tril<T: Scalar>(a: &CudaStorage<T>, diagonal: isize) -> CudaStorage<T> {
+        cuda_tril(a, diagonal)
+    }
+
+    #[inline]
+    fn roll<T: Scalar>(a: &CudaStorage<T>, shift: isize, axis: usize) -> CudaStorage<T> {
+        cuda_roll(a, shift, axis)
+    }
+
+    #[inline]
+    fn flip<T: Scalar>(a: &CudaStorage<T>, axis: usize) -> CudaStorage<T> {
+        cuda_flip(a, axis)
+    }
+
+    #[inline]
+    fn from_diag<T: Scalar>(v: &CudaStorage<T>) -> CudaStorage<T> {
+        cuda_from_diag(v)
+    }
+
+    #[inline]
+    fn gather_rows<T: Scalar>(a: &CudaStorage<T>, indices: &[usize]) -> CudaStorage<T> {
+        cuda_gather_rows(a, indices)
+    }
+
+    #[inline]
+    fn gather<T: Scalar>(
+        a: &CudaStorage<T>,
+        axis: usize,
+        index: &CudaStorage<T>,
+    ) -> CudaStorage<T> {
+        cuda_gather(a, axis, index)
+    }
+
+    #[inline]
+    fn scatter<T: Scalar>(
+        a: &CudaStorage<T>,
+        axis: usize,
+        index: &CudaStorage<T>,
+        src: &CudaStorage<T>,
+    ) -> CudaStorage<T> {
+        cuda_scatter(a, axis, index, src)
+    }
+
+    #[inline]
+    fn index_select<T: Scalar>(
+        a: &CudaStorage<T>,
+        axis: usize,
+        index: &CudaStorage<T>,
+    ) -> CudaStorage<T> {
+        cuda_index_select(a, axis, index)
+    }
+
+    #[inline]
+    fn sort_rows<T: Scalar>(
+        a: &CudaStorage<T>,
+        descending: bool,
+    ) -> (CudaStorage<T>, CudaStorage<T>) {
+        cuda_sort_rows(a, descending)
+    }
+
+    #[inline]
+    fn meshgrid<T: Scalar>(
+        x: &CudaStorage<T>,
+        y: &CudaStorage<T>,
+    ) -> (CudaStorage<T>, CudaStorage<T>) {
+        cuda_meshgrid(x, y)
+    }
+
+    #[inline]
+    fn scatter_add_dim0<T: Scalar>(
+        dst: &mut CudaStorage<T>,
+        indices: &[usize],
+        src: &CudaStorage<T>,
+    ) {
+        cuda_scatter_add_dim0(dst, indices, src);
+    }
+
+    #[inline]
+    fn kron<T: Scalar>(
+        a: &CudaStorage<T>,
+        b: &CudaStorage<T>,
+        m: usize,
+        n: usize,
+        p: usize,
+        q: usize,
+    ) -> CudaStorage<T> {
+        cuda_kron(a, b, m, n, p, q)
+    }
+}
+
 impl crate::backend::BackendBlas for crate::backend::Cuda {
     #[inline]
     fn matmul_into<T: Scalar>(out: &mut CudaStorage<T>, a: &CudaStorage<T>, b: &CudaStorage<T>) {

@@ -6,6 +6,7 @@ mod graph_runtime;
 mod math_ops;
 mod norm_attn_ops;
 mod reduce_pool_ops;
+mod shape_ops;
 mod training;
 
 pub(super) use backend::*;
@@ -16,6 +17,7 @@ pub(super) use graph_runtime::*;
 pub(super) use math_ops::*;
 pub(super) use norm_attn_ops::*;
 pub(super) use reduce_pool_ops::*;
+pub(super) use shape_ops::*;
 pub(super) use training::*;
 
 pub use conv_ops::cuda_synchronize;

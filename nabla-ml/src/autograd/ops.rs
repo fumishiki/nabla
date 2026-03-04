@@ -1,10 +1,14 @@
-#[cfg(any(feature = "cuda", feature = "hip", feature = "gpu"))]
+#[cfg(all(
+    feature = "cpu",
+    any(feature = "cuda", feature = "hip", feature = "gpu")
+))]
 use std::any::TypeId;
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 use std::rc::Rc;
 
+#[cfg(feature = "cpu")]
 use crate::constructors::seed_or_default;
 
 use nabla_core::backend::Backend;
@@ -256,22 +260,23 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         Self::derived(&self.tape, out, entry)
     }
 
-    /// Dropout with probability `p`. No-op when `training` is false.
+    /// Dropout with probability `p`. No-op when `training` is false (CPU-only).
     ///
     /// backward: `grad * mask * scale`.
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn dropout(&self, p: f64, training: bool) -> Self {
-        #[cfg(feature = "cuda")]
+        #[cfg(all(feature = "cpu", feature = "cuda"))]
         assert!(
             TypeId::of::<B>() != TypeId::of::<nabla_core::backend::Cuda>(),
             "nabla: Variable::dropout is CPU-only on CUDA; GPU path must use a dedicated kernel"
         );
-        #[cfg(feature = "hip")]
+        #[cfg(all(feature = "cpu", feature = "hip"))]
         assert!(
             TypeId::of::<B>() != TypeId::of::<nabla_core::backend::Hip>(),
             "nabla: Variable::dropout is CPU-only on HIP; GPU path must use a dedicated kernel"
         );
-        #[cfg(feature = "gpu")]
+        #[cfg(all(feature = "cpu", feature = "gpu"))]
         assert!(
             TypeId::of::<B>() != TypeId::of::<nabla_core::backend::Gpu>(),
             "nabla: Variable::dropout is CPU-only on WGPU; GPU path must use a dedicated kernel"
@@ -318,6 +323,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
             "dropout",
         );
         Self::derived(&self.tape, out, entry)
+    }
+
+    /// Dropout with probability `p` (CPU-only).
+    #[must_use]
+    #[cfg(not(feature = "cpu"))]
+    pub fn dropout(&self, _p: f64, _training: bool) -> Self {
+        panic!("nabla: Variable::dropout is CPU-only");
     }
 
     /// Element-wise clamp to `[lo, hi]`.
@@ -805,21 +817,6 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     /// Forward: per-row group norm, then affine `weight`/`bias`.
     #[must_use]
     pub fn group_norm(&self, num_groups: usize, weight: &Self, bias: &Self, eps: f64) -> Self {
-        #[cfg(feature = "cuda")]
-        assert!(
-            TypeId::of::<B>() != TypeId::of::<nabla_core::backend::Cuda>(),
-            "nabla: Variable::group_norm is CPU-only on CUDA; GPU path needs a dedicated backward kernel"
-        );
-        #[cfg(feature = "hip")]
-        assert!(
-            TypeId::of::<B>() != TypeId::of::<nabla_core::backend::Hip>(),
-            "nabla: Variable::group_norm is CPU-only on HIP; GPU path needs a dedicated backward kernel"
-        );
-        #[cfg(feature = "gpu")]
-        assert!(
-            TypeId::of::<B>() != TypeId::of::<nabla_core::backend::Gpu>(),
-            "nabla: Variable::group_norm is CPU-only on WGPU; GPU path needs a dedicated backward kernel"
-        );
         let eps_t = T::from_f64(eps);
         let (m, n) = self.data.shape();
         assert!(
@@ -827,20 +824,19 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
             "group_norm: channels {n} not divisible by groups {num_groups}"
         );
         let g_size = n / num_groups;
-        let g_size_f = T::from_f64(g_size as f64);
-        let out = Tensor::from_fn(m, n, |r, c| {
-            let g = c / g_size;
-            let g_start = g * g_size;
-            let mean = (0..g_size).fold(T::zero(), |acc, j| acc + self.data.get(r, g_start + j))
-                / g_size_f;
-            let var = (0..g_size).fold(T::zero(), |acc, j| {
-                let d = self.data.get(r, g_start + j) - mean;
-                acc + d * d
-            }) / g_size_f;
-            let inv_std = T::one_impl() / (var + eps_t).math_sqrt();
-            let x_hat = (self.data.get(r, c) - mean) * inv_std;
-            x_hat * weight.data.get(0, c) + bias.data.get(0, c)
-        });
+        let grouped = self.data.reshape(m * num_groups, g_size);
+        let mean = grouped.mean_axis(1);
+        let mean_exp = mean.expand(m * num_groups, g_size);
+        let diff = &grouped - &mean_exp;
+        let var = diff.emul(&diff).mean_axis(1);
+        let eps_exp = Tensor::fill(1, 1, eps_t).expand(m * num_groups, 1);
+        let inv_std = (&var + &eps_exp).powf(T::from_f64(-0.5));
+        let inv_exp = inv_std.expand(m * num_groups, g_size);
+        let x_hat = diff.emul(&inv_exp);
+        let x_hat_2d = x_hat.reshape(m, n);
+        let w_exp = weight.data.expand(m, n);
+        let b_exp = bias.data.expand(m, n);
+        let out = x_hat_2d.emul(&w_exp) + &b_exp;
         let deps = Self::deps_of(&[self.entry_idx, weight.entry_idx, bias.entry_idx]);
         let (xr, wr, br) = (self.input_refs(), weight.input_refs(), bias.input_refs());
         let input = Rc::clone(&self.data);
@@ -849,56 +845,34 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
             move |g| {
                 let (m, n) = input.shape();
                 let g_size = n / num_groups;
-                let g_size_f = T::from_f64(g_size as f64);
                 let eps_t = T::from_f64(eps);
+                let grouped = input.reshape(m * num_groups, g_size);
+                let mean = grouped.mean_axis(1);
+                let mean_exp = mean.expand(m * num_groups, g_size);
+                let diff = &grouped - &mean_exp;
+                let var = diff.emul(&diff).mean_axis(1);
+                let eps_exp = Tensor::fill(1, 1, eps_t).expand(m * num_groups, 1);
+                let inv_std = (&var + &eps_exp).powf(T::from_f64(-0.5));
+                let inv_exp = inv_std.expand(m * num_groups, g_size);
+                let x_hat = diff.emul(&inv_exp);
+                let x_hat_2d = x_hat.reshape(m, n);
 
-                let d_weight = Tensor::from_fn(1, n, |_, c| {
-                    (0..m).fold(T::zero(), |acc, r| {
-                        let g_idx = c / g_size;
-                        let g_start = g_idx * g_size;
-                        let mean = (0..g_size)
-                            .fold(T::zero(), |acc2, j| acc2 + input.get(r, g_start + j))
-                            / g_size_f;
-                        let var = (0..g_size).fold(T::zero(), |acc2, j| {
-                            let d = input.get(r, g_start + j) - mean;
-                            acc2 + d * d
-                        }) / g_size_f;
-                        let inv_std = T::one_impl() / (var + eps_t).math_sqrt();
-                        let x_hat = (input.get(r, c) - mean) * inv_std;
-                        acc + g.get(r, c) * x_hat
-                    })
-                });
+                let d_weight = g.emul(&x_hat_2d).sum_axis(0);
                 Self::prop(&wr, &d_weight);
 
-                let d_bias = Tensor::from_fn(1, n, |_, c| {
-                    (0..m).fold(T::zero(), |acc, r| acc + g.get(r, c))
-                });
+                let d_bias = g.sum_axis(0);
                 Self::prop(&br, &d_bias);
 
-                let d_x = Tensor::from_fn(m, n, |r, c| {
-                    let g_idx = c / g_size;
-                    let g_start = g_idx * g_size;
-                    let mean = (0..g_size)
-                        .fold(T::zero(), |acc, j| acc + input.get(r, g_start + j))
-                        / g_size_f;
-                    let var = (0..g_size).fold(T::zero(), |acc, j| {
-                        let d = input.get(r, g_start + j) - mean;
-                        acc + d * d
-                    }) / g_size_f;
-                    let inv_std = T::one_impl() / (var + eps_t).math_sqrt();
-
-                    let mean_gw = (0..g_size).fold(T::zero(), |acc, j| {
-                        acc + g.get(r, g_start + j) * weight_data.get(0, g_start + j)
-                    }) / g_size_f;
-                    let mean_gw_xh = (0..g_size).fold(T::zero(), |acc, j| {
-                        let xh = (input.get(r, g_start + j) - mean) * inv_std;
-                        acc + g.get(r, g_start + j) * weight_data.get(0, g_start + j) * xh
-                    }) / g_size_f;
-
-                    let xh = (input.get(r, c) - mean) * inv_std;
-                    let gw = g.get(r, c) * weight_data.get(0, c);
-                    inv_std * (gw - mean_gw - xh * mean_gw_xh)
-                });
+                let w_exp = weight_data.expand(m, n);
+                let gw = g.emul(&w_exp);
+                let gw_grouped = gw.reshape(m * num_groups, g_size);
+                let mean_gw = gw_grouped.mean_axis(1);
+                let mean_gw_exp = mean_gw.expand(m * num_groups, g_size);
+                let mean_gw_xh = gw_grouped.emul(&x_hat).mean_axis(1);
+                let mean_gw_xh_exp = mean_gw_xh.expand(m * num_groups, g_size);
+                let d_x_grouped =
+                    (gw_grouped - &mean_gw_exp - x_hat.emul(&mean_gw_xh_exp)).emul(&inv_exp);
+                let d_x = d_x_grouped.reshape(m, n);
                 Self::prop(&xr, &d_x);
             },
             deps,

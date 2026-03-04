@@ -112,7 +112,8 @@ pub fn load_tensors<T: Scalar, B: Backend>(path: &Path) -> io::Result<Vec<(Strin
         for v in &mut data {
             *v = read_f64(&mut file)?;
         }
-        let t = Tensor::from_fn(nrows, ncols, |r, c| T::from_f64(data[r * ncols + c]));
+        let data_t: Vec<T> = data.into_iter().map(T::from_f64).collect();
+        let t = Tensor::from_vec(data_t, nrows, ncols);
         result.push((name, t));
     }
     Ok(result)
@@ -296,7 +297,8 @@ pub trait Module<T: Scalar, B: Backend> {
                     got: (sr, sc),
                 });
             }
-            *dst.1 = Tensor::from_fn(sr, sc, |r, c| src.get(r, c));
+            let data = src.to_vec();
+            *dst.1 = Tensor::from_vec(data, sr, sc);
         }
         Ok(())
     }
@@ -325,6 +327,7 @@ pub struct Linear<T: Scalar, B: Backend = DefaultBackend> {
     training: bool,
 }
 
+#[cfg(feature = "cpu")]
 impl<T: Scalar> Linear<T> {
     /// Create a new `Linear` layer with Xavier uniform weight init and zero bias.
     #[must_use]
@@ -342,6 +345,32 @@ impl<T: Scalar> Linear<T> {
     #[must_use]
     pub fn without_bias(in_features: usize, out_features: usize) -> Self {
         let weight = crate::nn::xavier_uniform::<T>(in_features, out_features);
+        Self {
+            weight,
+            bias: None,
+            training: true,
+        }
+    }
+}
+
+#[cfg(not(feature = "cpu"))]
+impl<T: Scalar> Linear<T> {
+    /// Create a new `Linear` layer with zero-initialized weights and bias.
+    #[must_use]
+    pub fn new(in_features: usize, out_features: usize) -> Self {
+        let weight = Tensor::zeros(out_features, in_features);
+        let bias = Tensor::zeros(1, out_features);
+        Self {
+            weight,
+            bias: Some(bias),
+            training: true,
+        }
+    }
+
+    /// Create a new `Linear` layer without bias, zero-initialized weights.
+    #[must_use]
+    pub fn without_bias(in_features: usize, out_features: usize) -> Self {
+        let weight = Tensor::zeros(out_features, in_features);
         Self {
             weight,
             bias: None,

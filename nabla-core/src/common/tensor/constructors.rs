@@ -3,9 +3,13 @@ use rayon::prelude::*;
 use core::ops::Range;
 
 use crate::backend::Backend;
+#[cfg(feature = "cpu")]
+use crate::backend::Cpu;
 use crate::scalar::Scalar;
 
-use super::{MatrixLike, Tensor, assert_cpu_only};
+#[cfg(feature = "cpu")]
+use super::MatrixLike;
+use super::Tensor;
 
 struct XorShift64 {
     state: u64,
@@ -72,20 +76,23 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::from_storage(B::fill(nrows, ncols, val))
     }
 
-    /// Allocate a matrix whose `(i, j)` element is `f(i, j)`.
+    /// Allocate a matrix whose `(i, j)` element is `f(i, j)` (CPU-only).
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn from_fn(nrows: usize, ncols: usize, f: impl FnMut(usize, usize) -> T) -> Self {
         Self::from_storage(B::from_fn(nrows, ncols, f))
     }
 
-    /// Allocate an `n x n` identity matrix.
+    /// Allocate an `n x n` identity matrix (CPU-only).
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn identity(n: usize) -> Self {
         Self::from_storage(B::identity(n))
     }
 
-    /// Convert class index slice to one-hot matrix `(n_samples x n_classes)`.
+    /// Convert class index slice to one-hot matrix `(n_samples x n_classes)` (CPU-only).
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn one_hot(indices: &[usize], n_classes: usize) -> Self {
         Self::from_fn(indices.len(), n_classes, |r, c| {
             if c == indices[r] { T::one() } else { T::zero() }
@@ -105,8 +112,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::from_storage(B::from_vec_async(nrows, ncols, data.to_vec()))
     }
 
-    /// Identity matrix of same size as `self` (must be square).
+    /// Identity matrix of same size as `self` (CPU-only).
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn eye_like(&self) -> Self {
         let (m, n) = self.shape();
         assert_eq!(m, n, "nabla: eye_like requires square tensor, got {m}x{n}");
@@ -144,13 +152,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 
     /// Generate a 1-D tensor: `[start, start+step, start+2*step, ...]` with length `n`.
+    /// Generate a 1-D tensor: `[start, start+step, start+2*step, ...]` (CPU-only).
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn arange(start: T, step: T, n: usize) -> Self {
         Self::from_fn(1, n, |_, c| start + step * T::from_f64(c as f64))
     }
 
     /// Generate a 1-D tensor of `n` evenly spaced values from `start` to `end` (inclusive).
+    /// Generate a 1-D tensor of `n` evenly spaced values (CPU-only).
     #[must_use]
+    #[cfg(feature = "cpu")]
     pub fn linspace(start: T, end: T, n: usize) -> Self {
         assert!(n >= 2, "nabla: linspace needs n >= 2");
         let denom = T::from_f64((n - 1) as f64);
@@ -212,7 +224,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::from_storage(B::from_vec(nrows, ncols, data))
     }
 
-    /// Parallel `from_fn` -- construct a matrix using rayon.
+    /// Parallel `from_fn` -- construct a matrix using rayon (CPU-only).
     #[must_use]
     pub fn par_from_fn(
         nrows: usize,
@@ -258,11 +270,13 @@ impl<T: Scalar, B: Backend> TensorView<'_, T, B> {
         (self.nrows(), self.ncols())
     }
 
-    /// Read element at `(row, col)` relative to the view origin.
+    /// Read element at `(row, col)` relative to the view origin (CPU only).
+    ///
+    /// This method is available only with the `cpu` feature.
+    #[cfg(feature = "cpu")]
     #[must_use]
     #[inline]
     pub fn get(&self, row: usize, col: usize) -> T {
-        assert_cpu_only::<B>("TensorView::get");
         assert!(
             row < self.nrows() && col < self.ncols(),
             "TensorView::get({row}, {col}) out of bounds for view of shape {:?}",
@@ -270,11 +284,13 @@ impl<T: Scalar, B: Backend> TensorView<'_, T, B> {
         );
         self.source.get(self.row_start + row, self.col_start + col)
     }
+}
 
+#[cfg(feature = "cpu")]
+impl<T: Scalar> TensorView<'_, T, Cpu> {
     /// Create an owned [`Tensor`] by copying the viewed region.
     #[must_use]
-    pub fn to_owned_tensor(&self) -> Tensor<T, B> {
-        assert_cpu_only::<B>("TensorView::to_owned_tensor");
+    pub fn to_owned_tensor(&self) -> Tensor<T, Cpu> {
         let rs = self.row_start;
         let cs = self.col_start;
         let source = self.source;
@@ -284,7 +300,8 @@ impl<T: Scalar, B: Backend> TensorView<'_, T, B> {
     }
 }
 
-impl<T: Scalar, B: Backend> MatrixLike<T> for TensorView<'_, T, B> {
+#[cfg(feature = "cpu")]
+impl<T: Scalar> MatrixLike<T> for TensorView<'_, T, Cpu> {
     #[inline]
     fn nrows(&self) -> usize {
         self.nrows()
@@ -369,11 +386,11 @@ pub struct RowIter<'a, T: Scalar, B: Backend> {
     pub(super) idx: usize,
 }
 
-impl<T: Scalar, B: Backend> Iterator for RowIter<'_, T, B> {
-    type Item = Tensor<T, B>;
+#[cfg(feature = "cpu")]
+impl<T: Scalar> Iterator for RowIter<'_, T, Cpu> {
+    type Item = Tensor<T, Cpu>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        assert_cpu_only::<B>("RowIter::next");
         let r = next_index(&mut self.idx, self.tensor.nrows())?;
         let nc = self.tensor.ncols();
         Some(Tensor::from_fn(1, nc, |_, c| self.tensor.get(r, c)))
@@ -386,20 +403,21 @@ pub struct ColIter<'a, T: Scalar, B: Backend> {
     pub(super) idx: usize,
 }
 
-impl<T: Scalar, B: Backend> Iterator for ColIter<'_, T, B> {
-    type Item = Tensor<T, B>;
+#[cfg(feature = "cpu")]
+impl<T: Scalar> Iterator for ColIter<'_, T, Cpu> {
+    type Item = Tensor<T, Cpu>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        assert_cpu_only::<B>("ColIter::next");
         let c = next_index(&mut self.idx, self.tensor.ncols())?;
         let nr = self.tensor.nrows();
         Some(Tensor::from_fn(nr, 1, |r, _| self.tensor.get(r, c)))
     }
 }
 
-impl<T: Scalar, B: Backend> Tensor<T, B> {
+#[cfg(feature = "cpu")]
+impl<T: Scalar> Tensor<T, Cpu> {
     /// Iterator over rows, yielding `1 x ncols` tensors.
-    pub fn eachrow(&self) -> RowIter<'_, T, B> {
+    pub fn eachrow(&self) -> RowIter<'_, T, Cpu> {
         RowIter {
             tensor: self,
             idx: 0,
@@ -407,7 +425,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 
     /// Iterator over columns, yielding `nrows x 1` tensors.
-    pub fn eachcol(&self) -> ColIter<'_, T, B> {
+    pub fn eachcol(&self) -> ColIter<'_, T, Cpu> {
         ColIter {
             tensor: self,
             idx: 0,
@@ -418,7 +436,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ///
     /// Yields each scalar value by visiting row 0 left-to-right, then row 1, etc.
     pub fn elements(&self) -> impl Iterator<Item = T> + '_ {
-        assert_cpu_only::<B>("Tensor::elements");
         let nc = self.ncols();
         let total = self.nrows() * nc;
         (0..total).map(move |idx| self.get(idx / nc, idx % nc))
@@ -428,7 +445,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ///
     /// Yields `(row, col, value)` tuples in row-major order.
     pub fn indexed_iter(&self) -> impl Iterator<Item = (usize, usize, T)> + '_ {
-        assert_cpu_only::<B>("Tensor::indexed_iter");
         let nc = self.ncols();
         let total = self.nrows() * nc;
         (0..total).map(move |idx| {

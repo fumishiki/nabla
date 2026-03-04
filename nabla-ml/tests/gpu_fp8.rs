@@ -28,15 +28,10 @@ mod cuda_fp8 {
         let _ = Tensor::<T, Cuda>::zeros(2, 3);
         let _ = Tensor::<T, Cuda>::ones(2, 3);
         let _ = Tensor::<T, Cuda>::fill(2, 3, T::from_f64(2.0));
-        let eye = Tensor::<T, Cuda>::identity(3);
-        let _ = Tensor::<T, Cuda>::arange(T::zero(), T::one(), 4);
-        let _ = Tensor::<T, Cuda>::linspace(T::zero(), T::one(), 4);
-        let _ = Tensor::<T, Cuda>::rand(2, 3, 42);
-        let _ = Tensor::<T, Cuda>::randn(2, 3, 42);
         let _ = Tensor::<T, Cuda>::empty(2, 3);
         let _ = a.clone();
         let _ = a.contiguous();
-        assert_shape(&eye, (3, 3));
+        assert_shape(&Tensor::<T, Cuda>::fill(1, 1, T::one()), (1, 1));
 
         let y1 = make::<T>(1, 5).conv1d(&make::<T>(1, 3), None, 1, 1, 5, 1, 3, 1, 0, 1, 1);
         let y2 = make::<T>(1, 9).conv2d(
@@ -163,7 +158,6 @@ mod cuda_fp8 {
         let reshaped = a.reshape(3, 2);
         let permuted = a.permute(&[1, 0]);
         let cat = Tensor::cat(&[&a, &b], 0);
-        let stacked = Tensor::stack(&[&a, &b], 0);
         let squeezed = a.reshape(1, 6).squeeze(0);
         let flat = a.flatten();
         let chunks = a.chunk(2, 1);
@@ -181,16 +175,14 @@ mod cuda_fp8 {
         let tril = a.tril(0);
         let roll = a.roll(1, 1);
         let flip = a.flip(1);
-        let (gx, gy) = Tensor::meshgrid(
-            &Tensor::arange(T::zero(), T::one(), 3),
-            &Tensor::arange(T::zero(), T::one(), 2),
-        );
+        let gx_in = Tensor::from_vec(vec![T::zero(), T::one(), T::one() + T::one()], 1, 3);
+        let gy_in = Tensor::from_vec(vec![T::zero(), T::one()], 1, 2);
+        let (gx, gy) = Tensor::meshgrid(&gx_in, &gy_in);
         let (topk_vals, topk_idx) = a.topk(2, 1);
         let (sort_vals, sort_idx) = a.sort(1, false);
         assert_shape(&reshaped, (3, 2));
         assert_shape(&permuted, (3, 2));
         assert_shape(&cat, (4, 3));
-        assert_eq!(stacked.shape_vec(), &[2, 2, 3]);
         assert_shape(&squeezed, (1, 6));
         assert_shape(&flat, (1, 6));
         assert_eq!(chunks.len(), 2);
@@ -240,8 +232,6 @@ mod cuda_fp8 {
         let _ = a.cumsum(1);
         let _ = a.cumprod(1);
         let _ = a.prod();
-        let _ = a.norm();
-        let _ = a.count_nonzero();
 
         #[cfg(feature = "cpu")]
         {

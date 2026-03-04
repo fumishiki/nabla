@@ -477,7 +477,166 @@ pub trait BackendReduce: BackendCore {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-trait 4: BackendBlas — Matrix multiply + batched (5 methods)
+// Sub-trait 4: BackendShape — Shape/indexing/sort ops (18 methods)
+// ---------------------------------------------------------------------------
+
+/// Shape manipulation and indexing ops. GPU backends must provide kernels.
+pub trait BackendShape: BackendCore {
+    /// Copy-reshape to `(out_rows, out_cols)` preserving row-major order.
+    fn reshape_copy<T: Scalar>(
+        _a: &Self::Storage<T>,
+        _out_rows: usize,
+        _out_cols: usize,
+    ) -> Self::Storage<T> {
+        panic!("nabla: reshape_copy not implemented for this backend");
+    }
+
+    /// Return a contiguous copy (same shape).
+    fn contiguous<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T> {
+        let (rows, cols) = (Self::nrows(a), Self::ncols(a));
+        Self::reshape_copy(a, rows, cols)
+    }
+
+    /// Extract submatrix `[row_start, row_start+out_rows) x [col_start, col_start+out_cols)`.
+    fn submatrix<T: Scalar>(
+        _a: &Self::Storage<T>,
+        _row_start: usize,
+        _col_start: usize,
+        _out_rows: usize,
+        _out_cols: usize,
+    ) -> Self::Storage<T> {
+        panic!("nabla: submatrix not implemented for this backend");
+    }
+
+    /// Write `src` into `dst` at `(row_start, col_start)`.
+    fn slice_set<T: Scalar>(
+        _dst: &mut Self::Storage<T>,
+        _row_start: usize,
+        _col_start: usize,
+        _src: &Self::Storage<T>,
+    ) {
+        panic!("nabla: slice_set not implemented for this backend");
+    }
+
+    /// Repeat rows/cols by the given factors.
+    fn repeat<T: Scalar>(
+        _a: &Self::Storage<T>,
+        _row_reps: usize,
+        _col_reps: usize,
+    ) -> Self::Storage<T> {
+        panic!("nabla: repeat not implemented for this backend");
+    }
+
+    /// Pad with constant value.
+    fn pad<T: Scalar>(
+        _a: &Self::Storage<T>,
+        _left: usize,
+        _right: usize,
+        _top: usize,
+        _bottom: usize,
+        _value: T,
+    ) -> Self::Storage<T> {
+        panic!("nabla: pad not implemented for this backend");
+    }
+
+    /// Upper-triangular mask.
+    fn triu<T: Scalar>(_a: &Self::Storage<T>, _diagonal: isize) -> Self::Storage<T> {
+        panic!("nabla: triu not implemented for this backend");
+    }
+
+    /// Lower-triangular mask.
+    fn tril<T: Scalar>(_a: &Self::Storage<T>, _diagonal: isize) -> Self::Storage<T> {
+        panic!("nabla: tril not implemented for this backend");
+    }
+
+    /// Roll along axis.
+    fn roll<T: Scalar>(_a: &Self::Storage<T>, _shift: isize, _axis: usize) -> Self::Storage<T> {
+        panic!("nabla: roll not implemented for this backend");
+    }
+
+    /// Flip along axis.
+    fn flip<T: Scalar>(_a: &Self::Storage<T>, _axis: usize) -> Self::Storage<T> {
+        panic!("nabla: flip not implemented for this backend");
+    }
+
+    /// Diagonal matrix from vector.
+    fn from_diag<T: Scalar>(_v: &Self::Storage<T>) -> Self::Storage<T> {
+        panic!("nabla: from_diag not implemented for this backend");
+    }
+
+    /// Gather rows by index vector.
+    fn gather_rows<T: Scalar>(_a: &Self::Storage<T>, _indices: &[usize]) -> Self::Storage<T> {
+        panic!("nabla: gather_rows not implemented for this backend");
+    }
+
+    /// Gather along axis using index tensor.
+    fn gather<T: Scalar>(
+        _a: &Self::Storage<T>,
+        _axis: usize,
+        _index: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
+        panic!("nabla: gather not implemented for this backend");
+    }
+
+    /// Scatter along axis using index tensor.
+    fn scatter<T: Scalar>(
+        _a: &Self::Storage<T>,
+        _axis: usize,
+        _index: &Self::Storage<T>,
+        _src: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
+        panic!("nabla: scatter not implemented for this backend");
+    }
+
+    /// Select along axis using 1-D index tensor.
+    fn index_select<T: Scalar>(
+        _a: &Self::Storage<T>,
+        _axis: usize,
+        _index: &Self::Storage<T>,
+    ) -> Self::Storage<T> {
+        panic!("nabla: index_select not implemented for this backend");
+    }
+
+    /// Sort rows (axis=1). Returns `(values, indices)` with indices stored as `T`.
+    fn sort_rows<T: Scalar>(
+        _a: &Self::Storage<T>,
+        _descending: bool,
+    ) -> (Self::Storage<T>, Self::Storage<T>) {
+        panic!("nabla: sort_rows not implemented for this backend");
+    }
+
+    /// Meshgrid for 1-D `x` and `y`. Returns `(grid_x, grid_y)`.
+    fn meshgrid<T: Scalar>(
+        _x: &Self::Storage<T>,
+        _y: &Self::Storage<T>,
+    ) -> (Self::Storage<T>, Self::Storage<T>) {
+        panic!("nabla: meshgrid not implemented for this backend");
+    }
+
+    /// Scatter-add along dimension 0.
+    fn scatter_add_dim0<T: Scalar>(
+        _dst: &mut Self::Storage<T>,
+        _indices: &[usize],
+        _src: &Self::Storage<T>,
+    ) {
+        panic!("nabla: scatter_add_dim0 not implemented for this backend");
+    }
+
+    /// Kronecker product: `(m,n) x (p,q)` -> `(m*p, n*q)`.
+    fn kron<T: Scalar>(
+        _a: &Self::Storage<T>,
+        _b: &Self::Storage<T>,
+        _m: usize,
+        _n: usize,
+        _p: usize,
+        _q: usize,
+    ) -> Self::Storage<T> {
+        panic!("nabla: kron not implemented for this backend");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-trait 5: BackendBlas — Matrix multiply + batched (5 methods)
 // ---------------------------------------------------------------------------
 
 /// Matrix multiplication and batched BLAS operations.
@@ -1369,12 +1528,19 @@ pub trait BackendFusion: BackendCore {
 
 /// Unified backend supertrait combining all six sub-traits.
 pub trait Backend:
-    BackendCore + BackendMath + BackendReduce + BackendBlas + BackendNN + BackendFusion
+    BackendCore + BackendMath + BackendReduce + BackendShape + BackendBlas + BackendNN + BackendFusion
 {
 }
 
-impl<B: BackendCore + BackendMath + BackendReduce + BackendBlas + BackendNN + BackendFusion> Backend
-    for B
+impl<
+    B: BackendCore
+        + BackendMath
+        + BackendReduce
+        + BackendShape
+        + BackendBlas
+        + BackendNN
+        + BackendFusion,
+> Backend for B
 {
 }
 

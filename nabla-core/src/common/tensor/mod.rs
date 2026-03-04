@@ -15,14 +15,16 @@ pub mod ops;
 pub mod reductions;
 /// Shape manipulation (reshape, transpose, broadcast).
 pub mod shape;
-/// Tensor variants: `NdTensor`, `StaticMatrix`, `DynTensor`, and related traits.
+/// Tensor variants: `NdTensor`, `StaticMatrix`, `DynTensor`, and related traits (CPU-only).
+#[cfg(feature = "cpu")]
 pub mod variants;
 
 pub use constructors::{ColIter, RowIter, TensorView};
-pub use variants::{Array, NdTensor, StaticMatrix};
 #[cfg(feature = "cpu")]
-pub use variants::{DynTensor, Matrix};
+pub use variants::{Array, DynTensor, Matrix, NdTensor, StaticMatrix};
 
+#[cfg(feature = "cpu")]
+use crate::backend::Cpu;
 use crate::backend::{Backend, DefaultBackend};
 use crate::scalar::Scalar;
 use core::fmt;
@@ -46,16 +48,18 @@ impl<T: Scalar, B: Backend, Axes> Clone for Tensor<T, B, Axes> {
     }
 }
 
-impl<T: Scalar, B: Backend> Tensor<T, B> {
+#[cfg(feature = "cpu")]
+impl<T: Scalar> Tensor<T, Cpu> {
     /// Returns an iterator over the rows of this tensor.
-    pub fn iter(&self) -> RowIter<'_, T, B> {
+    pub fn iter(&self) -> RowIter<'_, T, Cpu> {
         self.eachrow()
     }
 }
 
-impl<'a, T: Scalar, B: Backend> IntoIterator for &'a Tensor<T, B> {
-    type Item = Tensor<T, B>;
-    type IntoIter = RowIter<'a, T, B>;
+#[cfg(feature = "cpu")]
+impl<'a, T: Scalar> IntoIterator for &'a Tensor<T, Cpu> {
+    type Item = Tensor<T, Cpu>;
+    type IntoIter = RowIter<'a, T, Cpu>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.eachrow()
@@ -313,6 +317,7 @@ pub(super) fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> (usiz
 }
 
 #[inline]
+#[allow(dead_code)]
 pub(super) fn assert_cpu_only<B: Backend>(_op: &str) {
     #[cfg(feature = "cuda")]
     assert!(
@@ -540,6 +545,7 @@ impl<T: Scalar, B: Backend, Axes> MatrixLike<T> for Tensor<T, B, Axes> {
     }
 }
 
+#[cfg(feature = "cpu")]
 impl<T: Scalar, const R: usize, const C: usize> MatrixLike<T> for StaticMatrix<T, R, C> {
     #[inline]
     fn nrows(&self) -> usize {

@@ -73,6 +73,7 @@ pub mod autograd;
 pub mod cas;
 
 /// ODE/SDE solvers for initial value problems.
+#[cfg(feature = "cpu")]
 pub mod ode;
 
 /// Neural network modules and layers.
@@ -169,9 +170,11 @@ macro_rules! vec_unpack {
 pub mod nn {
     pub use crate::module::{
         Activation, ActivationKind, DropoutLayer, EmbeddingLayer, ForwardResult, LayerNormModule,
-        Linear, Module, Sequential, StateError, embedding, kaiming_normal, kv_cache_append, linear,
-        load_tensors, rotary_embedding, save_tensors, xavier_uniform,
+        Linear, Module, Sequential, StateError, embedding, kv_cache_append, linear, load_tensors,
+        save_tensors,
     };
+    #[cfg(feature = "cpu")]
+    pub use crate::module::{kaiming_normal, rotary_embedding, xavier_uniform};
 }
 
 pub use {constructors::*, nn::*};
@@ -219,7 +222,9 @@ pub mod prelude {
     pub use nabla_core::scalar::{Fp4E2M1, Fp8E4M3, Fp8E5M2, Scalar};
     #[cfg(feature = "cpu")]
     pub use nabla_core::tensor::Matrix;
-    pub use nabla_core::tensor::{Array, MatrixLike, NdTensor, StaticMatrix, Tensor, TensorView};
+    #[cfg(feature = "cpu")]
+    pub use nabla_core::tensor::{Array, NdTensor, StaticMatrix};
+    pub use nabla_core::tensor::{MatrixLike, Tensor, TensorView};
 
     // Macros (proc + decl)
     pub use crate::{NablaResult, ad, cas_vars, sequential, vars, vec_unpack};
@@ -234,15 +239,17 @@ pub mod prelude {
     // Module / NN
     pub use crate::nn::{
         Activation, ActivationKind, DropoutLayer, EmbeddingLayer, ForwardResult, LayerNormModule,
-        Linear, Module, Sequential, embedding, kaiming_normal, linear, load_tensors, save_tensors,
-        xavier_uniform,
+        Linear, Module, Sequential, embedding, linear, load_tensors, save_tensors,
     };
+    #[cfg(feature = "cpu")]
+    pub use crate::nn::{kaiming_normal, xavier_uniform};
 
     // Constructors
+    #[cfg(feature = "cpu")]
     pub use crate::constructors::{
-        arange, clear_seed, eye, fill, from_fn, linspace, nd_zeros, ones, rand, randn, set_seed,
-        zeros,
+        arange, clear_seed, eye, from_fn, linspace, nd_zeros, rand, randn, set_seed,
     };
+    pub use crate::constructors::{fill, ones, zeros};
 
     // IO
     pub use crate::nn::StateError;
@@ -251,6 +258,7 @@ pub mod prelude {
     pub use crate::cas::{diff, diff_simplify, eval, simplify};
 
     // ODE (basic)
+    #[cfg(feature = "cpu")]
     pub use crate::ode::{AdaptiveConfig, OdeProblem, OdeSolution, dormand_prince, euler, rk4};
 
     // --- cpu-gated ---

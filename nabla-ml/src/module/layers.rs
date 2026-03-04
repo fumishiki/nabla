@@ -1,18 +1,22 @@
 use std::rc::Rc;
 
 use nabla_core::backend::{Backend, DefaultBackend};
+#[cfg(not(feature = "cpu"))]
+use nabla_core::error::Error;
 use nabla_core::error::Result;
 use nabla_core::scalar::Scalar;
 use nabla_core::tensor::Tensor;
 
 use crate::autograd::{Tape, TensorLike, Variable};
+#[cfg(feature = "cpu")]
 use crate::constructors::{rand, randn};
 use crate::{scalar, tensor};
 
 use super::{ForwardResult, Module};
 
-/// Xavier/Glorot uniform weight initialization.
+/// Xavier/Glorot uniform weight initialization (CPU-only).
 #[must_use]
+#[cfg(feature = "cpu")]
 pub fn xavier_uniform<T: scalar::Scalar>(fan_in: usize, fan_out: usize) -> tensor::Tensor<T> {
     let limit = (6.0 / (fan_in + fan_out) as f64).sqrt();
     let two_limit = T::from_f64(2.0 * limit);
@@ -21,16 +25,18 @@ pub fn xavier_uniform<T: scalar::Scalar>(fan_in: usize, fan_out: usize) -> tenso
     tensor::Tensor::from_fn(fan_out, fan_in, |i, j| r.get(i, j) * two_limit - offset)
 }
 
-/// Kaiming/He normal weight initialization for ReLU networks.
+/// Kaiming/He normal weight initialization for ReLU networks (CPU-only).
 #[must_use]
+#[cfg(feature = "cpu")]
 pub fn kaiming_normal<T: scalar::Scalar>(fan_in: usize, fan_out: usize) -> tensor::Tensor<T> {
     let std = (2.0 / fan_in as f64).sqrt();
     let r = randn::<T>(fan_out, fan_in);
     &r * T::from_f64(std)
 }
 
-/// Apply rotary positional embedding (RoPE) to input tensor.
+/// Apply rotary positional embedding (RoPE) to input tensor (CPU-only).
 #[must_use]
+#[cfg(feature = "cpu")]
 pub fn rotary_embedding<T: scalar::Scalar>(
     x: &tensor::Tensor<T>,
     head_dim: usize,
@@ -205,6 +211,7 @@ impl<T: Scalar, B: Backend> DropoutLayer<T, B> {
     }
 }
 
+#[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Module<T, B> for DropoutLayer<T, B> {
     fn forward(&self, x: &Tensor<T, B>) -> Tensor<T, B> {
         if !self.training || self.p == 0.0 {
@@ -237,6 +244,7 @@ pub struct EmbeddingLayer<T: Scalar, B: Backend> {
     training: bool,
 }
 
+#[cfg(feature = "cpu")]
 impl<T: Scalar> EmbeddingLayer<T, DefaultBackend> {
     /// Create a new embedding layer with `randn` initialization.
     #[must_use]
@@ -259,10 +267,19 @@ impl<T: Scalar, B: Backend> Module<T, B> for EmbeddingLayer<T, B> {
         x: &Variable<T, B>,
         tape: &Rc<Tape<T, B>>,
     ) -> Result<ForwardResult<T, B>> {
-        let w_var = tape.variable(self.weight.clone())?;
-        let (_, n) = x.data().shape();
-        let num_embeddings = self.weight.nrows();
-        let indices: Vec<usize> = (0..n)
+        #[cfg(not(feature = "cpu"))]
+        {
+            let _ = (x, tape);
+            Err(Error::invalid(
+                "nabla: EmbeddingLayer::forward_var_tracked is CPU-only",
+            ))
+        }
+        #[cfg(feature = "cpu")]
+        {
+            let w_var = tape.variable(self.weight.clone())?;
+            let (_, n) = x.data().shape();
+            let num_embeddings = self.weight.nrows();
+            let indices: Vec<usize> = (0..n)
             .map(|i| {
                 let v = x.data().get(0, i).to_f64();
                 assert!(
@@ -277,11 +294,12 @@ impl<T: Scalar, B: Backend> Module<T, B> for EmbeddingLayer<T, B> {
                 idx
             })
             .collect();
-        let output = w_var.embedding_lookup(&indices);
-        Ok(ForwardResult {
-            output,
-            param_vars: vec![w_var],
-        })
+            let output = w_var.embedding_lookup(&indices);
+            Ok(ForwardResult {
+                output,
+                param_vars: vec![w_var],
+            })
+        }
     }
 
     impl_module_params!(weight);
@@ -301,7 +319,7 @@ impl<T: Scalar> LayerNormModule<T, DefaultBackend> {
     /// Create a new layer normalization module for `features` dimensions.
     #[must_use]
     pub fn new(features: usize) -> Self {
-        let gamma = Tensor::from_fn(1, features, |_, _| T::one_impl());
+        let gamma = Tensor::ones(1, features);
         let beta = Tensor::zeros(1, features);
         Self {
             gamma,
@@ -317,9 +335,9 @@ impl<T: Scalar, B: Backend> Module<T, B> for LayerNormModule<T, B> {
         let eps_t = T::from_f64(self.eps);
         let normed = x.layer_norm(1, eps_t);
         let (nrows, ncols) = normed.shape();
-        Tensor::from_fn(nrows, ncols, |r, c| {
-            normed.get(r, c) * self.gamma.get(0, c) + self.beta.get(0, c)
-        })
+        let gamma = self.gamma.expand(nrows, ncols);
+        let beta = self.beta.expand(nrows, ncols);
+        normed.emul(&gamma) + &beta
     }
 
     fn forward_var_tracked(
@@ -331,10 +349,10 @@ impl<T: Scalar, B: Backend> Module<T, B> for LayerNormModule<T, B> {
         let beta_var = tape.variable(self.beta.clone())?;
         let normed = x.layer_norm(self.eps);
         let nrows = x.data().nrows();
-        let ones = tape.variable(Tensor::from_fn(nrows, 1, |_, _| T::one_impl()))?;
+        let ones = tape.variable(Tensor::ones(nrows, 1))?;
         let gamma_exp = ones.matmul(&gamma_var);
         let scaled = normed.emul(&gamma_exp);
-        let ones_b = tape.variable(Tensor::from_fn(nrows, 1, |_, _| T::one_impl()))?;
+        let ones_b = tape.variable(Tensor::ones(nrows, 1))?;
         let beta_exp = ones_b.matmul(&beta_var);
         let output = scaled.add_var(&beta_exp);
         Ok(ForwardResult {
