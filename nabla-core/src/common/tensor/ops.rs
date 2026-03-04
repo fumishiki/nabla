@@ -4,7 +4,7 @@ use std::any::TypeId;
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 
-use super::{Tensor, resolve_range, two, assert_cpu_only};
+use super::{Tensor, assert_cpu_only, resolve_range, two};
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Validate two tensors have the same shape.
@@ -756,6 +756,15 @@ impl<T: Scalar, B: Backend> Neg for Tensor<T, B> {
     #[inline]
     fn neg(self) -> Self::Output {
         -&self
+    }
+}
+
+impl<T: Scalar, B: Backend> Mul<T> for Tensor<T, B> {
+    type Output = Self;
+
+    #[inline]
+    fn mul(self, rhs: T) -> Self::Output {
+        &self * rhs
     }
 }
 

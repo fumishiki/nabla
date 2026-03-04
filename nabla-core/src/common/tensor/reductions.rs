@@ -1,7 +1,7 @@
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 
-use super::{Tensor, two, assert_cpu_only};
+use super::{Tensor, assert_cpu_only, two};
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     fn axis_len(&self, axis: usize, op: &str) -> usize {
@@ -177,8 +177,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             other.nrows() == 1 || other.ncols() == 1,
             "nabla: outer expects other to be a vector"
         );
-        let a = if self.ncols() == 1 { self.clone() } else { self.t() };
-        let b = if other.nrows() == 1 { other.clone() } else { other.t() };
+        let a = if self.ncols() == 1 {
+            self.clone()
+        } else {
+            self.t()
+        };
+        let b = if other.nrows() == 1 {
+            other.clone()
+        } else {
+            other.t()
+        };
         &a * &b
     }
 

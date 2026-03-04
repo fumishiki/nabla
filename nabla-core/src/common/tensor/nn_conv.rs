@@ -1,8 +1,8 @@
-use std::any::TypeId;
-
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 use crate::tensor::{Tensor, two};
+#[cfg(any(feature = "cuda", feature = "hip", feature = "gpu"))]
+use std::any::TypeId;
 
 /// Configuration for 2-D convolution (stride, padding, dilation, groups).
 pub struct Conv2dConfig {
@@ -157,21 +157,21 @@ impl Conv3dConfig {
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- Convolution ----
     #[inline]
-    fn assert_bias_cpu(op: &str) {
+    fn assert_bias_cpu(_op: &str) {
         #[cfg(feature = "cuda")]
         assert!(
             TypeId::of::<B>() != TypeId::of::<crate::backend::Cuda>(),
-            "nabla: {op} bias is CPU-only on CUDA; GPU path needs a dedicated bias kernel"
+            "nabla: {_op} bias is CPU-only on CUDA; GPU path needs a dedicated bias kernel"
         );
         #[cfg(feature = "hip")]
         assert!(
             TypeId::of::<B>() != TypeId::of::<crate::backend::Hip>(),
-            "nabla: {op} bias is CPU-only on HIP; GPU path needs a dedicated bias kernel"
+            "nabla: {_op} bias is CPU-only on HIP; GPU path needs a dedicated bias kernel"
         );
         #[cfg(feature = "gpu")]
         assert!(
             TypeId::of::<B>() != TypeId::of::<crate::backend::Gpu>(),
-            "nabla: {op} bias is CPU-only on WGPU; GPU path needs a dedicated bias kernel"
+            "nabla: {_op} bias is CPU-only on WGPU; GPU path needs a dedicated bias kernel"
         );
     }
 

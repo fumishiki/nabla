@@ -5,7 +5,7 @@ use core::ops::Range;
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 
-use super::{MatrixLike, Tensor};
+use super::{MatrixLike, Tensor, assert_cpu_only};
 
 struct XorShift64 {
     state: u64,
@@ -262,6 +262,7 @@ impl<T: Scalar, B: Backend> TensorView<'_, T, B> {
     #[must_use]
     #[inline]
     pub fn get(&self, row: usize, col: usize) -> T {
+        assert_cpu_only::<B>("TensorView::get");
         assert!(
             row < self.nrows() && col < self.ncols(),
             "TensorView::get({row}, {col}) out of bounds for view of shape {:?}",
@@ -273,6 +274,7 @@ impl<T: Scalar, B: Backend> TensorView<'_, T, B> {
     /// Create an owned [`Tensor`] by copying the viewed region.
     #[must_use]
     pub fn to_owned_tensor(&self) -> Tensor<T, B> {
+        assert_cpu_only::<B>("TensorView::to_owned_tensor");
         let rs = self.row_start;
         let cs = self.col_start;
         let source = self.source;
@@ -371,6 +373,7 @@ impl<T: Scalar, B: Backend> Iterator for RowIter<'_, T, B> {
     type Item = Tensor<T, B>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        assert_cpu_only::<B>("RowIter::next");
         let r = next_index(&mut self.idx, self.tensor.nrows())?;
         let nc = self.tensor.ncols();
         Some(Tensor::from_fn(1, nc, |_, c| self.tensor.get(r, c)))
@@ -387,6 +390,7 @@ impl<T: Scalar, B: Backend> Iterator for ColIter<'_, T, B> {
     type Item = Tensor<T, B>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        assert_cpu_only::<B>("ColIter::next");
         let c = next_index(&mut self.idx, self.tensor.ncols())?;
         let nr = self.tensor.nrows();
         Some(Tensor::from_fn(nr, 1, |r, _| self.tensor.get(r, c)))
@@ -414,6 +418,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ///
     /// Yields each scalar value by visiting row 0 left-to-right, then row 1, etc.
     pub fn elements(&self) -> impl Iterator<Item = T> + '_ {
+        assert_cpu_only::<B>("Tensor::elements");
         let nc = self.ncols();
         let total = self.nrows() * nc;
         (0..total).map(move |idx| self.get(idx / nc, idx % nc))
@@ -423,6 +428,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     ///
     /// Yields `(row, col, value)` tuples in row-major order.
     pub fn indexed_iter(&self) -> impl Iterator<Item = (usize, usize, T)> + '_ {
+        assert_cpu_only::<B>("Tensor::indexed_iter");
         let nc = self.ncols();
         let total = self.nrows() * nc;
         (0..total).map(move |idx| {

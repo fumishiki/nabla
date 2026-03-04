@@ -138,7 +138,12 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let (_, n) = self.shape();
         let gamma = Tensor::<T, B>::fill(1, n, T::one_impl());
         let beta = Tensor::<T, B>::fill(1, n, T::zero());
-        Self::from_storage(B::layer_norm(&self.storage, &gamma.storage, &beta.storage, eps))
+        Self::from_storage(B::layer_norm(
+            &self.storage,
+            &gamma.storage,
+            &beta.storage,
+            eps,
+        ))
     }
 
     /// RMS normalization along `axis`: `x / rms(x) * weight`.
@@ -347,7 +352,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let abs = diff.abs();
         let beta_t = Tensor::fill(1, 1, beta).expand(m, n);
         let pick = (&abs + &beta_t - (&abs - &beta_t).abs()) / two;
-        let quad = pick.emul(&pick) * (half / beta);
+        let quad = &pick.emul(&pick) * (half / beta);
         let lin = &abs - &pick;
         (quad + lin).sum_all() / total
     }
@@ -360,8 +365,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let abs_x = self.abs();
         let one = Tensor::fill(1, 1, T::one()).expand(m, n);
         let relu_x = (self + &abs_x) / two::<T>();
-        let loss_sum =
-            (relu_x - self.emul(target) + (&one + (-&abs_x).exp()).ln()).sum_all();
+        let loss_sum = (relu_x - self.emul(target) + (&one + (-&abs_x).exp()).ln()).sum_all();
         loss_sum / total
     }
 
@@ -377,7 +381,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// KL divergence: `sum(q * (log(q) - log_p))` (batchmean reduction).
     #[must_use]
     pub fn kl_div(&self, q: &Self) -> T {
-        let (m, n) = self.shape();
+        let (m, _n) = self.shape();
         let total = T::from_f64(m as f64);
         let sum = q.emul(&(q.ln() - self)).sum_all();
         sum / total

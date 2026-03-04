@@ -6,8 +6,8 @@ use crate::backend::Backend;
 use crate::backend::Cpu;
 use crate::scalar::Scalar;
 
-use super::{Tensor, assert_cpu_only};
 use super::variants::NdTensor;
+use super::{Tensor, assert_cpu_only};
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- Shape manipulation ----

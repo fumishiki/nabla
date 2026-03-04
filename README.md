@@ -82,7 +82,7 @@ nabla eager is **8.3–11.6× faster** than PyTorch eager, and **5.4–6.8× fas
 - **Kernel fusion via `fuse!`.** `a.sin().powf(2.0)` in PyTorch launches two kernels with an intermediate buffer. `fuse!` JIT-compiles a single kernel at compile time — no round-trip to GPU memory.
 - **CUDA Graph replay.** A training loop runs the same kernel sequence every iteration. nabla records it once and replays the recording — ~1 µs total scheduling cost instead of hundreds of µs.
 - **Fused loss and optimizer kernels.** `k_mse_sum_fwd` folds `sub → square → sum` into one kernel. `k_multi_axpy3` updates all parameters in a single vectorized pass.
-- **No CPU fallback.** In nabla, GPU builds never silently run on CPU. CPU-only APIs (e.g., `Tensor::map`, `map!`) error on GPU instead of doing a D2H round-trip.
+- **No CPU fallback.** In nabla, GPU builds never silently run on CPU. CPU-only APIs (e.g., `Tensor::map`, reshape/concat/index/sort/topk/argsort, `TensorView::get`, `map!`) error on GPU instead of doing a D2H round-trip.
 
 Reproduce locally: `cd benchmarks && bash run.sh`
 

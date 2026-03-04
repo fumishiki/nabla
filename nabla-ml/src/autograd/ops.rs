@@ -1,3 +1,4 @@
+#[cfg(any(feature = "cuda", feature = "hip", feature = "gpu"))]
 use std::any::TypeId;
 use std::collections::HashSet;
 use std::marker::PhantomData;
@@ -47,8 +48,8 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let lr = self.input_refs();
         let entry = TapeEntry::new(
             move |g| {
-                let g_val = g.get(0, 0) / n;
-                Self::prop(&lr, &Tensor::fill(nrows, ncols, g_val));
+                let scaled = g * (T::one_impl() / n);
+                Self::prop(&lr, &scaled.expand(nrows, ncols));
             },
             deps,
             "mean",
@@ -136,9 +137,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
             move |g| {
                 let sm = logits_data.softmax(1);
                 let inv_batch = T::from_f64(1.0 / batch as f64);
-                let g_val = g.get(0, 0);
+                let scale = g * inv_batch;
+                let scale_exp = scale.expand(batch, n);
                 // dL/d(logits) = (softmax - targets) / batch * upstream_grad
-                let delta = &(&sm - &tgt) * (g_val * inv_batch);
+                let delta = (&sm - &tgt).emul(&scale_exp);
                 Self::prop(&lr, &delta);
             },
             deps,
@@ -159,8 +161,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let lr = self.input_refs();
         let entry = TapeEntry::new(
             move |g| {
-                let g_val = g.get(0, 0);
-                Self::prop(&lr, &Tensor::fill(nrows, ncols, g_val));
+                Self::prop(&lr, &g.expand(nrows, ncols));
             },
             deps,
             "sum",
@@ -380,8 +381,9 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let two_over_n = T::from_f64(2.0) / count;
         let entry = TapeEntry::new(
             move |g| {
-                let g_val = g.get(0, 0);
-                let delta = &diff * (g_val * two_over_n);
+                let scale = g * two_over_n;
+                let scale_exp = scale.expand(m, n);
+                let delta = diff.emul(&scale_exp);
                 Self::prop(&lr, &delta);
                 Self::prop(&rr, &(-&delta));
             },
@@ -431,9 +433,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let inv_n = T::one_impl() / count;
         let entry = TapeEntry::new(
             move |g| {
-                let g_val = g.get(0, 0);
                 let sign = diff.sign();
-                let delta = &sign * (g_val * inv_n);
+                let scale = g * inv_n;
+                let scale_exp = scale.expand(m, n);
+                let delta = sign.emul(&scale_exp);
                 Self::prop(&lr, &delta);
                 Self::prop(&rr, &(-&delta));
             },
@@ -467,12 +470,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let inv_n = T::one_impl() / count;
         let entry = TapeEntry::new(
             move |g| {
-                let g_val = g.get(0, 0);
                 let abs = diff.abs();
                 let delta_t = Tensor::fill(1, 1, delta).expand(m, n);
                 let min_abs = (&abs + &delta_t - (&abs - &delta_t).abs()) / two;
                 let grad_base = diff.sign().emul(&min_abs);
-                let grad_diff = &grad_base * (g_val * inv_n);
+                let scale = g * inv_n;
+                let scale_exp = scale.expand(m, n);
+                let grad_diff = grad_base.emul(&scale_exp);
                 Self::prop(&lr, &grad_diff);
                 Self::prop(&rr, &(-&grad_diff));
             },
@@ -506,13 +510,14 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let inv_n = T::one_impl() / count;
         let entry = TapeEntry::new(
             move |g| {
-                let g_val = g.get(0, 0);
                 let abs = diff.abs();
                 let beta_t = Tensor::fill(1, 1, beta).expand(m, n);
                 let min_abs = (&abs + &beta_t - (&abs - &beta_t).abs()) / two;
                 let grad_base = diff.sign().emul(&min_abs);
                 let grad_base = &grad_base * (T::one_impl() / beta);
-                let grad_diff = &grad_base * (g_val * inv_n);
+                let scale = g * inv_n;
+                let scale_exp = scale.expand(m, n);
+                let grad_diff = grad_base.emul(&scale_exp);
                 Self::prop(&lr, &grad_diff);
                 Self::prop(&rr, &(-&grad_diff));
             },
@@ -544,14 +549,15 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let tgt_data = Rc::clone(&target.data);
         let entry = TapeEntry::new(
             move |g| {
-                let g_val = g.get(0, 0);
                 let inv_n = T::one_impl() / count;
                 let one_minus_t = &one_saved - &*tgt_data;
                 let one_minus_p = &one_saved - &p_saved;
                 let grad_pred = -(tgt_data.ediv(&p_saved)) + one_minus_t.ediv(&one_minus_p);
-                let grad_pred = &grad_pred * (g_val * inv_n);
+                let scale = g * inv_n;
+                let scale_exp = scale.expand(m, n);
+                let grad_pred = grad_pred.emul(&scale_exp);
                 let grad_tgt = -(p_saved.ln()) + one_minus_p.ln();
-                let grad_tgt = &grad_tgt * (g_val * inv_n);
+                let grad_tgt = grad_tgt.emul(&scale_exp);
                 Self::prop(&lr, &grad_pred);
                 Self::prop(&rr, &grad_tgt);
             },
@@ -576,8 +582,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let abs_x = x.abs();
         let sum_x = x + &abs_x;
         let relu_x = &sum_x * half;
-        let loss_sum =
-            (relu_x - x.emul(y) + (&one_t + (-&abs_x).exp()).ln()).sum_all();
+        let loss_sum = (relu_x - x.emul(y) + (&one_t + (-&abs_x).exp()).ln()).sum_all();
         let out = Tensor::fill(1, 1, loss_sum / count);
         let deps = Self::deps_of(&[self.entry_idx, target.entry_idx]);
         let (lr, rr) = (self.input_refs(), target.input_refs());
@@ -586,12 +591,13 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let one_saved = one_t;
         let entry = TapeEntry::new(
             move |g| {
-                let g_val = g.get(0, 0);
                 let inv_n = T::one_impl() / count;
                 let neg_x = -&*x_saved;
                 let sig = one_saved.ediv(&(&one_saved + neg_x.exp()));
-                let grad_pred = &(&sig - &*y_saved) * (g_val * inv_n);
-                let grad_tgt = &(-&*x_saved) * (g_val * inv_n);
+                let scale = g * inv_n;
+                let scale_exp = scale.expand(m, n);
+                let grad_pred = (&sig - &*y_saved).emul(&scale_exp);
+                let grad_tgt = (-&*x_saved).emul(&scale_exp);
                 Self::prop(&lr, &grad_pred);
                 Self::prop(&rr, &grad_tgt);
             },
@@ -626,9 +632,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let one_hot_saved = one_hot.clone();
         let entry = TapeEntry::new(
             move |g| {
-                let g_val: T = g.get(0, 0);
                 let inv_batch = T::from_f64(1.0 / batch as f64);
-                let grad = &one_hot_saved * (-g_val * inv_batch);
+                let scale = g * (-inv_batch);
+                let scale_exp = scale.expand(batch, classes);
+                let grad = one_hot_saved.emul(&scale_exp);
                 Self::prop(&lr, &grad);
             },
             deps,
@@ -658,7 +665,11 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
             let v = cos_sim - margin;
             let two = T::from_f64(2.0);
             let loss = (v + v.math_abs()) / two;
-            let gate = if v.to_f64() > 0.0 { T::one_impl() } else { T::zero() };
+            let gate = if v.to_f64() > 0.0 {
+                T::one_impl()
+            } else {
+                T::zero()
+            };
             (loss, gate)
         };
         let out = Tensor::fill(1, 1, loss);
@@ -669,7 +680,6 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let x2 = Rc::clone(&other.data);
         let entry = TapeEntry::new(
             move |g| {
-                let g_val: T = g.get(0, 0);
                 let x1_ref = &*x1;
                 let x2_ref = &*x2;
                 let dot = x1_ref.emul(x2_ref).sum_all();
@@ -683,8 +693,10 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
                 let coeff_x2 = T::one_impl() / denom;
                 let coeff_x1 = dot * n2_safe / (n1_safe * denom_sq);
                 let coeff_y1 = dot * n1_safe / (n2_safe * denom_sq);
-                let grad_x1 = &(x2_ref * coeff_x2 - x1_ref * coeff_x1) * (g_val * gate);
-                let grad_x2 = &(x1_ref * coeff_x2 - x2_ref * coeff_y1) * (g_val * gate);
+                let scale = g * gate;
+                let scale_exp = scale.expand(x1_ref.nrows(), x1_ref.ncols());
+                let grad_x1 = (x2_ref * coeff_x2 - x1_ref * coeff_x1).emul(&scale_exp);
+                let grad_x2 = (x1_ref * coeff_x2 - x2_ref * coeff_y1).emul(&scale_exp);
                 Self::prop(&lr, &grad_x1);
                 Self::prop(&rr, &grad_x2);
             },
@@ -902,21 +914,17 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     /// backward: scatter-add grad rows back into embedding gradient.
     #[must_use]
     pub fn embedding_lookup(&self, indices: &[usize]) -> Self {
-        let embed_dim = self.data.ncols();
-        let idx_data: Vec<T> = indices
-            .iter()
-            .map(|&i| T::from_f64(i as f64))
-            .collect();
+        let _embed_dim = self.data.ncols();
+        let idx_data: Vec<T> = indices.iter().map(|&i| T::from_f64(i as f64)).collect();
         let idx_tensor = Tensor::from_vec(idx_data, indices.len(), 1);
         let out = Tensor::embedding(&idx_tensor, &self.data);
         let deps = Self::deps_of(&[self.entry_idx]);
         let lr = self.input_refs();
-        let (vocab, dim) = self.data.shape();
+        let (vocab, _dim) = self.data.shape();
         let idx_saved = idx_tensor.clone();
         let entry = TapeEntry::new(
             move |g| {
-                let grad_storage =
-                    B::embedding_backward(idx_saved.storage(), g.storage(), vocab);
+                let grad_storage = B::embedding_backward(idx_saved.storage(), g.storage(), vocab);
                 let grad_w = Tensor::from_storage(grad_storage);
                 Self::prop(&lr, &grad_w);
             },

@@ -42,8 +42,7 @@ pub fn cuda_launch_kernel_src(
             // SAFETY: loading compiled PTX as a CUDA module.
             let module = unsafe { result::module::load_data(c_ptx.as_ptr().cast::<c_void>()) }
                 .or_panic("CUDA module load");
-            let c_fn = CString::new(kernel_name)
-                .unwrap_or_else(|_| panic!("null in kernel name"));
+            let c_fn = CString::new(kernel_name).unwrap_or_else(|_| panic!("null in kernel name"));
             // SAFETY: getting function handle from loaded module.
             let func =
                 unsafe { result::module::get_function(module, c_fn) }.or_panic("CUDA get_function");
