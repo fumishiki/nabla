@@ -82,7 +82,7 @@ nabla eager is **8.3–11.6× faster** than PyTorch eager, and **5.4–6.8× fas
 - **Kernel fusion via `fuse!`.** `a.sin().powf(2.0)` in PyTorch launches two kernels with an intermediate buffer. `fuse!` JIT-compiles a single kernel at compile time — no round-trip to GPU memory.
 - **CUDA Graph replay.** A training loop runs the same kernel sequence every iteration. nabla records it once and replays the recording — ~1 µs total scheduling cost instead of hundreds of µs.
 - **Fused loss and optimizer kernels.** `k_mse_sum_fwd` folds `sub → square → sum` into one kernel. `k_multi_axpy3` updates all parameters in a single vectorized pass.
-- **No CPU fallback.** In nabla, every op either has a GPU implementation or the code does not compile. No silent "oops, that ran on CPU" round-trips.
+- **No CPU fallback.** In nabla, GPU builds never silently run on CPU. CPU-only APIs (e.g., `Tensor::map`, `map!`) error on GPU instead of doing a D2H round-trip.
 
 Reproduce locally: `cd benchmarks && bash run.sh`
 
@@ -90,7 +90,7 @@ Reproduce locally: `cd benchmarks && bash run.sh`
 
 ## Tensor Library
 
-nabla provides tensors that run on CPU or GPU with no code changes — the backend is a compile-time feature flag, so there is no `model.to("cuda")` and no accidental CPU fallback. 190+ operations including:
+nabla provides tensors that run on CPU or GPU with no code changes — the backend is a compile-time feature flag, so there is no `model.to("cuda")` and no accidental CPU fallback. CPU-only APIs fail fast on GPU. 190+ operations including:
 
 ```rust
 use nabla::prelude::*;
@@ -421,7 +421,7 @@ nabla run ./model.Q4_K_M.gguf --prompt "Explain nabla in one sentence" --stream
 
 ## Installation
 
-Pick exactly one backend. No CUDA SDK or Vulkan SDK is required — GPU libraries are loaded dynamically at runtime via `libloading`.
+Pick exactly one backend. CUDA builds do not require `nvcc` at build time, but the CUDA runtime + NVRTC (and CUDA headers for NVRTC) must be available at runtime; GPU libraries are loaded dynamically via `libloading`.
 
 ```toml
 [dependencies]

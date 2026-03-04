@@ -239,12 +239,15 @@ mod cuda_fp16 {
         let _ = a.norm();
         let _ = a.count_nonzero();
 
-        let drop = a.dropout(0.25, false, 123);
-        let up_near = make::<T>(1, 4).interpolate_nearest(2, 2, 4, 4);
-        let up_bi = make::<T>(1, 4).interpolate_bilinear(2, 2, 4, 4);
-        assert_shape(&drop, (2, 3));
-        assert_shape(&up_near, (1, 16));
-        assert_shape(&up_bi, (1, 16));
+        #[cfg(feature = "cpu")]
+        {
+            let drop = a.dropout(0.25, false, 123);
+            let up_near = make::<T>(1, 4).interpolate_nearest(2, 2, 4, 4);
+            let up_bi = make::<T>(1, 4).interpolate_bilinear(2, 2, 4, 4);
+            assert_shape(&drop, (2, 3));
+            assert_shape(&up_near, (1, 16));
+            assert_shape(&up_bi, (1, 16));
+        }
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use std::any::TypeId;
+
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 use crate::tensor::{Tensor, two};
@@ -154,6 +156,24 @@ impl Conv3dConfig {
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- Convolution ----
+    #[inline]
+    fn assert_bias_cpu(op: &str) {
+        #[cfg(feature = "cuda")]
+        assert!(
+            TypeId::of::<B>() != TypeId::of::<crate::backend::Cuda>(),
+            "nabla: {op} bias is CPU-only on CUDA; GPU path needs a dedicated bias kernel"
+        );
+        #[cfg(feature = "hip")]
+        assert!(
+            TypeId::of::<B>() != TypeId::of::<crate::backend::Hip>(),
+            "nabla: {op} bias is CPU-only on HIP; GPU path needs a dedicated bias kernel"
+        );
+        #[cfg(feature = "gpu")]
+        assert!(
+            TypeId::of::<B>() != TypeId::of::<crate::backend::Gpu>(),
+            "nabla: {op} bias is CPU-only on WGPU; GPU path needs a dedicated bias kernel"
+        );
+    }
 
     /// im2col: unfold input patches for convolution.
     #[allow(dead_code)]
@@ -225,6 +245,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             groups,
         ));
         if let Some(bi) = bias {
+            Self::assert_bias_cpu("conv2d");
             let out_h = (h + 2 * padding.0 - dilation.0 * (kh - 1) - 1) / stride.0 + 1;
             let out_w = (w + 2 * padding.1 - dilation.1 * (kw - 1) - 1) / stride.1 + 1;
             let out_spatial = out_h * out_w;
@@ -269,6 +290,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             groups,
         ));
         if let Some(bi) = bias {
+            Self::assert_bias_cpu("conv1d");
             let out_len = (length + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1;
             let bias_exp = B::from_fn(n_batch * c_out, out_len, |row, _col| {
                 B::get(&bi.storage, 0, row % c_out)
@@ -376,6 +398,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             output_padding,
         ));
         if let Some(bi) = bias {
+            Self::assert_bias_cpu("conv_transpose2d");
             let bias_exp = B::from_fn(n_batch * c_out, out_h * out_w, |row, _col| {
                 B::get(&bi.storage, 0, row % c_out)
             });
@@ -386,7 +409,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-#[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// 3-D convolution.
     #[must_use]
@@ -432,6 +454,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             groups,
         ));
         if let Some(bi) = bias {
+            Self::assert_bias_cpu("conv3d");
             let bias_exp = B::from_fn(n_batch * c_out, out_spatial, |row, _col| {
                 B::get(&bi.storage, 0, row % c_out)
             });

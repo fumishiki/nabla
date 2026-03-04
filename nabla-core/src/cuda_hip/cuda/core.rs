@@ -233,6 +233,28 @@ impl CuBuffer {
         })
     }
 
+    pub(super) fn from_host_u32(stream: &Arc<CudaStream>, data: &[u32]) -> CudaResult<Self> {
+        let bytes = std::mem::size_of_val(data);
+        if bytes == 0 {
+            return Ok(Self {
+                ptr: 0,
+                size: 0,
+                alloc_size: 0,
+                pooled: false,
+            });
+        }
+        let pooled = !super::cuda_graph_is_capturing();
+        let (dptr, alloc_size) = Self::alloc_from_pool(stream, bytes)?;
+        // SAFETY: u32 is POD; uploading raw bytes to GPU.
+        unsafe { result::memcpy_htod_async(dptr, data, stream.cu_stream())? };
+        Ok(Self {
+            ptr: dptr,
+            size: bytes,
+            alloc_size,
+            pooled,
+        })
+    }
+
     pub(super) fn copy_to_host<T: Scalar>(
         &self,
         stream: &Arc<CudaStream>,
@@ -574,4 +596,9 @@ pub(super) fn get_ctx() -> &'static CudaCtx {
         }
         cuda_ctx
     })
+}
+
+pub fn cuda_upload_u32(data: &[u32]) -> CuBuffer {
+    let ctx = get_ctx();
+    CuBuffer::from_host_u32(&ctx.stream, data).or_panic("CUDA upload u32")
 }

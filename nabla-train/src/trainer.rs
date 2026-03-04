@@ -291,18 +291,23 @@ impl<T: Scalar, B: Backend, M: Module<T, B>, O: Optimizer<T, B>> Trainer<T, B, M
                 self.state.step += 1;
                 steps_done += 1;
 
-                let loss_val = out.loss.data().get(0, 0).to_f64();
-                if self.metrics_scope.track_train() {
-                    if let Some(stats) = &mut self.metrics {
-                        stats.update(loss_val);
+                let need_loss = self.metrics_scope.track_train() || !self.hooks.is_empty();
+                if need_loss {
+                    let loss_val = out.loss.data().get(0, 0).to_f64();
+                    if self.metrics_scope.track_train() {
+                        if let Some(stats) = &mut self.metrics {
+                            stats.update(loss_val);
+                        }
                     }
-                }
-                if self.fire_hooks(TrainEvent::Step {
-                    epoch: self.state.epoch,
-                    step: self.state.step,
-                    loss: loss_val,
-                }) {
-                    break;
+                    if !self.hooks.is_empty()
+                        && self.fire_hooks(TrainEvent::Step {
+                            epoch: self.state.epoch,
+                            step: self.state.step,
+                            loss: loss_val,
+                        })
+                    {
+                        break;
+                    }
                 }
                 if let Some(max) = max_steps {
                     if steps_done >= max {

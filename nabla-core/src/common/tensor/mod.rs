@@ -26,6 +26,7 @@ pub use variants::{DynTensor, Matrix};
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Bound, RangeBounds};
+use std::any::TypeId;
 
 use crate::backend::{Backend, DefaultBackend};
 use crate::scalar::Scalar;
@@ -309,6 +310,25 @@ pub(super) fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> (usiz
         Bound::Unbounded => len,
     };
     (start, end)
+}
+
+#[inline]
+pub(super) fn assert_cpu_only<B: Backend>(op: &str) {
+    #[cfg(feature = "cuda")]
+    assert!(
+        TypeId::of::<B>() != TypeId::of::<crate::backend::Cuda>(),
+        "nabla: {op} is CPU-only on CUDA; GPU fallback is forbidden"
+    );
+    #[cfg(feature = "hip")]
+    assert!(
+        TypeId::of::<B>() != TypeId::of::<crate::backend::Hip>(),
+        "nabla: {op} is CPU-only on HIP; GPU fallback is forbidden"
+    );
+    #[cfg(feature = "gpu")]
+    assert!(
+        TypeId::of::<B>() != TypeId::of::<crate::backend::Gpu>(),
+        "nabla: {op} is CPU-only on WGPU; GPU fallback is forbidden"
+    );
 }
 
 macro_rules! impl_tensor_math {

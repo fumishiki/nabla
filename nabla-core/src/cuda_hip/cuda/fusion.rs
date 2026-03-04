@@ -10,6 +10,70 @@ use crate::scalar::Scalar;
 
 use super::*;
 
+pub fn cuda_launch_kernel_src(
+    kernel_name: &str,
+    src: &str,
+    grid: (u32, u32, u32),
+    block: (u32, u32, u32),
+    shared_bytes: u32,
+    args: &mut [*mut c_void],
+) {
+    let ctx = get_ctx();
+    {
+        let map = ctx
+            .kernels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !map.contains_key(kernel_name) {
+            drop(map);
+            let (major, minor) = query_compute_capability();
+            let arch: &'static str = nvrtc_arch(major, minor);
+            let ptx = nvrtc::compile_ptx_with_opts(
+                src,
+                nvrtc::CompileOptions {
+                    arch: Some(arch),
+                    include_paths: nvrtc_include_paths(),
+                    ..Default::default()
+                },
+            )
+            .or_panic("NVRTC custom compile failed");
+            let ptx_src = ptx.to_src();
+            let c_ptx = CString::new(ptx_src).unwrap_or_else(|_| panic!("null in PTX"));
+            // SAFETY: loading compiled PTX as a CUDA module.
+            let module = unsafe { result::module::load_data(c_ptx.as_ptr().cast::<c_void>()) }
+                .or_panic("CUDA module load");
+            let c_fn = CString::new(kernel_name)
+                .unwrap_or_else(|_| panic!("null in kernel name"));
+            // SAFETY: getting function handle from loaded module.
+            let func =
+                unsafe { result::module::get_function(module, c_fn) }.or_panic("CUDA get_function");
+            let mut map = ctx
+                .kernels
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.insert(
+                kernel_name.to_string(),
+                KernelEntry {
+                    func,
+                    _module: module,
+                },
+            );
+        }
+    }
+    let func = expect_ok(get_kernel(ctx, kernel_name), "CUDA kernel lookup");
+    unsafe {
+        result::launch_kernel(
+            func,
+            grid,
+            block,
+            shared_bytes,
+            ctx.stream.cu_stream(),
+            args,
+        )
+        .or_panic("CUDA launch {kernel_name}");
+    }
+}
+
 pub(super) fn cuda_fuse_launch<T: Scalar>(
     inputs: &[*const u8],
     nrows: usize,

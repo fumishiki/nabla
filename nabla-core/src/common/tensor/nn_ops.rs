@@ -9,21 +9,18 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn relu(&self) -> Self {
         let two = two::<T>();
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| {
-            let x = self.get(r, c);
-            (x + x.math_abs()) / two
-        })
+        let abs = self.abs();
+        (self + &abs) / two
     }
 
     /// Element-wise sigmoid: `1 / (1 + exp(-x))`.
     #[must_use]
     pub fn sigmoid(&self) -> Self {
         let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| {
-            let x = self.get(r, c);
-            T::one() / (T::one() + (T::zero() - x).math_exp())
-        })
+        let ones = Tensor::<T, B>::fill(1, 1, T::one()).expand(m, n);
+        let neg = -self;
+        let denom = &ones + &neg.exp();
+        ones.ediv(&denom)
     }
 
     /// Element-wise GELU (tanh approximation):
@@ -34,11 +31,14 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let k = T::from_f64(0.797_884_560_8); // sqrt(2/pi)
         let c = T::from_f64(0.044_715);
         let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, col| {
-            let x = self.get(r, col);
-            let inner = k * (x + c * x * x * x);
-            half * x * (T::one() + inner.math_tanh())
-        })
+        let ones = Tensor::<T, B>::fill(1, 1, T::one()).expand(m, n);
+        let x3 = self.emul(self).emul(self);
+        let x3c = &x3 * c;
+        let inner_sum = self + &x3c;
+        let inner = &inner_sum * k;
+        let tanh_inner = inner.tanh();
+        let out = self.emul(&(&tanh_inner + &ones));
+        &out * half
     }
 
     /// Element-wise SiLU (Swish): `x * sigmoid(x)`.
@@ -124,21 +124,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         if !Self::axis_is_rows(axis, "log_softmax") {
             return self.t().log_softmax(1).t();
         }
-        let (m, n) = self.shape();
-        let two = two::<T>();
-        Self::from_fn(m, n, |r, c| {
-            let row_max = (0..n).fold(self.get(r, 0), |acc, j| {
-                let v = self.get(r, j);
-                (acc + v + (acc - v).math_abs()) / two
-            });
-            let log_sum_exp = {
-                let s: T = (0..n)
-                    .map(|j| (self.get(r, j) - row_max).math_exp())
-                    .fold(T::zero(), |a, b| a + b);
-                row_max + s.math_ln()
-            };
-            self.get(r, c) - log_sum_exp
-        })
+        self.softmax(1).ln()
     }
 
     // ---- Normalization ----
@@ -146,47 +132,22 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Layer normalization along `axis`: `(x - mean) / (std + eps)`.
     #[must_use]
     pub fn layer_norm(&self, axis: usize, eps: T) -> Self {
-        let mean = self.mean_axis(axis);
-        let std = self.std_axis(axis);
-        let (sr, sc) = std.shape();
-        let inv_std = Self::from_fn(sr, sc, |r, c| T::one() / (std.get(r, c) + eps));
-        let neg_mean = -&mean;
-        if Self::axis_is_rows(axis, "layer_norm") {
-            let centered = self.broadcast_add_cols(&neg_mean);
-            centered.broadcast_mul_cols(&inv_std)
-        } else {
-            let centered = self.broadcast_add_rows(&neg_mean);
-            centered.broadcast_mul_rows(&inv_std)
+        if !Self::axis_is_rows(axis, "layer_norm") {
+            return self.t().layer_norm(1, eps).t();
         }
+        let (_, n) = self.shape();
+        let gamma = Tensor::<T, B>::fill(1, n, T::one_impl());
+        let beta = Tensor::<T, B>::fill(1, n, T::zero());
+        Self::from_storage(B::layer_norm(&self.storage, &gamma.storage, &beta.storage, eps))
     }
 
     /// RMS normalization along `axis`: `x / rms(x) * weight`.
     #[must_use]
     pub fn rms_norm(&self, axis: usize, weight: &Self, eps: T) -> Self {
-        let (m, n) = self.shape();
-        if Self::axis_is_rows(axis, "rms_norm") {
-            let rms = Self::from_fn(m, 1, |r, _| {
-                let sq_sum = (0..n).fold(T::zero(), |acc, c| {
-                    let v = self.get(r, c);
-                    acc + v * v
-                });
-                (sq_sum / T::from_f64(n as f64) + eps).math_sqrt()
-            });
-            let normed =
-                self.broadcast_mul_cols(&Self::from_fn(m, 1, |r, c| T::one() / rms.get(r, c)));
-            normed.broadcast_mul_rows(weight)
-        } else {
-            let rms = Self::from_fn(1, n, |_, c| {
-                let sq_sum = (0..m).fold(T::zero(), |acc, r| {
-                    let v = self.get(r, c);
-                    acc + v * v
-                });
-                (sq_sum / T::from_f64(m as f64) + eps).math_sqrt()
-            });
-            let normed =
-                self.broadcast_mul_rows(&Self::from_fn(1, n, |r, c| T::one() / rms.get(r, c)));
-            normed.broadcast_mul_cols(weight)
+        if !Self::axis_is_rows(axis, "rms_norm") {
+            return self.t().rms_norm(1, &weight.t(), eps).t();
         }
+        Self::from_storage(B::rms_norm(&self.storage, &weight.storage, eps))
     }
 
     /// Batch normalization: `(x - mean) / sqrt(var + eps) * weight + bias`.
@@ -199,15 +160,18 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         bias: &Self,
         eps: T,
     ) -> Self {
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| {
-            let x = self.get(r, c);
-            let mu = running_mean.get(0, c);
-            let var = running_var.get(0, c);
-            let w = weight.get(0, c);
-            let b = bias.get(0, c);
-            (x - mu) / (var + eps).math_sqrt() * w + b
-        })
+        let mut rm = running_mean.clone();
+        let mut rv = running_var.clone();
+        Self::from_storage(B::batch_norm_train(
+            &self.storage,
+            &weight.storage,
+            &bias.storage,
+            &mut rm.storage,
+            &mut rv.storage,
+            eps,
+            T::from_f64(0.0),
+            false,
+        ))
     }
 
     /// Batch normalization with running statistics update (training mode).
@@ -325,13 +289,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             targets.nrows(),
             targets.ncols()
         );
-        let sum: T = (0..batch)
-            .map(|r| {
-                (0..n)
-                    .map(|c| targets.get(r, c) * self.get(r, c))
-                    .fold(T::zero(), |a, b| a + b)
-            })
-            .fold(T::zero(), |a, b| a + b);
+        let sum = targets.emul(self).sum_all();
         -(sum / T::from_f64(batch as f64))
     }
 
@@ -365,13 +323,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn mse_loss(&self, target: &Self) -> T {
         let (m, n) = self.shape();
         let total = T::from_f64((m * n) as f64);
-        let sum = (0..m).fold(T::zero(), |acc, r| {
-            (0..n).fold(acc, |acc2, c| {
-                let d = self.get(r, c) - target.get(r, c);
-                acc2 + d * d
-            })
-        });
-        sum / total
+        let diff = self - target;
+        diff.emul(&diff).sum_all() / total
     }
 
     /// L1 loss: `mean(|pred - target|)`.
@@ -379,12 +332,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn l1_loss(&self, target: &Self) -> T {
         let (m, n) = self.shape();
         let total = T::from_f64((m * n) as f64);
-        let sum = (0..m).fold(T::zero(), |acc, r| {
-            (0..n).fold(acc, |acc2, c| {
-                acc2 + (self.get(r, c) - target.get(r, c)).math_abs()
-            })
-        });
-        sum / total
+        let diff = self - target;
+        diff.abs().sum_all() / total
     }
 
     /// Smooth L1 (Huber) loss with transition point `beta`.
@@ -394,14 +343,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let total = T::from_f64((m * n) as f64);
         let half = T::from_f64(0.5);
         let two = two::<T>();
-        let sum = (0..m).fold(T::zero(), |acc, r| {
-            (0..n).fold(acc, |acc2, c| {
-                let d = (self.get(r, c) - target.get(r, c)).math_abs();
-                let pick = (d + beta - (d - beta).math_abs()) / two;
-                acc2 + half * pick * pick / beta + (d - pick)
-            })
-        });
-        sum / total
+        let diff = self - target;
+        let abs = diff.abs();
+        let beta_t = Tensor::fill(1, 1, beta).expand(m, n);
+        let pick = (&abs + &beta_t - (&abs - &beta_t).abs()) / two;
+        let quad = pick.emul(&pick) * (half / beta);
+        let lin = &abs - &pick;
+        (quad + lin).sum_all() / total
     }
 
     /// Binary cross-entropy with logits: `-[y * log(sigma(x)) + (1-y) * log(1-sigma(x))]`.
@@ -409,27 +357,21 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn bce_with_logits(&self, target: &Self) -> T {
         let (m, n) = self.shape();
         let total = T::from_f64((m * n) as f64);
-        let sum = (0..m).fold(T::zero(), |acc, r| {
-            (0..n).fold(acc, |acc2, c| {
-                let x = self.get(r, c);
-                let y = target.get(r, c);
-                let abs_x = x.math_abs();
-                let relu_x = (x + abs_x) / two::<T>();
-                acc2 + relu_x - x * y + (T::one() + (T::zero() - abs_x).math_exp()).math_ln()
-            })
-        });
-        sum / total
+        let abs_x = self.abs();
+        let one = Tensor::fill(1, 1, T::one()).expand(m, n);
+        let relu_x = (self + &abs_x) / two::<T>();
+        let loss_sum =
+            (relu_x - self.emul(target) + (&one + (-&abs_x).exp()).ln()).sum_all();
+        loss_sum / total
     }
 
     /// Negative log-likelihood loss.
     #[must_use]
     pub fn nll_loss(&self, targets: &Self) -> T {
         let m = self.nrows();
-        let sum = (0..m).fold(T::zero(), |acc, r| {
-            let cls = targets.get(r, 0).to_f64() as usize;
-            acc - self.get(r, cls)
-        });
-        sum / T::from_f64(m as f64)
+        let one_hot = Tensor::from_storage(B::one_hot_from_indices(&targets.storage, self.ncols()));
+        let picked = self.emul(&one_hot).sum_axis(1);
+        (-&picked).sum_all() / T::from_f64(m as f64)
     }
 
     /// KL divergence: `sum(q * (log(q) - log_p))` (batchmean reduction).
@@ -437,23 +379,15 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn kl_div(&self, q: &Self) -> T {
         let (m, n) = self.shape();
         let total = T::from_f64(m as f64);
-        let sum = (0..m).fold(T::zero(), |acc, r| {
-            (0..n).fold(acc, |acc2, c| {
-                let qv = q.get(r, c);
-                let log_p = self.get(r, c);
-                acc2 + qv * (qv.math_ln() - log_p)
-            })
-        });
+        let sum = q.emul(&(q.ln() - self)).sum_all();
         sum / total
     }
 
     /// Cosine embedding loss for pairs `(x1, x2)` with label `y` in {1, -1}.
     #[must_use]
     pub fn cosine_embedding_loss(x1: &Self, x2: &Self, y: T, margin: T) -> T {
-        let (m, n) = x1.shape();
-        let dot = (0..m).fold(T::zero(), |acc, r| {
-            (0..n).fold(acc, |a, c| a + x1.get(r, c) * x2.get(r, c))
-        });
+        let (_m, _n) = x1.shape();
+        let dot = x1.emul(x2).sum_all();
         let n1 = x1.norm();
         let n2 = x2.norm();
         let eps = T::from_f64(1e-8);

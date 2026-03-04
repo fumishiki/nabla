@@ -244,14 +244,11 @@ pub(super) fn cuda_batch_norm_train<T: Scalar>(
         let mean_s = CudaStorage::new(1, c, mean_buf);
         let var_s = CudaStorage::new(1, c, var_buf);
         let one_minus = T::from_f64(1.0) - momentum;
-        for i in 0..c {
-            let m = cuda_get(&mean_s, 0, i);
-            let v = cuda_get(&var_s, 0, i);
-            let rm = cuda_get(running_mean, 0, i);
-            let rv = cuda_get(running_var, 0, i);
-            cuda_set(running_mean, 0, i, one_minus * rm + momentum * m);
-            cuda_set(running_var, 0, i, one_minus * rv + momentum * v);
-        }
+        let scale = one_minus - T::one_impl();
+        cuda_axpy_inplace(running_mean, scale, running_mean);
+        cuda_axpy_inplace(running_mean, momentum, &mean_s);
+        cuda_axpy_inplace(running_var, scale, running_var);
+        cuda_axpy_inplace(running_var, momentum, &var_s);
         unsafe {
             if type_suffix::<T>() == "f32" {
                 let eps_val = eps_f as f32;
@@ -378,7 +375,7 @@ pub(super) fn cuda_cross_entropy_fused<T: Scalar>(
         .or_panic("CUDA launch {name}");
     }
     let loss_s = CudaStorage::new(n, 1, loss_buf);
-    let total = (0..n).fold(T::zero(), |acc, i| acc + cuda_get(&loss_s, i, 0));
+    let total = cuda_sum_all(&loss_s);
     let mean = total / T::from_f64(n as f64);
     let out_buf =
         CuBuffer::alloc_async(&ctx.stream, sz).or_panic("CUDA alloc cross_entropy result");

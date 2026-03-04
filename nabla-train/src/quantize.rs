@@ -300,6 +300,10 @@ pub fn dequant_matmul<T: Scalar, B: Backend>(
 #[cfg(feature = "cuda")]
 mod cuda_dequant {
     use super::*;
+    use std::ffi::c_void;
+
+    use nabla_core::backend::Cuda;
+    use nabla_core::cuda_backend::{cuda_launch_kernel_src, cuda_upload_u32};
 
     /// CUDA INT4 dequant-matmul kernel source (NVRTC JIT).
     const DEQUANT_MATMUL_SRC: &str = r#"
@@ -329,17 +333,69 @@ extern "C" __global__ void dequant_matmul_f32(
     }
     output[row * N + col] = acc;
 }
-"#;
+    "#;
 
     /// Launch CUDA dequant-matmul kernel.
-    pub fn cuda_dequant_matmul<T: Scalar, B: Backend>(
-        input: &Tensor<T, B>,
-        qw: &QuantizedWeight<T, B>,
-    ) -> Tensor<T, B> {
-        // O(MNK) — for production use cuBLAS after full dequant
-        // Fallback to CPU reference path; actual CUDA launch requires cudarc context
-        let _ = DEQUANT_MATMUL_SRC;
-        dequant_matmul(input, qw)
+    pub fn cuda_dequant_matmul(
+        input: &Tensor<f32, Cuda>,
+        qw: &QuantizedWeight<f32, Cuda>,
+    ) -> Tensor<f32, Cuda> {
+        let (m, k) = input.shape();
+        let n = qw.out_features;
+        assert_eq!(k, qw.in_features, "cuda_dequant_matmul: K mismatch");
+        let num_groups = (k + qw.group_size - 1) / qw.group_size;
+        assert_eq!(
+            qw.scales.shape(),
+            (n, num_groups),
+            "cuda_dequant_matmul: scales shape mismatch"
+        );
+        assert_eq!(
+            qw.zeros.shape(),
+            (n, num_groups),
+            "cuda_dequant_matmul: zeros shape mismatch"
+        );
+
+        let packed_buf = cuda_upload_u32(&qw.packed);
+        let out = Tensor::<f32, Cuda>::empty(m, n);
+
+        let input_ptr = input.storage().buffer().as_ptr();
+        let packed_ptr = packed_buf.as_ptr();
+        let scales_ptr = qw.scales.storage().buffer().as_ptr();
+        let zeros_ptr = qw.zeros.storage().buffer().as_ptr();
+        let out_ptr = out.storage().buffer().as_ptr();
+        let m_i32 = m as i32;
+        let n_i32 = n as i32;
+        let k_i32 = k as i32;
+        let group_i32 = qw.group_size as i32;
+
+        let block_x = 16u32;
+        let block_y = 16u32;
+        let grid_x = ((n as u32) + block_x - 1) / block_x;
+        let grid_y = ((m as u32) + block_y - 1) / block_y;
+
+        let mut args: Vec<*mut c_void> = vec![
+            &input_ptr as *const _ as *mut c_void,
+            &packed_ptr as *const _ as *mut c_void,
+            &scales_ptr as *const _ as *mut c_void,
+            &zeros_ptr as *const _ as *mut c_void,
+            &out_ptr as *const _ as *mut c_void,
+            &m_i32 as *const _ as *mut c_void,
+            &n_i32 as *const _ as *mut c_void,
+            &k_i32 as *const _ as *mut c_void,
+            &group_i32 as *const _ as *mut c_void,
+        ];
+
+        let kernel_name = "k_dequant_matmul_f32";
+        cuda_launch_kernel_src(
+            kernel_name,
+            DEQUANT_MATMUL_SRC,
+            (grid_x, grid_y, 1),
+            (block_x, block_y, 1),
+            0,
+            &mut args,
+        );
+
+        out
     }
 }
 

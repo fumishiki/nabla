@@ -572,6 +572,13 @@ impl crate::backend::BackendCore for crate::backend::Cuda {
         CudaStorage::new_cached(nrows, ncols, buf, data)
     }
 
+    fn one_hot_from_indices<T: Scalar>(
+        indices: &CudaStorage<T>,
+        n_classes: usize,
+    ) -> CudaStorage<T> {
+        cuda_one_hot_from_indices(indices, n_classes)
+    }
+
     #[inline]
     fn to_vec_async<T: Scalar>(a: &CudaStorage<T>) -> Vec<T> {
         cuda_to_vec_async(a).or_panic("CUDA D2H async")
@@ -640,6 +647,17 @@ impl crate::backend::BackendReduce for crate::backend::Cuda {
         CudaStorage; sum_all=cuda_sum_all, max_all=cuda_max_all, min_all=cuda_min_all,
         argmax_all=cuda_argmax_all, argmin_all=cuda_argmin_all, axis_reduce=cuda_axis_reduce,
         cumsum_cumprod=cuda_cumsum_cumprod, prod_all=cuda_prod_all,
+    }
+
+    #[inline]
+    fn diag<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> {
+        cuda_diag(a)
+    }
+
+    #[inline]
+    fn trace<T: Scalar>(a: &CudaStorage<T>) -> T {
+        let d = cuda_diag(a);
+        cuda_sum_all(&d)
     }
 
     #[inline]
@@ -825,6 +843,15 @@ impl crate::backend::BackendNN for crate::backend::Cuda {
         max_pool2d_with_idx=cuda_max_pool2d_with_idx, avg_pool2d=cuda_avg_pool2d,
         adaptive_avg_pool2d=cuda_adaptive_avg_pool2d, conv2d=cuda_conv2d, conv1d=cuda_conv1d,
         conv3d=cuda_conv3d, conv_transpose2d=cuda_conv_transpose2d,
+    }
+
+    #[inline]
+    fn embedding_backward<T: Scalar>(
+        indices: &CudaStorage<T>,
+        grad: &CudaStorage<T>,
+        vocab: usize,
+    ) -> CudaStorage<T> {
+        cuda_embedding_backward(indices, grad, vocab)
     }
 }
 

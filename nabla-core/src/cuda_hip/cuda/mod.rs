@@ -19,7 +19,8 @@ pub(super) use reduce_pool_ops::*;
 pub(super) use training::*;
 
 pub use conv_ops::cuda_synchronize;
-pub use core::{CuBuffer, CudaError, CudaResult, Epilogue};
+pub use core::{CuBuffer, CudaError, CudaResult, CudaStorage, Epilogue, cuda_upload_u32};
+pub use fusion::cuda_launch_kernel_src;
 pub use graph_runtime::{
     CondCmp, ConditionalGraph, ConditionalKind, KernelNodeState, NablaCudaGraph, PyGraph,
     PyGraphTrainingGraph, cuda_conditional_set_from_scalar, cuda_copy_from_host,

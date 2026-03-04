@@ -3,7 +3,7 @@ use std::ffi::c_void;
 use cudarc::driver::result;
 use cudarc::driver::sys::CUdeviceptr;
 
-use crate::gpu_common::type_suffix;
+use crate::gpu_common::{grid_1d, type_suffix};
 use crate::kernels_cu::BLOCK_SIZE;
 use crate::scalar::Scalar;
 
@@ -497,4 +497,53 @@ pub(super) fn cuda_embedding<T: Scalar>(
         .or_panic("CUDA launch {name}");
     }
     CudaStorage::new(n_tokens, embed_dim, out_buf)
+}
+
+pub(super) fn cuda_embedding_backward<T: Scalar>(
+    indices: &CudaStorage<T>,
+    grad: &CudaStorage<T>,
+    vocab: usize,
+) -> CudaStorage<T> {
+    let tsuf = type_suffix::<T>();
+    let type_name = if tsuf == "f32" {
+        "float"
+    } else if tsuf == "f64" {
+        "double"
+    } else {
+        panic!("cuda_embedding_backward: only f32/f64 supported");
+    };
+    let kernel_name = format!("k_embedding_bwd_{tsuf}");
+    let src = format!(
+        "extern \"C\" __global__ void {kernel_name}(const {type_name}* indices, const {type_name}* grad, {type_name}* out, int n_tokens, int embed_dim) {{\n\
+            int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);\n\
+            int total = n_tokens * embed_dim;\n\
+            if (i >= total) return;\n\
+            int row = i / embed_dim;\n\
+            int col = i - row * embed_dim;\n\
+            int idx = (int)indices[row];\n\
+            atomicAdd(&out[idx * embed_dim + col], grad[i]);\n\
+        }}\n"
+    );
+    let n_tokens = indices.nrows * indices.ncols;
+    let embed_dim = grad.ncols;
+    let out = cuda_zeros(vocab, embed_dim);
+    let n_tokens_i32 = n_tokens as i32;
+    let embed_dim_i32 = embed_dim as i32;
+    let total = n_tokens * embed_dim;
+    let mut args: Vec<*mut c_void> = vec![
+        &indices.buf.ptr as *const CUdeviceptr as *mut c_void,
+        &grad.buf.ptr as *const CUdeviceptr as *mut c_void,
+        &out.buf.ptr as *const CUdeviceptr as *mut c_void,
+        &n_tokens_i32 as *const i32 as *mut c_void,
+        &embed_dim_i32 as *const i32 as *mut c_void,
+    ];
+    cuda_launch_kernel_src(
+        &kernel_name,
+        &src,
+        (grid_1d(total), 1, 1),
+        (BLOCK_SIZE, 1, 1),
+        0,
+        &mut args,
+    );
+    out
 }

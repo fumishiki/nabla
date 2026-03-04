@@ -1,7 +1,7 @@
 use crate::backend::Backend;
 use crate::scalar::Scalar;
 
-use super::{Tensor, two};
+use super::{Tensor, two, assert_cpu_only};
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     fn axis_len(&self, axis: usize, op: &str) -> usize {
@@ -76,14 +76,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let (m, n) = self.shape();
         let count = T::from_f64((m * n) as f64);
         let mu = self.mean();
-        let mut sq_sum = T::zero();
-        for r in 0..m {
-            for c in 0..n {
-                let diff = self.get(r, c) - mu;
-                sq_sum = sq_sum + diff * diff;
-            }
-        }
-        sq_sum / count
+        let mean = Tensor::fill(1, 1, mu).expand(m, n);
+        let diff = self - &mean;
+        diff.emul(&diff).sum_all() / count
     }
 
     /// Standard deviation of all elements (population std, ddof=0).
@@ -129,15 +124,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// L1 norm: sum of absolute values.
     #[must_use]
     pub fn l1_norm(&self) -> T {
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| self.get(r, c).math_abs()).sum_all()
+        self.abs().sum_all()
     }
 
     /// L-infinity norm: maximum absolute value.
     #[must_use]
     pub fn linf_norm(&self) -> T {
-        let (m, n) = self.shape();
-        Self::from_fn(m, n, |r, c| self.get(r, c).math_abs()).max_all()
+        self.abs().max_all()
     }
 
     /// Lp norm: `(sum |x_i|^p)^(1/p)`, or `max|x_i|` for p=inf.
@@ -176,26 +169,23 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Outer product: `u * v^T`. Self must be (n,1) or (1,n), other must be (m,1) or (1,m).
     #[must_use]
     pub fn outer(&self, other: &Self) -> Self {
-        let n = self.nrows() * self.ncols();
-        let m = other.nrows() * other.ncols();
-        Self::from_fn(n, m, |i, j| {
-            let a = if self.ncols() == 1 {
-                self.get(i, 0)
-            } else {
-                self.get(0, i)
-            };
-            let b = if other.ncols() == 1 {
-                other.get(j, 0)
-            } else {
-                other.get(0, j)
-            };
-            a * b
-        })
+        assert!(
+            self.nrows() == 1 || self.ncols() == 1,
+            "nabla: outer expects self to be a vector"
+        );
+        assert!(
+            other.nrows() == 1 || other.ncols() == 1,
+            "nabla: outer expects other to be a vector"
+        );
+        let a = if self.ncols() == 1 { self.clone() } else { self.t() };
+        let b = if other.nrows() == 1 { other.clone() } else { other.t() };
+        &a * &b
     }
 
     /// Kronecker product: `A (x) B`. Returns (m*p, n*q) tensor.
     #[must_use]
     pub fn kron(&self, other: &Self) -> Self {
+        assert_cpu_only::<B>("Tensor::kron");
         let (m, n) = self.shape();
         let (p, q) = other.shape();
         Self::from_fn(m * p, n * q, |i, j| {
@@ -245,15 +235,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Extract the diagonal as an `nx1` column vector, where `n = min(rows, cols)`.
     #[must_use]
     pub fn diag(&self) -> Self {
-        let n = self.nrows().min(self.ncols());
-        Self::from_fn(n, 1, |i, _| self.get(i, i))
+        Self::from_storage(B::diag(&self.storage))
     }
 
     /// Sum of diagonal elements.
     #[must_use]
     pub fn trace(&self) -> T {
-        let n = self.nrows().min(self.ncols());
-        (0..n).map(|i| self.get(i, i)).fold(T::zero(), |a, b| a + b)
+        B::trace(&self.storage)
     }
 
     /// Short alias for [`Tensor::trace`].
@@ -317,13 +305,23 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Maximum along axis: axis 0 -> 1xn (column-wise), axis 1 -> mx1 (row-wise).
     #[must_use]
     pub fn max_axis(&self, axis: usize) -> Self {
-        self.reduce_axis(axis, |a, b| if b.reduction_gt(a) { b } else { a })
+        match axis {
+            0 => {
+                let t = self.t();
+                let max_t = Self::from_storage(B::max_axis1(&t.storage));
+                max_t.t()
+            }
+            1 => Self::from_storage(B::max_axis1(&self.storage)),
+            _ => panic!("nabla: max_axis axis must be 0 or 1, got {axis}"),
+        }
     }
 
     /// Minimum along axis.
     #[must_use]
     pub fn min_axis(&self, axis: usize) -> Self {
-        self.reduce_axis(axis, |a, b| if a.reduction_gt(b) { b } else { a })
+        let neg = -self;
+        let max = neg.max_axis(axis);
+        -&max
     }
 
     /// Maximum along axis with keepdim semantics.
@@ -342,16 +340,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     pub fn var_axis(&self, axis: usize) -> Self {
         let mean = self.mean_axis(axis);
-        let (mr, mc) = mean.shape();
-        let sq = Self::from_fn(self.nrows(), self.ncols(), |r, c| {
-            let x = self.get(r, c);
-            x * x
-        });
-        let mean_sq = sq.mean_axis(axis);
-        Self::from_fn(mr, mc, |r, c| {
-            let m = mean.get(r, c);
-            mean_sq.get(r, c) - m * m
-        })
+        let mean_exp = mean.expand(self.nrows(), self.ncols());
+        let diff = self - &mean_exp;
+        diff.emul(&diff).mean_axis(axis)
     }
 
     /// Variance along axis with degrees-of-freedom correction.
@@ -366,34 +357,20 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             "nabla: var_axis_ddof requires axis length ({n}) > ddof ({ddof})"
         );
         let mean = self.mean_axis(axis);
-        let (mr, mc) = mean.shape();
-        // Compute sum of squared deviations, then divide by (n - ddof).
-        let sq_dev = match axis {
-            0 => Self::from_fn(mr, mc, |_, c| {
-                let mu = mean.get(0, c);
-                (0..self.nrows()).fold(T::zero(), |acc, r| {
-                    let d = self.get(r, c) - mu;
-                    acc + d * d
-                })
-            }),
-            _ => Self::from_fn(mr, mc, |r, _| {
-                let mu = mean.get(r, 0);
-                (0..self.ncols()).fold(T::zero(), |acc, c| {
-                    let d = self.get(r, c) - mu;
-                    acc + d * d
-                })
-            }),
-        };
+        let mean_exp = mean.expand(self.nrows(), self.ncols());
+        let diff = self - &mean_exp;
+        let sq = diff.emul(&diff);
+        let sum = sq.sum_axis(axis);
         #[allow(clippy::cast_precision_loss)]
         let inv_denom = T::from_f64(1.0 / (n - ddof) as f64);
-        &sq_dev * inv_denom
+        &sum * inv_denom
     }
 
     /// Population standard deviation along axis: `sqrt(var_axis)`.
     #[must_use]
     pub fn std_axis(&self, axis: usize) -> Self {
         let v = self.var_axis(axis);
-        Self::from_fn(v.nrows(), v.ncols(), |r, c| v.get(r, c).math_sqrt())
+        v.powf(T::from_f64(0.5))
     }
 
     /// Variance along axis with keepdim semantics.
@@ -411,6 +388,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Product along axis: axis 0 -> (1, ncols), axis 1 -> (nrows, 1).
     #[must_use]
     pub fn prod_axis(&self, axis: usize) -> Self {
+        assert_cpu_only::<B>("Tensor::prod_axis");
         self.reduce_axis(axis, |a, b| a * b)
     }
 
@@ -479,27 +457,19 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Lp-norm along axis.
     #[must_use]
     pub fn norm_axis(&self, p: T, axis: usize) -> Self {
-        let inv_p = T::from_f64(1.0 / p.to_f64());
-        match axis {
-            0 => Self::from_fn(1, self.ncols(), |_, c| {
-                let sum = (0..self.nrows()).fold(T::zero(), |acc, r| {
-                    acc + self.get(r, c).math_abs().math_powf(p)
-                });
-                sum.math_powf(inv_p)
-            }),
-            1 => Self::from_fn(self.nrows(), 1, |r, _| {
-                let sum = (0..self.ncols()).fold(T::zero(), |acc, c| {
-                    acc + self.get(r, c).math_abs().math_powf(p)
-                });
-                sum.math_powf(inv_p)
-            }),
-            _ => panic!("nabla: norm_axis axis must be 0 or 1, got {axis}"),
+        let p_f64 = p.to_f64();
+        if p_f64.is_infinite() && p_f64 > 0.0 {
+            return self.abs().max_axis(axis);
         }
+        let inv_p = T::from_f64(1.0 / p_f64);
+        let sum = self.abs().powf(p).sum_axis(axis);
+        sum.powf(inv_p)
     }
 
     /// Argmax along axis. Returns indices tensor.
     #[must_use]
     pub fn argmax_axis(&self, axis: usize) -> Self {
+        assert_cpu_only::<B>("Tensor::argmax_axis");
         let two = two::<T>();
         match axis {
             0 => Self::from_fn(1, self.ncols(), |_, c| {
@@ -544,6 +514,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Sum of all elements satisfying `pred`.
     #[must_use]
     pub fn filter_sum(&self, pred: impl Fn(T) -> bool) -> T {
+        assert_cpu_only::<B>("Tensor::filter_sum");
         let (m, n) = self.shape();
         let mut acc = T::zero();
         for r in 0..m {
@@ -560,6 +531,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Count of elements satisfying `pred`.
     #[must_use]
     pub fn count_where(&self, pred: impl Fn(T) -> bool) -> usize {
+        assert_cpu_only::<B>("Tensor::count_where");
         let (m, n) = self.shape();
         let mut count = 0usize;
         for r in 0..m {

@@ -28,6 +28,12 @@ macro_rules! out {
     };
 }
 
+#[cfg(not(feature = "cpu"))]
+fn main() {
+    println!("00_demo is CPU-only. Re-run with --features cpu.");
+}
+
+#[cfg(feature = "cpu")]
 fn main() {
     println!("\n{BOLD}  ∇ nabla{RESET} {DIM}— GPU math for Rust, no C++ required{RESET}\n");
     sleep(Duration::from_millis(500));

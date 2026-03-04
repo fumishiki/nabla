@@ -1,4 +1,3 @@
-#[cfg(feature = "cpu")]
 use rayon::prelude::*;
 
 use core::ops::Range;
@@ -8,12 +7,10 @@ use crate::scalar::Scalar;
 
 use super::{MatrixLike, Tensor};
 
-#[cfg(feature = "cpu")]
 struct XorShift64 {
     state: u64,
 }
 
-#[cfg(feature = "cpu")]
 impl XorShift64 {
     #[inline]
     fn new(seed: u64) -> Self {
@@ -182,7 +179,6 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-#[cfg(feature = "cpu")]
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Uniform random tensor in [0, 1). Uses xorshift64 seeded from `seed`.
     #[must_use]

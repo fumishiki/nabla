@@ -110,6 +110,18 @@ pub trait BackendCore: private::Sealed + Send + Sync + 'static {
         f: impl FnMut(usize, usize) -> T,
     ) -> Self::Storage<T>;
 
+    /// Build a one-hot matrix from class indices stored in a `(nrows x 1)` column.
+    fn one_hot_from_indices<T: Scalar>(
+        indices: &Self::Storage<T>,
+        n_classes: usize,
+    ) -> Self::Storage<T> {
+        let rows = Self::nrows(indices);
+        Self::from_fn(rows, n_classes, |r, c| {
+            let idx = Self::get(indices, r, 0).to_f64() as usize;
+            if c == idx { T::one() } else { T::zero() }
+        })
+    }
+
     /// Build storage from a pre-allocated row-major `Vec<T>` (zero-copy when possible).
     #[must_use]
     fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> Self::Storage<T> {
@@ -336,6 +348,18 @@ pub trait BackendReduce: BackendCore {
     fn argmax_all<T: Scalar>(a: &Self::Storage<T>) -> (usize, usize);
     /// `(row, col)` of the element with the minimum value.
     fn argmin_all<T: Scalar>(a: &Self::Storage<T>) -> (usize, usize);
+
+    /// Extract diagonal as an `nx1` column vector.
+    fn diag<T: Scalar>(a: &Self::Storage<T>) -> Self::Storage<T> {
+        let n = Self::nrows(a).min(Self::ncols(a));
+        Self::from_fn(n, 1, |i, _| Self::get(a, i, i))
+    }
+
+    /// Sum of diagonal elements.
+    fn trace<T: Scalar>(a: &Self::Storage<T>) -> T {
+        let n = Self::nrows(a).min(Self::ncols(a));
+        (0..n).fold(T::zero(), |acc, i| acc + Self::get(a, i, i))
+    }
 
     /// Product of all elements.
     fn prod_all<T: Scalar>(a: &Self::Storage<T>) -> T {
@@ -733,6 +757,26 @@ pub trait BackendNN: BackendCore {
         indices: &Self::Storage<T>,
         weight: &Self::Storage<T>,
     ) -> Self::Storage<T>;
+
+    /// Embedding backward: scatter-add grad into weight rows.
+    fn embedding_backward<T: Scalar>(
+        indices: &Self::Storage<T>,
+        grad: &Self::Storage<T>,
+        vocab: usize,
+    ) -> Self::Storage<T> {
+        let n_tokens = Self::nrows(indices) * Self::ncols(indices);
+        let embed_dim = Self::ncols(grad);
+        let mut out = Self::zeros(vocab, embed_dim);
+        for r in 0..n_tokens {
+            let idx = Self::get(indices, r, 0).to_f64() as usize;
+            for c in 0..embed_dim {
+                let old = Self::get(&out, idx, c);
+                let delta = Self::get(grad, r, c);
+                Self::set(&mut out, idx, c, old + delta);
+            }
+        }
+        out
+    }
 
     // --- Pooling ---
     /// 2-D max pooling.

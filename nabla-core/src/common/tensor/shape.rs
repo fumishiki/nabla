@@ -6,7 +6,7 @@ use crate::backend::Backend;
 use crate::backend::Cpu;
 use crate::scalar::Scalar;
 
-use super::Tensor;
+use super::{Tensor, assert_cpu_only};
 use super::variants::NdTensor;
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
@@ -15,6 +15,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Reshape to `(m, n)`, preserving row-major element order.
     #[must_use]
     pub fn reshape(&self, m: usize, n: usize) -> Self {
+        assert_cpu_only::<B>("Tensor::reshape");
         let (rows, cols) = self.shape();
         assert_eq!(
             m * n,
@@ -66,6 +67,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Return a contiguous copy of the tensor (forces row-major layout).
     #[must_use]
     pub fn contiguous(&self) -> Self {
+        assert_cpu_only::<B>("Tensor::contiguous");
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| self.get(r, c))
     }
@@ -97,6 +99,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Insert a size-1 dimension at `axis`, producing an `NdTensor`.
     #[must_use]
     pub fn unsqueeze(&self, axis: usize) -> NdTensor<T> {
+        assert_cpu_only::<B>("Tensor::unsqueeze");
         assert!(
             axis <= 2,
             "nabla: unsqueeze axis {axis} out of bounds (max 2 for 2-D tensor)"
@@ -129,6 +132,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Vertical concat: stack `tensors` row-by-row. All must have same ncols.
     #[must_use]
     pub fn vcat(tensors: &[&Self]) -> Self {
+        assert_cpu_only::<B>("Tensor::vcat");
         assert!(!tensors.is_empty(), "nabla: vcat on empty slice");
         let ncols = tensors[0].ncols();
         for (i, t) in tensors.iter().enumerate() {
@@ -149,6 +153,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Horizontal concat: stack `tensors` column-by-column. All must have same nrows.
     #[must_use]
     pub fn hcat(tensors: &[&Self]) -> Self {
+        assert_cpu_only::<B>("Tensor::hcat");
         assert!(!tensors.is_empty(), "nabla: hcat on empty slice");
         let nrows = tensors[0].nrows();
         for (i, t) in tensors.iter().enumerate() {
@@ -179,6 +184,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Stack tensors along a new axis, producing an `NdTensor`.
     #[must_use]
     pub fn stack(tensors: &[&Self], axis: usize) -> NdTensor<T> {
+        assert_cpu_only::<B>("Tensor::stack");
         assert!(!tensors.is_empty(), "nabla: stack on empty slice");
         assert!(
             axis <= 2,
@@ -277,6 +283,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Repeat tensor along each axis.
     #[must_use]
     pub fn repeat(&self, row_reps: usize, col_reps: usize) -> Self {
+        assert_cpu_only::<B>("Tensor::repeat");
         let (m, n) = self.shape();
         Self::from_fn(m * row_reps, n * col_reps, |r, c| self.get(r % m, c % n))
     }
@@ -304,6 +311,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Pad tensor. `padding = [left, right, top, bottom]`. Fill with `value`.
     #[must_use]
     pub fn pad(&self, padding: [usize; 4], value: T) -> Self {
+        assert_cpu_only::<B>("Tensor::pad");
         let [left, right, top, bottom] = padding;
         let (m, n) = self.shape();
         Self::from_fn(m + top + bottom, n + left + right, |r, c| {
@@ -318,6 +326,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Upper triangular matrix (zero below diagonal + offset).
     #[must_use]
     pub fn triu(&self, diagonal: isize) -> Self {
+        assert_cpu_only::<B>("Tensor::triu");
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| {
             if (c as isize) >= (r as isize) + diagonal {
@@ -331,6 +340,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Lower triangular matrix (zero above diagonal + offset).
     #[must_use]
     pub fn tril(&self, diagonal: isize) -> Self {
+        assert_cpu_only::<B>("Tensor::tril");
         let (m, n) = self.shape();
         Self::from_fn(m, n, |r, c| {
             if (c as isize) <= (r as isize) + diagonal {
@@ -344,6 +354,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Roll elements along axis by `shift` positions (circular shift).
     #[must_use]
     pub fn roll(&self, shift: isize, axis: usize) -> Self {
+        assert_cpu_only::<B>("Tensor::roll");
         let (m, n) = self.shape();
         match axis {
             0 => Self::from_fn(m, n, |r, c| {
@@ -359,6 +370,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Flip (reverse) along axis.
     #[must_use]
     pub fn flip(&self, axis: usize) -> Self {
+        assert_cpu_only::<B>("Tensor::flip");
         let (m, n) = self.shape();
         match axis {
             0 => Self::from_fn(m, n, |r, c| self.get(m - 1 - r, c)),
@@ -370,6 +382,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Create an n x n diagonal matrix from a vector (n x 1 or 1 x n).
     #[must_use]
     pub fn from_diag(v: &Self) -> Self {
+        assert_cpu_only::<B>("Tensor::from_diag");
         let n = v.nrows().max(v.ncols());
         let is_col = v.nrows() >= v.ncols();
         Self::from_fn(n, n, |r, c| {
@@ -386,6 +399,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Select rows by index. Duplicates allowed.
     #[must_use]
     pub fn gather_rows(&self, indices: &[usize]) -> Self {
+        assert_cpu_only::<B>("Tensor::gather_rows");
         let nc = self.ncols();
         Self::from_fn(indices.len(), nc, |r, c| self.get(indices[r], c))
     }
@@ -393,6 +407,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// General gather along dimension.
     #[must_use]
     pub fn gather(&self, axis: usize, index: &Self) -> Self {
+        assert_cpu_only::<B>("Tensor::gather");
         let (m, n) = index.shape();
         match axis {
             0 => Self::from_fn(m, n, |r, c| self.get(index.get(r, c).to_f64() as usize, c)),
@@ -404,6 +419,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Scatter: write `src` values into self at positions given by `index` along `axis`.
     #[must_use]
     pub fn scatter(&self, axis: usize, index: &Self, src: &Self) -> Self {
+        assert_cpu_only::<B>("Tensor::scatter");
         let mut out = self.clone();
         let (si, sj) = index.shape();
         for r in 0..si {
@@ -423,6 +439,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Select elements along axis by index vector.
     #[must_use]
     pub fn index_select(&self, axis: usize, index: &Self) -> Self {
+        assert_cpu_only::<B>("Tensor::index_select");
         let k = index.nrows() * index.ncols();
         let get_idx = |i: usize| -> usize {
             if index.nrows() == 1 {
@@ -444,6 +461,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// - `axis=1`: top-k columns per row. Output shape `(nrows, k)`.
     #[must_use]
     pub fn topk(&self, k: usize, axis: usize) -> (Self, Self) {
+        assert_cpu_only::<B>("Tensor::topk");
         let (m, n) = self.shape();
         match axis {
             0 => {
@@ -485,6 +503,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Sort along axis=1 (rows). Returns `(sorted_values, indices)`.
     #[must_use]
     pub fn sort(&self, axis: usize, descending: bool) -> (Self, Self) {
+        assert_cpu_only::<B>("Tensor::sort");
         assert!(axis == 1, "nabla: sort currently supports axis=1 only");
         let (m, n) = self.shape();
         let mut all_vals = vec![T::zero(); m * n];
@@ -528,6 +547,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// - `axis=1, key=r`: sort column indices by values in row `r`.
     #[must_use]
     pub fn argsort_by(&self, axis: usize, key: usize, descending: bool) -> Vec<usize> {
+        assert_cpu_only::<B>("Tensor::argsort_by");
         match axis {
             0 => {
                 assert!(
@@ -572,6 +592,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Create 2-D meshgrid from two 1-D tensors. Returns `(grid_x, grid_y)`.
     #[must_use]
     pub fn meshgrid(x: &Self, y: &Self) -> (Self, Self) {
+        assert_cpu_only::<B>("Tensor::meshgrid");
         let nx = x.nrows() * x.ncols();
         let ny = y.nrows() * y.ncols();
         let get_x = |i: usize| {
@@ -596,6 +617,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Apply `f` to each row (axis=0) or column (axis=1) and collect.
     #[must_use]
     pub fn map_axis(&self, axis: usize, mut f: impl FnMut(Tensor<T, B>) -> Tensor<T, B>) -> Self {
+        assert_cpu_only::<B>("Tensor::map_axis");
         match axis {
             0 => {
                 let slices: Vec<Self> = (0..self.nrows()).map(|r| f(self.row(r))).collect();
@@ -620,6 +642,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Convert 2D Tensor to N-D NdTensor with the given shape.
     #[must_use]
     pub fn into_nd(&self, shape: &[usize]) -> NdTensor<T> {
+        assert_cpu_only::<B>("Tensor::into_nd");
         let total: usize = shape.iter().product();
         let (m, n) = self.shape();
         assert_eq!(
@@ -647,6 +670,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     /// Scatter-add along dimension 0.
     pub fn scatter_add_dim0(&mut self, indices: &[usize], src: &Self) {
+        assert_cpu_only::<B>("Tensor::scatter_add_dim0");
         let (sr, sc) = src.shape();
         assert_eq!(
             indices.len(),
