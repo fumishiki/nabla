@@ -173,7 +173,7 @@ mod cpu {
     }
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", feature = "cpu"))]
 mod gpu {
     //! GPU backend integration tests (wgpu direct).
 

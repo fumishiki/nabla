@@ -17,6 +17,14 @@ use crate::gpu_common::{
 use crate::kernels_cu::REDUCE_GRID_CAP;
 use crate::scalar::Scalar;
 
+#[inline]
+fn wmma_jit_enabled() -> bool {
+    match std::env::var("NABLA_DISABLE_WMMA_JIT") {
+        Ok(v) => !matches!(v.as_str(), "1" | "true" | "TRUE" | "True"),
+        Err(_) => true,
+    }
+}
+
 #[derive(Debug)]
 pub enum CudaError {
     Driver(cudarc::driver::DriverError),
@@ -563,7 +571,7 @@ pub(super) fn get_ctx() -> &'static CudaCtx {
         if let Err(e) = super::compile_all_kernels(&cuda_ctx, &arch) {
             panic!("CUDA kernel compilation failed: {e}");
         }
-        if has_wmma {
+        if has_wmma && wmma_jit_enabled() {
             if let Err(e) = super::compile_wmma_kernels(&cuda_ctx, &arch) {
                 eprintln!("WMMA kernel compilation failed (falling back to tiled): {e}");
             }

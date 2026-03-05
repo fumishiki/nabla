@@ -19,6 +19,7 @@ cpu    = ["nabla/cpu", "nabla-train/cpu", "nabla-interface/cpu"]
 cuda   = ["nabla/cuda", "nabla-train/cuda", "nabla-interface/cuda", "dep:cudarc"]
 hip    = ["dep:hip-runtime-sys"]
 wgpu   = ["dep:wgpu"]
+wgpu-f16 = ["wgpu", "nabla/wgpu-f16", "nabla-train/wgpu-f16", "nabla-interface/wgpu-f16", "nabla-core/wgpu-f16"]
 llama  = ["nabla-interface/llama"]
 
 [dependencies]

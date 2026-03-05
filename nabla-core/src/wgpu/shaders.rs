@@ -1,49 +1,103 @@
-use super::storage::{PipelineKey, ShaderOp};
+use super::storage::{PipelineKey, ScalarKind, ShaderOp};
 
 pub(super) fn generate_shader(key: PipelineKey) -> String {
     let wg = key.wg_size;
-    match key.op {
-        ShaderOp::Binary => gen_binary(wg),
-        ShaderOp::Scale => gen_scale(wg),
-        ShaderOp::Unary => gen_unary(wg),
-        ShaderOp::Powf => gen_powf(wg),
-        ShaderOp::Transpose => gen_transpose(wg),
-        ShaderOp::Copy => gen_copy(wg),
-        ShaderOp::FillZeros => gen_fill_zeros(wg),
-        ShaderOp::FillScalar => gen_fill_scalar(wg),
-        ShaderOp::FillIdentity => gen_fill_identity(wg),
-        ShaderOp::ReduceSum => gen_reduce_sum(wg),
-        ShaderOp::ReduceMax => gen_reduce_max(wg),
-        ShaderOp::ReduceMin => gen_reduce_min(wg),
-        ShaderOp::ReduceProd => gen_reduce_prod(wg),
-        ShaderOp::ReduceCountNonzero => gen_reduce_count_nonzero(wg),
-        ShaderOp::Argmax => gen_argmax(wg),
-        ShaderOp::Argmin => gen_argmin(wg),
-        ShaderOp::Matmul { tile } => gen_matmul(tile),
-        ShaderOp::MatmulRegTile { tr, tc, bm, bn, bk } => {
-            gen_matmul_register_tile(tr, tc, bm, bn, bk)
+    let scalar = key.scalar;
+    let mut src = match key.op {
+        ShaderOp::Binary => gen_binary(wg, scalar),
+        ShaderOp::Scale => gen_scale(wg, scalar),
+        ShaderOp::Unary => gen_unary(wg, scalar),
+        ShaderOp::Powf => gen_powf(wg, scalar),
+        ShaderOp::Transpose => gen_transpose(wg, scalar),
+        ShaderOp::Copy => gen_copy(wg, scalar),
+        ShaderOp::FillZeros => gen_fill_zeros(wg, scalar),
+        ShaderOp::FillScalar => gen_fill_scalar(wg, scalar),
+        ShaderOp::FillIdentity => gen_fill_identity(wg, scalar),
+        ShaderOp::ReduceSum => {
+            assert_f32(scalar, "reduce_sum");
+            gen_reduce_sum(wg)
         }
-        ShaderOp::ActivationSilu => gen_activation_silu(wg),
-        ShaderOp::ActivationMish => gen_activation_mish(wg),
-        ShaderOp::ActivationLeakyRelu => gen_activation_leaky_relu(wg),
-        ShaderOp::ActivationElu => gen_activation_elu(wg),
-        ShaderOp::ActivationHardswish => gen_activation_hardswish(wg),
-        ShaderOp::Softmax => gen_softmax(wg),
-        ShaderOp::LayerNorm => gen_layer_norm(wg),
-        ShaderOp::RmsNorm => gen_rms_norm(wg),
-        ShaderOp::SumAxis1 => gen_sum_axis1(wg),
-        ShaderOp::MaxAxis1 => gen_max_axis1(wg),
-        ShaderOp::Embedding => gen_embedding(wg),
-        ShaderOp::Axpy => gen_axpy(wg),
+        ShaderOp::ReduceMax => {
+            assert_f32(scalar, "reduce_max");
+            gen_reduce_max(wg)
+        }
+        ShaderOp::ReduceMin => {
+            assert_f32(scalar, "reduce_min");
+            gen_reduce_min(wg)
+        }
+        ShaderOp::ReduceProd => {
+            assert_f32(scalar, "reduce_prod");
+            gen_reduce_prod(wg)
+        }
+        ShaderOp::ReduceCountNonzero => {
+            assert_f32(scalar, "reduce_count_nonzero");
+            gen_reduce_count_nonzero(wg)
+        }
+        ShaderOp::Argmax => {
+            assert_f32(scalar, "argmax");
+            gen_argmax(wg)
+        }
+        ShaderOp::Argmin => {
+            assert_f32(scalar, "argmin");
+            gen_argmin(wg)
+        }
+        ShaderOp::Matmul { tile } => gen_matmul(tile, scalar),
+        ShaderOp::MatmulRegTile { tr, tc, bm, bn, bk } => {
+            gen_matmul_register_tile(tr, tc, bm, bn, bk, scalar)
+        }
+        ShaderOp::ActivationSilu => gen_activation_silu(wg, scalar),
+        ShaderOp::ActivationMish => gen_activation_mish(wg, scalar),
+        ShaderOp::ActivationLeakyRelu => gen_activation_leaky_relu(wg, scalar),
+        ShaderOp::ActivationElu => gen_activation_elu(wg, scalar),
+        ShaderOp::ActivationHardswish => gen_activation_hardswish(wg, scalar),
+        ShaderOp::Softmax => gen_softmax(wg, scalar),
+        ShaderOp::LayerNorm => gen_layer_norm(wg, scalar),
+        ShaderOp::RmsNorm => gen_rms_norm(wg, scalar),
+        ShaderOp::SumAxis1 => gen_sum_axis1(wg, scalar),
+        ShaderOp::MaxAxis1 => gen_max_axis1(wg, scalar),
+        ShaderOp::Embedding => gen_embedding(wg, scalar),
+        ShaderOp::Axpy => gen_axpy(wg, scalar),
+    };
+    if matches!(scalar, ScalarKind::F16) {
+        src = format!("enable f16;\n{src}");
+    }
+    src
+}
+
+fn assert_f32(scalar: ScalarKind, op: &str) {
+    if !matches!(scalar, ScalarKind::F32) {
+        panic!("nabla: wgpu {op} shader supports only f32 for now");
     }
 }
 
-fn gen_binary(wg: u32) -> String {
+fn scalar_ty(scalar: ScalarKind) -> &'static str {
+    match scalar {
+        ScalarKind::F32 => "f32",
+        ScalarKind::F16 => "f16",
+    }
+}
+
+fn scalar_from_f32_bits(scalar: ScalarKind, expr: &str) -> String {
+    match scalar {
+        ScalarKind::F32 => format!("bitcast<f32>({expr})"),
+        ScalarKind::F16 => format!("f16(bitcast<f32>({expr}))"),
+    }
+}
+
+fn scalar_min_value(scalar: ScalarKind) -> &'static str {
+    match scalar {
+        ScalarKind::F32 => "-3.402823e+38",
+        ScalarKind::F16 => "-65504.0",
+    }
+}
+
+fn gen_binary(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read> b: array<f32>;
-@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read> b: array<{ty}>;
+@group(0) @binding(2) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(3) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -57,35 +111,41 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     else if op == 3u {{ out[i] = a[i] / b[i]; }}
     else {{ out[i] = atan2(a[i], b[i]); }}
 }}
-"
+",
+        ty = ty
     )
 }
 
-fn gen_scale(wg: u32) -> String {
+fn gen_scale(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    let val = scalar_from_f32_bits(scalar, "params[1]");
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let i = gid.x;
     let n = params[0];
     if i >= n {{ return; }}
-    let scalar = bitcast<f32>(params[1]);
+    let scalar = {val};
     out[i] = a[i] * scalar;
 }}
-"
+",
+        ty = ty,
+        val = val
     )
 }
 
-fn gen_unary(wg: u32) -> String {
+fn gen_unary(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
-fn erf_approx(x: f32) -> f32 {{
+fn erf_approx(x: {ty}) -> {ty} {{
     let ax = abs(x);
     let t = 1.0 / (1.0 + 0.3275911 * ax);
     let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
@@ -125,33 +185,39 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     else if op == 23u {{ out[i] = log2(v); }}
     else {{ out[i] = log(v) / log(10.0); }}
 }}
-"
+",
+        ty = ty
     )
 }
 
-fn gen_powf(wg: u32) -> String {
+fn gen_powf(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    let p = scalar_from_f32_bits(scalar, "params[1]");
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let i = gid.x;
     let n = params[0];
     if i >= n {{ return; }}
-    let p = bitcast<f32>(params[1]);
+    let p = {p};
     out[i] = pow(a[i], p);
 }}
-"
+",
+        ty = ty,
+        p = p
     )
 }
 
-fn gen_transpose(wg: u32) -> String {
+fn gen_transpose(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -163,15 +229,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let col = i % cols;
     out[col * rows + row] = a[i];
 }}
-"
+",
+        ty = ty
     )
 }
 
-fn gen_copy(wg: u32) -> String {
+fn gen_copy(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -179,20 +247,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     if i >= params[0] {{ return; }}
     out[i] = a[i];
 }}
-"
+",
+        ty = ty
     )
 }
 
-fn gen_matmul(tile: u32) -> String {
+fn gen_matmul(tile: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     let tile_sq = tile * tile;
     let tile_m1 = tile - 1;
     format!(
         r"
-var<workgroup> tile_a: array<f32, {tile_sq}>;
-var<workgroup> tile_b: array<f32, {tile_sq}>;
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read> b: array<f32>;
-@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+var<workgroup> tile_a: array<{ty}, {tile_sq}>;
+var<workgroup> tile_b: array<{ty}, {tile_sq}>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read> b: array<{ty}>;
+@group(0) @binding(2) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(3) var<storage, read> params: array<u32>;
 @compute @workgroup_size({tile}, {tile})
 fn main(
@@ -210,7 +280,7 @@ fn main(
     let tx = lid.x;
     let row = block_row * {tile}u + ty;
     let col = block_col * {tile}u + tx;
-    var sum: f32 = 0.0;
+    var sum: {ty} = 0.0;
     let n_tiles = (k + {tile_m1}u) / {tile}u;
     for (var t: u32 = 0u; t < n_tiles; t++) {{
         let a_col = t * {tile}u + tx;
@@ -235,11 +305,20 @@ fn main(
         out[row * n + col] = sum;
     }}
 }}
-"
+",
+        ty = ty
     )
 }
 
-pub fn gen_matmul_register_tile(tr: u32, tc: u32, bm: u32, bn: u32, bk: u32) -> String {
+fn gen_matmul_register_tile(
+    tr: u32,
+    tc: u32,
+    bm: u32,
+    bn: u32,
+    bk: u32,
+    scalar: ScalarKind,
+) -> String {
+    let ty = scalar_ty(scalar);
     let wg_x = bn / tc;
     let wg_y = bm / tr;
     let smem_a = bm * bk;
@@ -250,11 +329,11 @@ pub fn gen_matmul_register_tile(tr: u32, tc: u32, bm: u32, bn: u32, bk: u32) -> 
     let b_loads = smem_b.div_ceil(total_threads);
     format!(
         r"
-var<workgroup> smem_a: array<f32, {smem_a}>;
-var<workgroup> smem_b: array<f32, {smem_b}>;
-@group(0) @binding(0) var<storage, read> mat_a: array<f32>;
-@group(0) @binding(1) var<storage, read> mat_b: array<f32>;
-@group(0) @binding(2) var<storage, read_write> mat_c: array<f32>;
+var<workgroup> smem_a: array<{ty}, {smem_a}>;
+var<workgroup> smem_b: array<{ty}, {smem_b}>;
+@group(0) @binding(0) var<storage, read> mat_a: array<{ty}>;
+@group(0) @binding(1) var<storage, read> mat_b: array<{ty}>;
+@group(0) @binding(2) var<storage, read_write> mat_c: array<{ty}>;
 @group(0) @binding(3) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg_x}, {wg_y}, 1)
 fn main(
@@ -270,7 +349,7 @@ fn main(
     let block_col = wgid.x % grid_cols;
     let tx = lid.x;
     let ty = lid.y;
-    var regs: array<f32, {reg_count}>;
+    var regs: array<{ty}, {reg_count}>;
     for (var i: u32 = 0u; i < {reg_count}u; i++) {{
         regs[i] = 0.0;
     }}
@@ -327,7 +406,8 @@ fn main(
         }}
     }}
 }}
-"
+",
+        ty = ty
     )
 }
 
@@ -342,38 +422,45 @@ pub fn select_register_tile_params(m: usize, n: usize, _k: usize) -> (u32, u32, 
     }
 }
 
-fn gen_fill_zeros(wg: u32) -> String {
+fn gen_fill_zeros(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(1) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     if gid.x >= params[0] {{ return; }}
     out[gid.x] = 0.0;
 }}
-"
+",
+        ty = ty
     )
 }
 
-fn gen_fill_scalar(wg: u32) -> String {
+fn gen_fill_scalar(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    let val = scalar_from_f32_bits(scalar, "params[1]");
     format!(
         r"
-@group(0) @binding(0) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(1) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     if gid.x >= params[0] {{ return; }}
-    out[gid.x] = bitcast<f32>(params[1]);
+    out[gid.x] = {val};
 }}
-"
+",
+        ty = ty,
+        val = val
     )
 }
 
-fn gen_fill_identity(wg: u32) -> String {
+fn gen_fill_identity(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(1) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -384,7 +471,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let col = i % n;
     out[i] = select(0.0, 1.0, row == col);
 }}
-"
+",
+        ty = ty
     )
 }
 
@@ -631,11 +719,12 @@ fn main(
     )
 }
 
-fn gen_activation_silu(wg: u32) -> String {
+fn gen_activation_silu(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -645,15 +734,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let x = a[i];
     out[i] = x / (1.0 + exp(-x));
 }}
-"
+",
+        ty = ty
     )
 }
 
-fn gen_activation_mish(wg: u32) -> String {
+fn gen_activation_mish(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -664,15 +755,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let sp = log(1.0 + exp(x));
     out[i] = x * tanh(sp);
 }}
-"
+",
+        ty = ty
     )
 }
 
-fn gen_activation_leaky_relu(wg: u32) -> String {
+fn gen_activation_leaky_relu(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    let slope = scalar_from_f32_bits(scalar, "params[1]");
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -680,18 +774,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let n = params[0];
     if i >= n {{ return; }}
     let x = a[i];
-    let slope = bitcast<f32>(params[1]);
+    let slope = {slope};
     out[i] = select(slope * x, x, x >= 0.0);
 }}
-"
+",
+        ty = ty,
+        slope = slope
     )
 }
 
-fn gen_activation_elu(wg: u32) -> String {
+fn gen_activation_elu(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    let alpha = scalar_from_f32_bits(scalar, "params[1]");
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -699,18 +797,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let n = params[0];
     if i >= n {{ return; }}
     let x = a[i];
-    let alpha = bitcast<f32>(params[1]);
+    let alpha = {alpha};
     out[i] = select(alpha * (exp(x) - 1.0), x, x >= 0.0);
 }}
-"
+",
+        ty = ty,
+        alpha = alpha
     )
 }
 
-fn gen_activation_hardswish(wg: u32) -> String {
+fn gen_activation_hardswish(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -721,17 +822,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let v = clamp(x + 3.0, 0.0, 6.0);
     out[i] = x * v / 6.0;
 }}
-"
+",
+        ty = ty
     )
 }
 
-fn gen_softmax(wg: u32) -> String {
+fn gen_softmax(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    let min_val = scalar_min_value(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
-var<workgroup> sdata: array<f32, {wg}>;
+var<workgroup> sdata: array<{ty}, {wg}>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>,
         @builtin(local_invocation_id) lid: vec3<u32>,
@@ -744,7 +848,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     let base = row * cols;
 
     // Pass 1: find max
-    var m: f32 = -3.402823e+38;
+    var m: {ty} = {min_val};
     for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
         m = max(m, a[base + j]);
     }}
@@ -758,7 +862,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     workgroupBarrier();
 
     // Pass 2: sum exp
-    var sum_val: f32 = 0.0;
+    var sum_val: {ty} = 0.0;
     for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
         sum_val = sum_val + exp(a[base + j] - row_max);
     }}
@@ -777,30 +881,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
         out[base + j] = exp(a[base + j] - row_max) * inv;
     }}
 }}
-"
+",
+        ty = ty,
+        min_val = min_val
     )
 }
 
-fn gen_layer_norm(wg: u32) -> String {
+fn gen_layer_norm(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    let eps = scalar_from_f32_bits(scalar, "params[2]");
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read> gamma: array<f32>;
-@group(0) @binding(2) var<storage, read> beta: array<f32>;
-@group(0) @binding(3) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read> gamma: array<{ty}>;
+@group(0) @binding(2) var<storage, read> beta: array<{ty}>;
+@group(0) @binding(3) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(4) var<storage, read> params: array<u32>;
-var<workgroup> sdata: array<f32, {wg}>;
+var<workgroup> sdata: array<{ty}, {wg}>;
 @compute @workgroup_size({wg})
 fn main(@builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(workgroup_id) wg_id: vec3<u32>) {{
     let row = wg_id.x;
     let cols = params[1];
-    let eps = bitcast<f32>(params[2]);
+    let eps = {eps};
     let tid = lid.x;
     let base = row * cols;
 
     // Mean
-    var sum_val: f32 = 0.0;
+    var sum_val: {ty} = 0.0;
     for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
         sum_val = sum_val + a[base + j];
     }}
@@ -810,11 +918,11 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
         if tid < s {{ sdata[tid] = sdata[tid] + sdata[tid + s]; }}
         workgroupBarrier();
     }}
-    let mean = sdata[0] / f32(cols);
+    let mean = sdata[0] / {ty}(cols);
     workgroupBarrier();
 
     // Variance
-    var var_val: f32 = 0.0;
+    var var_val: {ty} = 0.0;
     for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
         let d = a[base + j] - mean;
         var_val = var_val + d * d;
@@ -825,7 +933,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
         if tid < s {{ sdata[tid] = sdata[tid] + sdata[tid + s]; }}
         workgroupBarrier();
     }}
-    let inv_std = 1.0 / sqrt(sdata[0] / f32(cols) + eps);
+    let inv_std = 1.0 / sqrt(sdata[0] / {ty}(cols) + eps);
     workgroupBarrier();
 
     // Normalize + affine
@@ -833,29 +941,33 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
         out[base + j] = (a[base + j] - mean) * inv_std * gamma[j] + beta[j];
     }}
 }}
-"
+",
+        ty = ty,
+        eps = eps
     )
 }
 
-fn gen_rms_norm(wg: u32) -> String {
+fn gen_rms_norm(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    let eps = scalar_from_f32_bits(scalar, "params[2]");
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read> gamma: array<f32>;
-@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read> gamma: array<{ty}>;
+@group(0) @binding(2) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(3) var<storage, read> params: array<u32>;
-var<workgroup> sdata: array<f32, {wg}>;
+var<workgroup> sdata: array<{ty}, {wg}>;
 @compute @workgroup_size({wg})
 fn main(@builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(workgroup_id) wg_id: vec3<u32>) {{
     let row = wg_id.x;
     let cols = params[1];
-    let eps = bitcast<f32>(params[2]);
+    let eps = {eps};
     let tid = lid.x;
     let base = row * cols;
 
     // Sum of squares
-    var sq_sum: f32 = 0.0;
+    var sq_sum: {ty} = 0.0;
     for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
         let v = a[base + j];
         sq_sum = sq_sum + v * v;
@@ -866,24 +978,27 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
         if tid < s {{ sdata[tid] = sdata[tid] + sdata[tid + s]; }}
         workgroupBarrier();
     }}
-    let inv_rms = 1.0 / sqrt(sdata[0] / f32(cols) + eps);
+    let inv_rms = 1.0 / sqrt(sdata[0] / {ty}(cols) + eps);
     workgroupBarrier();
 
     for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
         out[base + j] = a[base + j] * inv_rms * gamma[j];
     }}
 }}
-"
+",
+        ty = ty,
+        eps = eps
     )
 }
 
-fn gen_sum_axis1(wg: u32) -> String {
+fn gen_sum_axis1(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
-var<workgroup> sdata: array<f32, {wg}>;
+var<workgroup> sdata: array<{ty}, {wg}>;
 @compute @workgroup_size({wg})
 fn main(@builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(workgroup_id) wg_id: vec3<u32>) {{
@@ -891,7 +1006,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
     let cols = params[1];
     let tid = lid.x;
     let base = row * cols;
-    var acc: f32 = 0.0;
+    var acc: {ty} = 0.0;
     for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
         acc = acc + a[base + j];
     }}
@@ -903,17 +1018,20 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
     }}
     if tid == 0u {{ out[row] = sdata[0]; }}
 }}
-"
+",
+        ty = ty
     )
 }
 
-fn gen_max_axis1(wg: u32) -> String {
+fn gen_max_axis1(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    let min_val = scalar_min_value(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
-var<workgroup> sdata: array<f32, {wg}>;
+var<workgroup> sdata: array<{ty}, {wg}>;
 @compute @workgroup_size({wg})
 fn main(@builtin(local_invocation_id) lid: vec3<u32>,
         @builtin(workgroup_id) wg_id: vec3<u32>) {{
@@ -921,7 +1039,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
     let cols = params[1];
     let tid = lid.x;
     let base = row * cols;
-    var acc: f32 = -3.402823e+38;
+    var acc: {ty} = {min_val};
     for (var j: u32 = tid; j < cols; j = j + {wg}u) {{
         acc = max(acc, a[base + j]);
     }}
@@ -933,16 +1051,19 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
     }}
     if tid == 0u {{ out[row] = sdata[0]; }}
 }}
-"
+",
+        ty = ty,
+        min_val = min_val
     )
 }
 
-fn gen_embedding(wg: u32) -> String {
+fn gen_embedding(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
     format!(
         r"
-@group(0) @binding(0) var<storage, read> indices: array<f32>;
-@group(0) @binding(1) var<storage, read> weight: array<f32>;
-@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> indices: array<{ty}>;
+@group(0) @binding(1) var<storage, read> weight: array<{ty}>;
+@group(0) @binding(2) var<storage, read_write> out: array<{ty}>;
 @group(0) @binding(3) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -956,33 +1077,38 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let idx = u32(indices[token]);
     out[tid] = weight[idx * embed_dim + dim];
 }}
-"
+",
+        ty = ty
     )
 }
 
-fn gen_axpy(wg: u32) -> String {
+fn gen_axpy(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    let alpha = scalar_from_f32_bits(scalar, "params[1]");
     format!(
         r"
-@group(0) @binding(0) var<storage, read_write> y: array<f32>;
-@group(0) @binding(1) var<storage, read> x: array<f32>;
+@group(0) @binding(0) var<storage, read_write> y: array<{ty}>;
+@group(0) @binding(1) var<storage, read> x: array<{ty}>;
 @group(0) @binding(2) var<storage, read> params: array<u32>;
 @compute @workgroup_size({wg})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let i = gid.x;
     let n = params[0];
     if i >= n {{ return; }}
-    let alpha = bitcast<f32>(params[1]);
+    let alpha = {alpha};
     y[i] = y[i] + alpha * x[i];
 }}
-"
+",
+        ty = ty,
+        alpha = alpha
     )
 }
 
 pub(super) fn select_matmul_tile(m: usize, k: usize, n: usize) -> u32 {
     let max_dim = m.max(k).max(n);
-    if max_dim < 64 {
+    if max_dim < 48 {
         8
-    } else if max_dim >= 256 {
+    } else if max_dim >= 192 {
         32
     } else {
         16

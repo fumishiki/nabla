@@ -472,12 +472,17 @@ pub mod notation {
     /// Element-wise broadcast (allocating). Renamed from `bcast!`.
     ///
     /// # Examples
-    /// ```
+    /// ```rust
+    /// # fn main() {
+    /// # #[cfg(feature = "cpu")]
+    /// # {
     /// use nabla::prelude::*;
     /// use nabla::map;
     /// let a: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| (i * 2 + j + 1) as f64);
     /// let doubled: Tensor<f64> = map!(|x| x * 2.0, &a);
     /// assert_eq!(doubled.get(0, 0), 2.0);
+    /// # }
+    /// # }
     /// ```
     #[macro_export]
     macro_rules! map {
@@ -512,12 +517,17 @@ pub mod notation {
     /// Parallel element-wise broadcast via rayon. Renamed from `par_bcast!`.
     ///
     /// # Examples
-    /// ```
+    /// ```rust
+    /// # fn main() {
+    /// # #[cfg(feature = "cpu")]
+    /// # {
     /// use nabla::prelude::*;
     /// use nabla::par_map;
     /// let a: Tensor<f64> = Tensor::from_fn(4, 4, |i, j| (i * 4 + j) as f64);
     /// let b: Tensor<f64> = par_map!(|x| x * 2.0, &a);
     /// assert!((b.get(0, 1) - 2.0).abs() < 1e-12);
+    /// # }
+    /// # }
     /// ```
     #[macro_export]
     macro_rules! par_map {
@@ -541,7 +551,10 @@ pub mod notation {
     /// In-place element-wise broadcast. Renamed from `zip_map!`.
     ///
     /// # Examples
-    /// ```
+    /// ```rust
+    /// # fn main() {
+    /// # #[cfg(feature = "cpu")]
+    /// # {
     /// use nabla::prelude::*;
     /// use nabla::map_;
     /// let a: Tensor<f64> = Tensor::from_fn(2, 2, |i, j| (i * 2 + j + 1) as f64);
@@ -549,6 +562,8 @@ pub mod notation {
     /// let mut out: Tensor<f64> = Tensor::zeros(2, 2);
     /// map_!(out, |x, y| x * y, &a, &b);
     /// assert_eq!(out.get(0, 0), 2.0);
+    /// # }
+    /// # }
     /// ```
     #[macro_export]
     macro_rules! map_ {
@@ -581,7 +596,10 @@ pub mod notation {
     /// Variadic vertical concat: `vcat!(a, b, c)` stacks row-wise.
     ///
     /// # Examples
-    /// ```
+    /// ```rust
+    /// # fn main() {
+    /// # #[cfg(feature = "cpu")]
+    /// # {
     /// use nabla::prelude::*;
     /// use nabla::vcat;
     /// let a: Tensor<f64> = mat![[1.0_f64, 2.0]];
@@ -589,6 +607,8 @@ pub mod notation {
     /// let c: Tensor<f64> = mat![[5.0, 6.0]];
     /// let r = vcat!(a, b, c);
     /// assert_eq!(r.nrows(), 3);
+    /// # }
+    /// # }
     /// ```
     #[macro_export]
     macro_rules! vcat {
@@ -603,7 +623,10 @@ pub mod notation {
     /// Variadic horizontal concat: `hcat!(a, b, c)` stacks column-wise.
     ///
     /// # Examples
-    /// ```
+    /// ```rust
+    /// # fn main() {
+    /// # #[cfg(feature = "cpu")]
+    /// # {
     /// use nabla::prelude::*;
     /// use nabla::hcat;
     /// let a: Tensor<f64> = mat![[1.0_f64], [2.0]];
@@ -611,6 +634,8 @@ pub mod notation {
     /// let c: Tensor<f64> = mat![[5.0], [6.0]];
     /// let r = hcat!(a, b, c);
     /// assert_eq!(r.ncols(), 3);
+    /// # }
+    /// # }
     /// ```
     #[macro_export]
     macro_rules! hcat {
@@ -706,11 +731,16 @@ pub mod notation {
     /// Like [`frange!`] but wraps the result into a 1-row tensor.
     ///
     /// # Examples
-    /// ```
+    /// ```rust
+    /// # fn main() {
+    /// # #[cfg(feature = "cpu")]
+    /// # {
     /// use nabla::prelude::*;
     /// use nabla::tensor_range;
     /// let t: Tensor<f64> = tensor_range!(0.0, 0.5, 1.0);
     /// assert_eq!(t.shape(), (1, 3));
+    /// # }
+    /// # }
     /// ```
     #[macro_export]
     macro_rules! tensor_range {
@@ -731,13 +761,18 @@ pub mod notation {
     /// Default `atol` is `1e-10` when omitted.
     ///
     /// # Examples
-    /// ```
+    /// ```rust
+    /// # fn main() {
+    /// # #[cfg(feature = "cpu")]
+    /// # {
     /// use nabla::prelude::*;
     /// use nabla::approx;
     /// let a: Tensor<f64> = Tensor::from_fn(2, 2, |_, _| 1.0);
     /// let b: Tensor<f64> = Tensor::from_fn(2, 2, |_, _| 1.0 + 1e-11);
     /// approx!(&a, &b);
     /// approx!(&a, &b, 1e-10);
+    /// # }
+    /// # }
     /// ```
     #[macro_export]
     macro_rules! approx {

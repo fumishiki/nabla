@@ -7,7 +7,7 @@ use crate::scalar::Scalar;
 
 use super::shaders::generate_shader;
 
-// SAFETY: all Scalar types (f32) are POD with stable layout.
+// SAFETY: Scalar types used by WGPU (f32/f16) are POD with stable layout.
 pub(super) unsafe fn scalar_to_bytes<T: Scalar>(data: &[T]) -> &[u8] {
     // SAFETY: T is a POD type; reinterpreted as bytes.
     unsafe { core::slice::from_raw_parts(data.as_ptr().cast::<u8>(), core::mem::size_of_val(data)) }
@@ -81,9 +81,16 @@ pub(super) enum ShaderOp {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum ScalarKind {
+    F32,
+    F16,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct PipelineKey {
     pub(super) op: ShaderOp,
     pub(super) wg_size: u32,
+    pub(super) scalar: ScalarKind,
 }
 
 pub(super) fn get_context() -> &'static GpuContext {
@@ -104,11 +111,23 @@ async fn init_gpu() -> GpuContext {
         })
         .await
         .unwrap_or_else(|| panic!("no GPU adapter found"));
+    #[cfg(feature = "wgpu-f16")]
+    let required_features = {
+        let available = adapter.features();
+        let mut required = wgpu::Features::empty();
+        if available.contains(wgpu::Features::SHADER_F16) {
+            required |= wgpu::Features::SHADER_F16;
+        }
+        required
+    };
+    #[cfg(not(feature = "wgpu-f16"))]
+    let required_features = wgpu::Features::empty();
+
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("nabla"),
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::default(),
             },

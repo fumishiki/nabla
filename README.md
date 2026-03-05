@@ -26,7 +26,7 @@ If you know PyTorch, nabla will feel immediately familiar. The difference: you g
 
 | Package | What it does |
 |---|---|
-| [**`nabla-core`**](docs-en/spec.md) | The tensor engine. 190+ operations — slicing, broadcasting, linear algebra, convolutions — on CPU, NVIDIA, AMD, or Vulkan/Metal GPU. |
+| [**`nabla-core`**](docs-en/spec.md) | The tensor engine. 190+ operations — slicing, broadcasting, linear algebra, convolutions — on CPU, NVIDIA, AMD, or Vulkan/Metal GPU. All GPU backends (CUDA/HIP/WGPU) implement 126 Backend trait methods with 100% feature parity. |
 | [**`nabla-macros`**](docs-en/notation.md) | Write math as code. `einsum!`, `fuse!`, `sym!`, `math!` macros. |
 | [**`nabla-ml`**](docs-en/notation.md) | Automatic gradients, 45+ linear algebra routines, symbolic math, and ODE solvers. |
 | [**`nabla-train`**](docs-en/quick_start.md) | Optimizers, LR schedules, data loading, checkpointing, quantization, and ONNX export. |
@@ -134,7 +134,7 @@ let a_fp8  = a.quantize_fp8_e4m3();
 let (q, scales) = a.quantize_fp4_blockwise(128);
 ```
 
-Switch to GPU: change `features = ["cpu"]` to `features = ["cuda"]` in `Cargo.toml`. No other code changes.
+Switch to GPU: change `features = ["cpu"]` to `features = ["cuda"]`, `features = ["wgpu"]`, or `features = ["hip"]` in `Cargo.toml`. No other code changes.
 
 ---
 
@@ -443,14 +443,15 @@ nabla = { git = "https://github.com/fumishiki/nabla", features = ["cpu"] }
 
 Switching from CPU to GPU requires **no code changes** — only the feature flag changes.
 
-| Feature | Hardware | f32 | f64 | f16 / bf16 | Complex |
-|---|---|---|---|---|---|
-| `cpu` | — | ✅ | ✅ | ✅ | ✅ |
-| `cuda` | NVIDIA GPU | ✅ | ✅ | ✅ | ❌ |
-| `hip` | AMD GPU | ✅ | ✅ | ❌ | ❌ |
-| `wgpu` | Vulkan / Metal / DX12 | ✅ | ❌ | ❌ | ❌ |
+| Feature | Hardware | f32 | f64 | f16 / bf16 | Complex | Backend trait methods |
+|---|---|---|---|---|---|---|
+| `cpu` | — | ✅ | ✅ | ✅ | ✅ | 126 |
+| `cuda` | NVIDIA GPU | ✅ | ✅ | ✅ | ❌ | 126 |
+| `hip` | AMD GPU | ✅ | ✅ | ❌ | ❌ | 126 |
+| `wgpu` | Vulkan / Metal / DX12 | ✅ | ❌ | ❌ | ❌ | 126 |
 
 > **wgpu f64:** WGSL does not include `f64` in its core spec. Use `cuda`, `hip`, or `cpu` for f64 workloads.
+> **GPU feature parity:** As of 2026-03-05, all GPU backends (CUDA/HIP/WGPU) implement all 126 Backend trait methods (100% parity).
 
 ---
 

@@ -4,6 +4,9 @@
 use nabla::prelude::*;
 use std::time::Instant;
 
+#[cfg(any(feature = "cpu", feature = "cuda"))]
+use half::f16;
+
 #[cfg(feature = "cuda")]
 #[inline]
 fn gpu_sync() {
@@ -55,16 +58,19 @@ fn bench_scalar<F: FnMut() -> f32>(name: &str, mut f: F) {
 fn rand_tensor(rows: usize, cols: usize) -> Tensor<f32> {
     use std::cell::Cell;
     thread_local! { static SEED: Cell<u64> = const { Cell::new(42) }; }
-    Tensor::from_fn(rows, cols, |_, _| {
-        SEED.with(|s| {
+    let mut data = Vec::with_capacity(rows * cols);
+    for _ in 0..rows * cols {
+        let v = SEED.with(|s| {
             let x = s
                 .get()
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
             s.set(x);
             (x >> 33) as f32 / (1u64 << 31) as f32 - 1.0
-        })
-    })
+        });
+        data.push(v);
+    }
+    Tensor::from_vec(data, rows, cols)
 }
 
 fn main() {
@@ -148,17 +154,20 @@ fn main() {
     bench("matmul f32 4096", || &m5 * &m6);
 
     // FP16 matmul via Tensor Cores (CUBLAS_COMPUTE_16F)
-    let h1: Tensor<f16> = Tensor::from_fn(4096, 4096, |_, _| f16::from_f32(0.01));
-    let h2: Tensor<f16> = Tensor::from_fn(4096, 4096, |_, _| f16::from_f32(0.01));
-    let mut ring_f16: Vec<Tensor<f16>> = (0..WARMUP).map(|_| &h1 * &h2).collect();
-    gpu_sync();
-    let start_f16 = Instant::now();
-    for i in 0..ITERS {
-        ring_f16[i % WARMUP] = &h1 * &h2;
+    #[cfg(any(feature = "cpu", feature = "cuda"))]
+    {
+        let h1: Tensor<f16> = Tensor::fill(4096, 4096, f16::from_f32(0.01));
+        let h2: Tensor<f16> = Tensor::fill(4096, 4096, f16::from_f32(0.01));
+        let mut ring_f16: Vec<Tensor<f16>> = (0..WARMUP).map(|_| &h1 * &h2).collect();
+        gpu_sync();
+        let start_f16 = Instant::now();
+        for i in 0..ITERS {
+            ring_f16[i % WARMUP] = &h1 * &h2;
+        }
+        gpu_sync();
+        let ms_f16 = start_f16.elapsed().as_micros() as f64 / ITERS as f64 / 1000.0;
+        println!("{:<25} {:>8.3} ms", "matmul f16 4096", ms_f16);
     }
-    gpu_sync();
-    let ms_f16 = start_f16.elapsed().as_micros() as f64 / ITERS as f64 / 1000.0;
-    println!("{:<25} {:>8.3} ms", "matmul f16 4096", ms_f16);
 
     println!("\n{}", "=".repeat(50));
     println!("Done.");

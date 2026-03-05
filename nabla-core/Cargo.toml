@@ -11,6 +11,7 @@ default = ["cpu"]
 cpu = ["dep:half"]
 gpu = ["dep:wgpu", "dep:pollster"]
 wgpu = ["gpu"]
+wgpu-f16 = ["gpu", "dep:half"]
 cuda = ["dep:cudarc", "dep:half"]
 hip = ["dep:hip-runtime-sys"]
 

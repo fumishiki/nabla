@@ -231,7 +231,12 @@ mod dual;
 #[cfg(feature = "cpu")]
 mod multi_dual;
 
-#[cfg(any(feature = "cpu", feature = "cuda", feature = "hip"))]
+#[cfg(any(
+    feature = "cpu",
+    feature = "cuda",
+    feature = "hip",
+    feature = "wgpu-f16"
+))]
 mod half_impl {
     use super::{MathOps, ReductionOps, Scalar, erf_approx};
 

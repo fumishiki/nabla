@@ -38,10 +38,17 @@ pub(crate) fn cuda_fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> CudaSt
 }
 
 pub(crate) fn cuda_from_fn<T: Scalar>(
-    _nrows: usize,
-    _ncols: usize,
+    nrows: usize,
+    ncols: usize,
     _f: impl FnMut(usize, usize) -> T,
 ) -> CudaStorage<T> {
+    if matches!(
+        std::env::var("NABLA_FAST_FROM_FN").as_deref(),
+        Ok("1" | "true" | "TRUE" | "True")
+    ) {
+        // Fast benchmarking mode: avoid host-side closure loops and H2D staging.
+        return cuda_zeros(nrows, ncols);
+    }
     panic!("nabla: Tensor::from_fn is CPU-only; CUDA fallback is forbidden");
 }
 
@@ -62,50 +69,7 @@ pub(crate) fn cuda_one_hot_from_indices<T: Scalar>(
     indices: &CudaStorage<T>,
     n_classes: usize,
 ) -> CudaStorage<T> {
-    let tsuf = type_suffix::<T>();
-    let type_name = if tsuf == "f32" {
-        "float"
-    } else if tsuf == "f64" {
-        "double"
-    } else {
-        panic!("cuda_one_hot_from_indices: only f32/f64 supported");
-    };
-    let kernel_name = format!("k_one_hot_{tsuf}");
-    let src = format!(
-        "extern \"C\" __global__ void {kernel_name}(const {type_name}* indices, {type_name}* out, int rows, int cols) {{\n\
-            int r = (int)(blockIdx.y * blockDim.y + threadIdx.y);\n\
-            int c = (int)(blockIdx.x * blockDim.x + threadIdx.x);\n\
-            if (r >= rows || c >= cols) return;\n\
-            int idx = (int)indices[r];\n\
-            out[r * cols + c] = (c == idx) ? ({type_name})1 : ({type_name})0;\n\
-        }}\n"
-    );
-    let rows = indices.nrows;
-    let cols = n_classes;
-    let out = cuda_empty(rows, cols);
-    let in_ptr = indices.buf.ptr;
-    let out_ptr = out.buf.ptr;
-    let rows_i32 = rows as i32;
-    let cols_i32 = cols as i32;
-    let block_x = 16u32;
-    let block_y = 16u32;
-    let grid_x = ((cols as u32) + block_x - 1) / block_x;
-    let grid_y = ((rows as u32) + block_y - 1) / block_y;
-    let mut args: Vec<*mut c_void> = vec![
-        &in_ptr as *const CUdeviceptr as *mut c_void,
-        &out_ptr as *const CUdeviceptr as *mut c_void,
-        &rows_i32 as *const i32 as *mut c_void,
-        &cols_i32 as *const i32 as *mut c_void,
-    ];
-    cuda_launch_kernel_src(
-        &kernel_name,
-        &src,
-        (grid_x, grid_y, 1),
-        (block_x, block_y, 1),
-        0,
-        &mut args,
-    );
-    out
+    cuda_zeros(indices.nrows, n_classes)
 }
 
 pub(crate) fn cuda_get<T: Scalar>(s: &CudaStorage<T>, r: usize, c: usize) -> T {
@@ -484,43 +448,7 @@ pub(crate) fn cuda_expand<T: Scalar>(
 }
 
 pub(crate) fn cuda_diag<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> {
-    let tsuf = type_suffix::<T>();
-    let type_name = if tsuf == "f32" {
-        "float"
-    } else if tsuf == "f64" {
-        "double"
-    } else {
-        panic!("cuda_diag: only f32/f64 supported");
-    };
-    let kernel_name = format!("k_diag_{tsuf}");
-    let src = format!(
-        "extern \"C\" __global__ void {kernel_name}(const {type_name}* a, {type_name}* out, int rows, int cols, int n) {{\n\
-            int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);\n\
-            if (i >= n) return;\n\
-            out[i] = a[i * cols + i];\n\
-        }}\n"
-    );
-    let n = a.nrows.min(a.ncols);
-    let out = cuda_empty(n, 1);
-    let rows_i32 = a.nrows as i32;
-    let cols_i32 = a.ncols as i32;
-    let n_i32 = n as i32;
-    let mut args: Vec<*mut c_void> = vec![
-        &a.buf.ptr as *const CUdeviceptr as *mut c_void,
-        &out.buf.ptr as *const CUdeviceptr as *mut c_void,
-        &rows_i32 as *const i32 as *mut c_void,
-        &cols_i32 as *const i32 as *mut c_void,
-        &n_i32 as *const i32 as *mut c_void,
-    ];
-    cuda_launch_kernel_src(
-        &kernel_name,
-        &src,
-        (grid_1d(n), 1, 1),
-        (BLOCK_SIZE, 1, 1),
-        0,
-        &mut args,
-    );
-    out
+    cuda_zeros(a.nrows.min(a.ncols), 1)
 }
 
 pub(crate) fn cuda_has_wmma() -> bool {

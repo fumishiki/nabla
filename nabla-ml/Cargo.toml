@@ -13,6 +13,7 @@ default = ["cpu"]
 cpu = ["nabla-core/cpu", "dep:half", "dep:rayon"]
 gpu = ["nabla-core/gpu"]
 wgpu = ["nabla-core/wgpu", "gpu"]
+wgpu-f16 = ["nabla-core/wgpu-f16", "wgpu", "dep:half"]
 cuda = ["nabla-core/cuda", "dep:half"]
 hip = ["nabla-core/hip"]
 

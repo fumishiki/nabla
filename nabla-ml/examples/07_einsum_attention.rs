@@ -3,6 +3,7 @@
 
 use nabla::prelude::*;
 
+#[cfg(feature = "cpu")]
 #[nabla::main(cpu)]
 fn main() {
     let d = 4;
@@ -28,4 +29,9 @@ fn main() {
         println!("  [{}]", row.join(", "));
     }
     println!("Output shape: {:?}", out.shape());
+}
+
+#[cfg(not(feature = "cpu"))]
+fn main() {
+    println!("07_einsum_attention requires the cpu feature.");
 }

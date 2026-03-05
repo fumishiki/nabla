@@ -416,6 +416,14 @@ impl crate::backend::BackendBlas for crate::backend::Hip {
     fn matmul_into<T: Scalar>(out: &mut HipStorage<T>, a: &HipStorage<T>, b: &HipStorage<T>) {
         hip_matmul(out, a, b);
     }
+    #[inline]
+    fn matmul_tn_into<T: Scalar>(out: &mut HipStorage<T>, a: &HipStorage<T>, b: &HipStorage<T>) {
+        hip_matmul_tn(out, a, b);
+    }
+    #[inline]
+    fn matmul_nt_into<T: Scalar>(out: &mut HipStorage<T>, a: &HipStorage<T>, b: &HipStorage<T>) {
+        hip_matmul_nt(out, a, b);
+    }
 }
 
 impl crate::backend::BackendNN for crate::backend::Hip {
@@ -494,6 +502,34 @@ impl crate::backend::BackendFusion for crate::backend::Hip {
             })
             .collect();
         hip_mega_fuse_launch::<T>(&mega_ops, nrows, ncols, kernel_hash)
+    }
+
+    fn fuse_reduce_launch<T: Scalar>(
+        inputs: &[*const u8],
+        nrows: usize,
+        ncols: usize,
+        _cpu_fn: impl FnMut(usize, usize) -> T,
+        _cpu_reduce: impl Fn(T, T) -> T,
+        gpu_expr: &str,
+        kernel_hash: &str,
+        n_inputs: usize,
+        reg_estimate: usize,
+        reduce_op: &str,
+    ) -> T {
+        let fused = hip_fuse_launch::<T>(
+            inputs,
+            nrows,
+            ncols,
+            gpu_expr,
+            kernel_hash,
+            n_inputs,
+            reg_estimate,
+        );
+        match reduce_op {
+            "sum" => hip_sum_all(&fused),
+            "max" => hip_max_all(&fused),
+            _ => panic!("Unsupported reduce op: {}", reduce_op),
+        }
     }
 }
 

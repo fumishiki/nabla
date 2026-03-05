@@ -24,16 +24,19 @@ fn per_iter_ms(start: Instant, iters: usize) -> f64 {
 fn rand_tensor(rows: usize, cols: usize) -> Tensor<f32> {
     use std::cell::Cell;
     thread_local! { static SEED: Cell<u64> = const { Cell::new(42) }; }
-    Tensor::from_fn(rows, cols, |_, _| {
-        SEED.with(|s| {
+    let mut data = Vec::with_capacity(rows * cols);
+    for _ in 0..rows * cols {
+        let v = SEED.with(|s| {
             let x = s
                 .get()
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
             s.set(x);
             (x >> 33) as f32 / (1u64 << 31) as f32 - 1.0
-        })
-    })
+        });
+        data.push(v);
+    }
+    Tensor::from_vec(data, rows, cols)
 }
 
 fn main() {

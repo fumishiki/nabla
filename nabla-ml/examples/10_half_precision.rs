@@ -3,6 +3,10 @@
 
 use nabla::prelude::*;
 
+#[cfg(feature = "cpu")]
+use half::f16;
+
+#[cfg(feature = "cpu")]
 #[nabla::main(cpu)]
 fn main() {
     let a = Tensor::<f16>::from_fn(3, 3, |i, j| f16::from_f32((i * 3 + j + 1) as f32));
@@ -25,4 +29,9 @@ fn main() {
     let diff = (exp_a.get(0, 0).to_f32() - exp32.get(0, 0)).abs();
     println!("\nPrecision diff |exp_f16 - exp_f32| at [0,0]: {diff:.6}");
     println!("f16 range: [{}, {}]", f16::MIN, f16::MAX);
+}
+
+#[cfg(not(feature = "cpu"))]
+fn main() {
+    println!("10_half_precision requires the cpu feature.");
 }

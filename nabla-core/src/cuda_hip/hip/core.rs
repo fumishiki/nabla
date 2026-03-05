@@ -606,6 +606,24 @@ pub(crate) fn hip_matmul<T: Scalar>(out: &mut HipStorage<T>, a: &HipStorage<T>, 
     );
 }
 
+pub(crate) fn hip_matmul_tn<T: Scalar>(
+    out: &mut HipStorage<T>,
+    a: &HipStorage<T>,
+    b: &HipStorage<T>,
+) {
+    let a_t = hip_transpose(a);
+    hip_matmul(out, &a_t, b);
+}
+
+pub(crate) fn hip_matmul_nt<T: Scalar>(
+    out: &mut HipStorage<T>,
+    a: &HipStorage<T>,
+    b: &HipStorage<T>,
+) {
+    let b_t = hip_transpose(b);
+    hip_matmul(out, a, &b_t);
+}
+
 pub(crate) fn hip_sum_all<T: Scalar>(a: &HipStorage<T>) -> T {
     gpu_common::rtc_sum_all(a)
 }
