@@ -189,6 +189,7 @@ impl<T: Scalar, B: Backend> Module<T, B> for Activation<T, B> {
 }
 
 /// Dropout regularization layer with inverted scaling.
+#[cfg_attr(not(feature = "cpu"), allow(dead_code))]
 pub struct DropoutLayer<T: Scalar, B: Backend> {
     p: f64,
     training: bool,

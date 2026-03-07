@@ -36,7 +36,7 @@ pub mod scalar;
 pub mod tensor;
 
 /// Backend abstraction layer: CPU, wgpu, CUDA, HIP.
-#[path = "common/backend.rs"]
+#[path = "common/backend/mod.rs"]
 pub mod backend;
 
 pub use backend::error;
@@ -77,7 +77,15 @@ pub use tensor::{MatrixLike, Tensor, TensorView};
 
 #[cfg(feature = "cuda")]
 pub use cuda_backend::{
-    CuBuffer, CudaError, CudaResult, Epilogue, KernelNodeState, NablaCudaGraph, PyGraph,
-    PyGraphTrainingGraph, TrainingGraph, cuda_copy_from_host, cuda_graph_capture,
-    cuda_graph_capture_cached, cuda_matmul_epilogue, cuda_synchronize,
+    AllocationProfile, AnalyzedNode, CondCmp, ConditionalGraph, ConditionalKind, CuBuffer,
+    CudaError, CudaResult, CudaStorage, DoubleBuffer, Epilogue, EpilogueCandidate, FusionCandidate,
+    KernelClass, KernelNodeState, NablaCudaGraph, NablaGraph, OptimizationReport, PyGraph,
+    PyGraphTrainingGraph, TrainingGraph, TransposeElimCandidate, analyze_graph, apply_all_fusions,
+    apply_fusion, cuda_compute_stream, cuda_conditional_set_from_scalar, cuda_copy_from_host,
+    cuda_graph_capture, cuda_graph_capture_cached, cuda_if_positive, cuda_launch_kernel_src,
+    cuda_matmul_epilogue, cuda_matmul_epilogue_bf16, cuda_pool_diagnostics,
+    cuda_pool_start_recording, cuda_pool_stop_recording_and_warm, cuda_pre_warm_pool,
+    cuda_synchronize, cuda_to_vec_async, cuda_transfer_stats, cuda_transfer_stats_reset,
+    cuda_upload_u32, extract_allocation_profile,
+    optimize_with_cache,
 };

@@ -734,3 +734,39 @@ pub(super) fn hip_embedding<T: Scalar>(
     );
     HipStorage::new(n_tokens, embed_dim, out_buf)
 }
+
+fn hip_wht_impl<T: Scalar>(a: &HipStorage<T>, inverse: bool) -> HipStorage<T> {
+    let ctx = get_ctx();
+    let rows = a.nrows;
+    let cols = a.ncols;
+    let n = rows * cols;
+    let op = if inverse { "wht_inverse" } else { "wht" };
+    let func = get_kernel_by_id(ctx, kernel_id::<T>(op));
+    let out_buf = HipBuffer::alloc_zeros(n * core::mem::size_of::<T>())
+        .unwrap_or_else(|e| panic!("HIP alloc: {e}"));
+    let rows_u32 = rows as u32;
+    let cols_u32 = cols as u32;
+    let block = (cols as u32).min(BLOCK_SIZE);
+    let smem = cols * core::mem::size_of::<T>();
+    hip_launch_smem(
+        func,
+        [rows as u32, 1, 1],
+        [block, 1, 1],
+        smem as u32,
+        &mut [
+            (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+            (&rows_u32 as *const u32).cast_mut().cast(),
+            (&cols_u32 as *const u32).cast_mut().cast(),
+        ],
+    );
+    HipStorage::new(rows, cols, out_buf)
+}
+
+pub(super) fn hip_wht<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
+    hip_wht_impl(a, false)
+}
+
+pub(super) fn hip_wht_inverse<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
+    hip_wht_impl(a, true)
+}

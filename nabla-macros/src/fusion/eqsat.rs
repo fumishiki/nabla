@@ -194,10 +194,8 @@ fn egg_to_expr(rec: &RecExpr<FuseExpr>, id: Id, sym_map: &[(String, Expr)]) -> E
         }
         FuseExpr::Symbol(s) => {
             let name = s.as_str();
-            for (sname, original) in sym_map {
-                if sname == name {
-                    return original.clone();
-                }
+            if let Some((_, original)) = sym_map.iter().find(|(sname, _)| sname == name) {
+                return original.clone();
             }
             let ident = Ident::new(name, Span::call_site());
             syn::parse_quote!(#ident)

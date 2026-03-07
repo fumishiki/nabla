@@ -39,20 +39,13 @@ pub use nabla_core::gpu;
 pub use nabla_core::gpu::shaders as wgsl;
 
 #[cfg(feature = "cuda")]
-pub use nabla_core::{CudaError, CudaResult, cuda_synchronize};
-
-#[cfg(feature = "cuda")]
-pub use nabla_core::cuda_backend::{
-    DoubleBuffer, Epilogue, KernelNodeState, NablaCudaGraph, PyGraph, TrainingGraph,
-    cuda_copy_from_host, cuda_graph_capture, cuda_graph_capture_cached, cuda_matmul_epilogue,
-    cuda_to_vec_async,
+pub use nabla_core::{
+    CondCmp, ConditionalGraph, ConditionalKind, CudaError, CudaResult, DoubleBuffer, Epilogue,
+    KernelNodeState, NablaCudaGraph, NablaGraph, PyGraph, TrainingGraph, cuda_compute_stream,
+    cuda_conditional_set_from_scalar, cuda_copy_from_host, cuda_graph_capture,
+    cuda_graph_capture_cached, cuda_if_positive, cuda_matmul_epilogue, cuda_matmul_epilogue_bf16,
+    cuda_synchronize, cuda_to_vec_async,
 };
-
-#[cfg(feature = "cuda")]
-pub use nabla_core::cuda_backend::{ConditionalGraph, ConditionalKind};
-
-#[cfg(feature = "cuda")]
-pub use nabla_core::cuda_backend::{CondCmp, cuda_conditional_set_from_scalar, cuda_if_positive};
 
 #[cfg(feature = "cpu")]
 #[allow(missing_docs)]
@@ -234,7 +227,10 @@ pub mod prelude {
     };
 
     // Autograd
-    pub use crate::autograd::{Tape, TensorLike, Variable, clip_grad_norm, scale_grad, zero_grad};
+    pub use crate::autograd::{
+        Tape, TensorLike, TensorLikeExt, TensorLikeMatmulBias, Variable, clip_grad_norm,
+        scale_grad, zero_grad,
+    };
 
     // Module / NN
     pub use crate::nn::{
@@ -289,9 +285,8 @@ pub mod prelude {
 
     // --- cuda-gated ---
     #[cfg(feature = "cuda")]
-    pub use nabla_core::cuda_backend::{
-        Epilogue, NablaCudaGraph, PyGraph, TrainingGraph, cuda_graph_capture, cuda_matmul_epilogue,
+    pub use nabla_core::{
+        CudaError, CudaResult, Epilogue, NablaCudaGraph, PyGraph, TrainingGraph,
+        cuda_graph_capture, cuda_matmul_epilogue, cuda_synchronize,
     };
-    #[cfg(feature = "cuda")]
-    pub use nabla_core::{CudaError, CudaResult, cuda_synchronize};
 }

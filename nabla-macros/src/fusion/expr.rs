@@ -91,9 +91,7 @@ pub(crate) fn is_elementwise_fusible(expr: &Expr) -> bool {
 
 pub(crate) fn contains_tensor(expr: &Expr, tensor_names: &[String]) -> bool {
     let mut pred = |e: &Expr| {
-        single_ident(e)
-            .map(|ident| tensor_names.contains(&ident.to_string()))
-            .unwrap_or(false)
+        single_ident(e).is_some_and(|ident| tensor_names.contains(&ident.to_string()))
     };
     expr_any(expr, &mut pred)
 }
@@ -151,32 +149,23 @@ pub(crate) fn collect_all_path_idents(expr: &Expr, out: &mut Vec<Ident>) {
     collect_idents(expr, out, &mut accept, false);
 }
 
+const SCALAR_METHOD_MAP: &[(&str, &str)] = &[
+    ("exp", "math_exp"), ("ln", "math_ln"), ("log1p", "math_log1p"),
+    ("sin", "math_sin"), ("cos", "math_cos"), ("tanh", "math_tanh"),
+    ("sqrt", "math_sqrt"), ("abs", "math_abs"), ("recip", "math_recip"),
+    ("erf", "math_erf"), ("ceil", "math_ceil"), ("floor", "math_floor"),
+    ("round", "math_round"), ("powf", "math_powf"),
+];
+
 pub(crate) fn scalar_method_name(method: &str) -> Option<&'static str> {
-    match method {
-        "exp" => Some("math_exp"),
-        "ln" => Some("math_ln"),
-        "log1p" => Some("math_log1p"),
-        "sin" => Some("math_sin"),
-        "cos" => Some("math_cos"),
-        "tanh" => Some("math_tanh"),
-        "sqrt" => Some("math_sqrt"),
-        "abs" => Some("math_abs"),
-        "recip" => Some("math_recip"),
-        "erf" => Some("math_erf"),
-        "ceil" => Some("math_ceil"),
-        "floor" => Some("math_floor"),
-        "round" => Some("math_round"),
-        "powf" => Some("math_powf"),
-        _ => None,
-    }
+    SCALAR_METHOD_MAP
+        .iter()
+        .find(|(m, _)| *m == method)
+        .map(|(_, s)| *s)
 }
 
 pub(crate) fn expr_references_prev(expr: &Expr) -> bool {
-    let mut pred = |e: &Expr| {
-        single_ident(e)
-            .map(|ident| ident == "prev")
-            .unwrap_or(false)
-    };
+    let mut pred = |e: &Expr| single_ident(e).is_some_and(|ident| ident == "prev");
     expr_any(expr, &mut pred)
 }
 

@@ -352,13 +352,7 @@ impl<T: Scalar, const R: usize, const C: usize> StaticMatrix<T, R, C> {
     /// Identity-like matrix: `1` on the diagonal, `0` elsewhere.
     #[must_use]
     pub fn identity() -> Self {
-        Self::from_fn(|r, c| {
-            if r == c {
-                T::one_impl()
-            } else {
-                T::zero_impl()
-            }
-        })
+        Self::from_fn(|r, c| if r == c { T::one_impl() } else { T::zero_impl() })
     }
 
     /// Number of rows (always `R`).

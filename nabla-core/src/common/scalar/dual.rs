@@ -28,130 +28,28 @@ impl<T: RealScalar> Dual<T> {
         }
     }
 
-    // Convenience wrappers mirroring f64 standard methods so that
-    // `#[nabla_grad]`-annotated functions using `.exp()`, `.sin()`, etc.
-    // compile transparently over `Dual<T>`.
-
-    /// Dual exponential: delegates to `MathOps::math_exp`.
-    #[inline]
-    pub fn exp(self) -> Self {
-        self.math_exp()
-    }
-
-    /// Dual natural log: delegates to `MathOps::math_ln`.
-    #[inline]
-    pub fn ln(self) -> Self {
-        self.math_ln()
-    }
-
-    /// Dual sin: delegates to `MathOps::math_sin`.
-    #[inline]
-    pub fn sin(self) -> Self {
-        self.math_sin()
-    }
-
-    /// Dual cos: delegates to `MathOps::math_cos`.
-    #[inline]
-    pub fn cos(self) -> Self {
-        self.math_cos()
-    }
-
-    /// Dual tan: delegates to `MathOps::math_tan`.
-    #[inline]
-    pub fn tan(self) -> Self {
-        self.math_tan()
-    }
-
-    /// Dual tanh: delegates to `MathOps::math_tanh`.
-    #[inline]
-    pub fn tanh(self) -> Self {
-        self.math_tanh()
-    }
-
-    /// Dual sqrt: delegates to `MathOps::math_sqrt`.
-    #[inline]
-    pub fn sqrt(self) -> Self {
-        self.math_sqrt()
-    }
-
-    /// Dual abs: delegates to `MathOps::math_abs`.
-    #[inline]
-    pub fn abs(self) -> Self {
-        self.math_abs()
-    }
-
-    /// Dual reciprocal: delegates to `MathOps::math_recip`.
-    #[inline]
-    pub fn recip(self) -> Self {
-        self.math_recip()
-    }
-
-    /// Dual asin: delegates to `MathOps::math_asin`.
-    #[inline]
-    pub fn asin(self) -> Self {
-        self.math_asin()
-    }
-
-    /// Dual acos: delegates to `MathOps::math_acos`.
-    #[inline]
-    pub fn acos(self) -> Self {
-        self.math_acos()
-    }
-
-    /// Dual atan: delegates to `MathOps::math_atan`.
-    #[inline]
-    pub fn atan(self) -> Self {
-        self.math_atan()
-    }
-
-    /// Dual atan2: delegates to `MathOps::math_atan2`.
-    #[inline]
-    pub fn atan2(self, other: Self) -> Self {
-        self.math_atan2(other)
-    }
-
-    /// Dual sinh: delegates to `MathOps::math_sinh`.
-    #[inline]
-    pub fn sinh(self) -> Self {
-        self.math_sinh()
-    }
-
-    /// Dual cosh: delegates to `MathOps::math_cosh`.
-    #[inline]
-    pub fn cosh(self) -> Self {
-        self.math_cosh()
-    }
-
-    /// Dual asinh: delegates to `MathOps::math_asinh`.
-    #[inline]
-    pub fn asinh(self) -> Self {
-        self.math_asinh()
-    }
-
-    /// Dual acosh: delegates to `MathOps::math_acosh`.
-    #[inline]
-    pub fn acosh(self) -> Self {
-        self.math_acosh()
-    }
-
-    /// Dual atanh: delegates to `MathOps::math_atanh`.
-    #[inline]
-    pub fn atanh(self) -> Self {
-        self.math_atanh()
-    }
-
-    /// Dual log2: delegates to `MathOps::math_log2`.
-    #[inline]
-    pub fn log2(self) -> Self {
-        self.math_log2()
-    }
-
-    /// Dual log10: delegates to `MathOps::math_log10`.
-    #[inline]
-    pub fn log10(self) -> Self {
-        self.math_log10()
-    }
 }
+
+/// Convenience wrappers mirroring f64 standard methods so that
+/// `#[nabla_grad]`-annotated functions using `.exp()`, `.sin()`, etc.
+/// compile transparently over `Dual<T>`.
+macro_rules! dual_math_delegate {
+    ($($fn_name:ident => $math_fn:ident),+ $(,)?) => {
+        #[allow(missing_docs)]
+        impl<T: RealScalar> Dual<T> {
+            $(#[inline] pub fn $fn_name(self) -> Self { self.$math_fn() })+
+            #[inline] pub fn atan2(self, other: Self) -> Self { self.math_atan2(other) }
+        }
+    };
+}
+
+dual_math_delegate!(
+    exp => math_exp, ln => math_ln, sin => math_sin, cos => math_cos,
+    tan => math_tan, tanh => math_tanh, sqrt => math_sqrt, abs => math_abs,
+    recip => math_recip, asin => math_asin, acos => math_acos, atan => math_atan,
+    sinh => math_sinh, cosh => math_cosh, asinh => math_asinh, acosh => math_acosh,
+    atanh => math_atanh, log2 => math_log2, log10 => math_log10,
+);
 
 impl<T: RealScalar> fmt::Display for Dual<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -530,58 +428,15 @@ impl<T: RealScalar> MathOps for Dual<T> {
     }
 }
 
-impl<T: RealScalar> ReductionOps for Dual<T> {
-    #[inline]
-    fn reduction_add(self, other: Self) -> Self {
-        self + other
-    }
-    #[inline]
-    fn reduction_max(self, other: Self) -> Self {
-        if self.value > other.value {
-            self
-        } else {
-            other
-        }
-    }
-    #[inline]
-    fn reduction_min(self, other: Self) -> Self {
-        if self.value < other.value {
-            self
-        } else {
-            other
-        }
-    }
-    #[inline]
-    fn reduction_gt(self, other: Self) -> bool {
-        self.value > other.value
-    }
-}
+impl_value_reduction!([T: RealScalar] Dual<T>);
 
 impl<T: RealScalar> Scalar for Dual<T> {
     type Real = T;
     const IS_REAL: bool = true;
-    #[inline]
-    fn zero() -> Self {
-        Dual::new(T::zero(), T::zero())
-    }
-    #[inline]
-    fn one() -> Self {
-        Dual::new(T::one(), T::zero())
-    }
-    #[inline]
-    fn conj(self) -> Self {
-        self
-    }
-    #[inline]
-    fn abs_val(self) -> Self::Real {
-        self.value.abs_val()
-    }
-    #[inline]
-    fn from_f64(v: f64) -> Self {
-        Dual::new(T::from_f64(v), T::zero())
-    }
-    #[inline]
-    fn to_f64(self) -> f64 {
-        self.value.to_f64()
-    }
+    #[inline] fn zero() -> Self { Dual::new(T::zero(), T::zero()) }
+    #[inline] fn one() -> Self { Dual::new(T::one(), T::zero()) }
+    #[inline] fn conj(self) -> Self { self }
+    #[inline] fn abs_val(self) -> Self::Real { self.value.abs_val() }
+    #[inline] fn from_f64(v: f64) -> Self { Dual::new(T::from_f64(v), T::zero()) }
+    #[inline] fn to_f64(self) -> f64 { self.value.to_f64() }
 }

@@ -53,6 +53,24 @@ impl<B, T: Scalar> RtcStorage<B, T> {
         *lock_or_recover(&self.host_cache) = None;
     }
 
+    /// Zero-copy reshape: just change metadata, no allocation or kernel launch.
+    /// Only valid for contiguous row-major tensors (always true for nabla GPU storage).
+    pub(crate) fn reshape_metadata(&mut self, new_rows: usize, new_cols: usize) {
+        assert_eq!(
+            self.nrows * self.ncols,
+            new_rows * new_cols,
+            "reshape_metadata: size mismatch {}x{} vs {}x{}",
+            self.nrows,
+            self.ncols,
+            new_rows,
+            new_cols,
+        );
+        self.nrows = new_rows;
+        self.ncols = new_cols;
+        self.invalidate_cache();
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn cached_get(&self, idx: usize) -> T
     where
         Self: EnsureCache,
@@ -78,6 +96,7 @@ where
     f(data)
 }
 
+#[allow(dead_code)]
 fn rtc_fold_first<B, T: Scalar>(a: &RtcStorage<B, T>, f: impl Fn(T, T) -> T) -> T
 where
     RtcStorage<B, T>: EnsureCache,
@@ -109,6 +128,7 @@ where
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn rtc_sum_all<B, T: Scalar>(a: &RtcStorage<B, T>) -> T
 where
     RtcStorage<B, T>: EnsureCache,
@@ -116,6 +136,7 @@ where
     with_cached_data(a, |data| data.iter().fold(T::zero(), |acc, &x| acc + x))
 }
 
+#[allow(dead_code)]
 pub(crate) fn rtc_fold_first_prod<B, T: Scalar>(a: &RtcStorage<B, T>) -> T
 where
     RtcStorage<B, T>: EnsureCache,
@@ -123,6 +144,7 @@ where
     with_cached_data(a, |data| data.iter().fold(T::one(), |acc, &x| acc * x))
 }
 
+#[allow(dead_code)]
 pub(crate) fn rtc_max_all<B, T: Scalar>(a: &RtcStorage<B, T>) -> T
 where
     RtcStorage<B, T>: EnsureCache,
@@ -130,6 +152,7 @@ where
     rtc_fold_first(a, |acc, x| acc.reduction_max(x))
 }
 
+#[allow(dead_code)]
 pub(crate) fn rtc_min_all<B, T: Scalar>(a: &RtcStorage<B, T>) -> T
 where
     RtcStorage<B, T>: EnsureCache,

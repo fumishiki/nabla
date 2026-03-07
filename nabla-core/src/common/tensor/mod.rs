@@ -125,6 +125,14 @@ impl<T: Scalar, B: Backend, Axes> Tensor<T, B, Axes> {
         B::sync(&self.storage);
     }
 
+    /// GPU device pointer for the underlying storage buffer.
+    /// Returns 0 for CPU tensors.
+    #[must_use]
+    #[inline]
+    pub fn device_ptr(&self) -> u64 {
+        B::device_ptr(&self.storage)
+    }
+
     /// Dimension along a given axis: 0 -> nrows, 1 -> ncols.
     #[must_use]
     #[inline]
@@ -317,7 +325,6 @@ pub(super) fn resolve_range(range: impl RangeBounds<usize>, len: usize) -> (usiz
 }
 
 #[inline]
-#[allow(dead_code)]
 pub(super) fn assert_cpu_only<B: Backend>(_op: &str) {
     #[cfg(feature = "cuda")]
     assert!(

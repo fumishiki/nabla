@@ -69,53 +69,33 @@ pub fn derive_module_impl(input: TokenStream) -> syn::Result<TokenStream> {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let param_count = required.len() + optional.len();
 
-    let req_push: Vec<_> = required
-        .iter()
-        .map(|id| quote! { params.push(&self.#id); })
-        .collect();
-    let opt_push: Vec<_> = optional
-        .iter()
-        .map(|id| quote! { if let Some(ref v) = self.#id { params.push(v); } })
-        .collect();
+    let push_tokens =
+        |req: &[syn::Ident], opt: &[syn::Ident], named: bool, mutable: bool| -> Vec<TokenStream> {
+            let (borrow, opt_borrow) = if mutable { (quote!(&mut), quote!(ref mut)) } else { (quote!(&), quote!(ref)) };
+            let mut out = Vec::with_capacity(req.len() + opt.len());
+            for id in req {
+                out.push(if named {
+                    let s = id.to_string();
+                    quote! { params.push((#s, #borrow self.#id)); }
+                } else {
+                    quote! { params.push(#borrow self.#id); }
+                });
+            }
+            for id in opt {
+                out.push(if named {
+                    let s = id.to_string();
+                    quote! { if let Some(#opt_borrow v) = self.#id { params.push((#s, v)); } }
+                } else {
+                    quote! { if let Some(#opt_borrow v) = self.#id { params.push(v); } }
+                });
+            }
+            out
+        };
 
-    let req_named_push: Vec<_> = required
-        .iter()
-        .map(|id| {
-            let s = id.to_string();
-            quote! { params.push((#s, &self.#id)); }
-        })
-        .collect();
-    let opt_named_push: Vec<_> = optional
-        .iter()
-        .map(|id| {
-            let s = id.to_string();
-            quote! { if let Some(ref v) = self.#id { params.push((#s, v)); } }
-        })
-        .collect();
-
-    let req_mut_push: Vec<_> = required
-        .iter()
-        .map(|id| quote! { params.push(&mut self.#id); })
-        .collect();
-    let opt_mut_push: Vec<_> = optional
-        .iter()
-        .map(|id| quote! { if let Some(ref mut v) = self.#id { params.push(v); } })
-        .collect();
-
-    let req_named_mut_push: Vec<_> = required
-        .iter()
-        .map(|id| {
-            let s = id.to_string();
-            quote! { params.push((#s, &mut self.#id)); }
-        })
-        .collect();
-    let opt_named_mut_push: Vec<_> = optional
-        .iter()
-        .map(|id| {
-            let s = id.to_string();
-            quote! { if let Some(ref mut v) = self.#id { params.push((#s, v)); } }
-        })
-        .collect();
+    let ref_push = push_tokens(&required, &optional, false, false);
+    let named_ref_push = push_tokens(&required, &optional, true, false);
+    let mut_push = push_tokens(&required, &optional, false, true);
+    let named_mut_push = push_tokens(&required, &optional, true, true);
 
     let struct_name_str = name.to_string();
 
@@ -130,25 +110,25 @@ pub fn derive_module_impl(input: TokenStream) -> syn::Result<TokenStream> {
 
             fn parameters(&self) -> Vec<&nabla_core::tensor::Tensor<#t_param, #b_param>> {
                 let mut params = Vec::with_capacity(#param_count);
-                #(#req_push)* #(#opt_push)*
+                #(#ref_push)*
                 params
             }
 
             fn named_parameters(&self) -> Vec<(&str, &nabla_core::tensor::Tensor<#t_param, #b_param>)> {
                 let mut params = Vec::with_capacity(#param_count);
-                #(#req_named_push)* #(#opt_named_push)*
+                #(#named_ref_push)*
                 params
             }
 
             fn parameters_mut(&mut self) -> Vec<&mut nabla_core::tensor::Tensor<#t_param, #b_param>> {
                 let mut params = Vec::with_capacity(#param_count);
-                #(#req_mut_push)* #(#opt_mut_push)*
+                #(#mut_push)*
                 params
             }
 
             fn named_parameters_mut(&mut self) -> Vec<(&str, &mut nabla_core::tensor::Tensor<#t_param, #b_param>)> {
                 let mut params = Vec::with_capacity(#param_count);
-                #(#req_named_mut_push)* #(#opt_named_mut_push)*
+                #(#named_mut_push)*
                 params
             }
         }
@@ -160,13 +140,7 @@ fn extract_tb_params(input: &DeriveInput) -> syn::Result<(syn::Ident, TokenStrea
         .generics
         .params
         .iter()
-        .filter_map(|p| {
-            if let GenericParam::Type(tp) = p {
-                Some(tp)
-            } else {
-                None
-            }
-        })
+        .filter_map(|p| if let GenericParam::Type(tp) = p { Some(tp) } else { None })
         .collect();
 
     let t = type_params
@@ -187,12 +161,9 @@ fn extract_tb_params(input: &DeriveInput) -> syn::Result<(syn::Ident, TokenStrea
     });
 
     let t_ident = t.ident.clone();
-    let b_tokens = b.map_or_else(
-        || quote! { nabla_core::backend::DefaultBackend },
-        |bp| {
-            let id = &bp.ident;
-            quote! { #id }
-        },
-    );
+    let b_tokens = match b {
+        Some(bp) => { let id = &bp.ident; quote! { #id } }
+        None => quote! { nabla_core::backend::DefaultBackend },
+    };
     Ok((t_ident, b_tokens))
 }

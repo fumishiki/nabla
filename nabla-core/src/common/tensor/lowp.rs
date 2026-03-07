@@ -50,6 +50,21 @@ impl<B: Backend> Tensor<Fp8E4M3, B> {
     pub fn dequantize_fp8_e4m3(&self) -> Tensor<f32, B> {
         self.cast::<f32>()
     }
+
+    /// FP8 E4M3 matmul: inputs in Fp8E4M3, output in bf16. Hardware-accelerated on Hopper+.
+    #[must_use]
+    #[cfg(any(
+        feature = "cpu",
+        feature = "cuda",
+        feature = "hip",
+        feature = "wgpu-f16"
+    ))]
+    pub fn fp8_matmul(&self, rhs: &Self) -> Tensor<half::bf16, B> {
+        let (_, k_a) = self.shape();
+        let (k_b, _) = rhs.shape();
+        assert_eq!(k_a, k_b, "fp8_matmul: a cols {k_a} != b rows {k_b}");
+        Tensor::from_storage(B::fp8_matmul_e4m3(&self.storage, &rhs.storage))
+    }
 }
 
 impl<B: Backend> Tensor<Fp8E5M2, B> {
@@ -57,6 +72,21 @@ impl<B: Backend> Tensor<Fp8E5M2, B> {
     #[must_use]
     pub fn dequantize_fp8_e5m2(&self) -> Tensor<f32, B> {
         self.cast::<f32>()
+    }
+
+    /// FP8 E5M2 matmul: inputs in Fp8E5M2, output in bf16. Hardware-accelerated on Hopper+.
+    #[must_use]
+    #[cfg(any(
+        feature = "cpu",
+        feature = "cuda",
+        feature = "hip",
+        feature = "wgpu-f16"
+    ))]
+    pub fn fp8_matmul(&self, rhs: &Self) -> Tensor<half::bf16, B> {
+        let (_, k_a) = self.shape();
+        let (k_b, _) = rhs.shape();
+        assert_eq!(k_a, k_b, "fp8_matmul: a cols {k_a} != b rows {k_b}");
+        Tensor::from_storage(B::fp8_matmul_e5m2(&self.storage, &rhs.storage))
     }
 }
 

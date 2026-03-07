@@ -1,7 +1,20 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
 
 use crate::kernels_cu::BLOCK_SIZE;
 use crate::scalar::Scalar;
+
+static POOL_DEBUG: AtomicBool = AtomicBool::new(false);
+static POOL_DEBUG_CHECKED: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub(crate) fn pool_debug_enabled() -> bool {
+    if !POOL_DEBUG_CHECKED.load(Ordering::Relaxed) {
+        let enabled = std::env::var("NABLA_POOL_DEBUG").is_ok_and(|v| matches!(v.as_str(), "1" | "true"));
+        POOL_DEBUG.store(enabled, Ordering::Relaxed);
+        POOL_DEBUG_CHECKED.store(true, Ordering::Release);
+    }
+    POOL_DEBUG.load(Ordering::Relaxed)
+}
 
 pub(crate) fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -113,6 +126,10 @@ pub(crate) const KERNEL_PAIRS: &[(&str, (&str, &str))] = &[
         ("k_batch_norm_fwd_f32", "k_batch_norm_fwd_f64"),
     ),
     (
+        "batch_norm_update_running",
+        ("k_batch_norm_update_running_f32", "k_batch_norm_update_running_f64"),
+    ),
+    (
         "cross_entropy",
         ("k_cross_entropy_f32", "k_cross_entropy_f64"),
     ),
@@ -126,6 +143,8 @@ pub(crate) const KERNEL_PAIRS: &[(&str, (&str, &str))] = &[
     ("mse_sum_fwd", ("k_mse_sum_fwd_f32", "k_mse_sum_fwd_f64")),
     ("mse_sum_bwd", ("k_mse_sum_bwd_f32", "k_mse_sum_bwd_f64")),
     ("multi_axpy3", ("k_multi_axpy3_f32", "k_multi_axpy3_f64")),
+    ("wht", ("k_wht_f32", "k_wht_f64")),
+    ("wht_inverse", ("k_wht_inverse_f32", "k_wht_inverse_f64")),
 ];
 
 #[cfg(feature = "hip")]
@@ -268,6 +287,8 @@ pub(crate) enum KernelId {
     BatchNormStatsF64,
     BatchNormFwdF32,
     BatchNormFwdF64,
+    BatchNormUpdateRunningF32,
+    BatchNormUpdateRunningF64,
     CrossEntropyF32,
     CrossEntropyF64,
     SdpaF32,
@@ -284,6 +305,10 @@ pub(crate) enum KernelId {
     MseSumBwdF64,
     MultiAxpy3F32,
     MultiAxpy3F64,
+    WhtF32,
+    WhtF64,
+    WhtInverseF32,
+    WhtInverseF64,
     _Count,
 }
 
@@ -418,6 +443,8 @@ pub(crate) const KERNEL_ID_MAP: &[(&str, KernelId)] = &[
     ("k_batch_norm_stats_f64", KernelId::BatchNormStatsF64),
     ("k_batch_norm_fwd_f32", KernelId::BatchNormFwdF32),
     ("k_batch_norm_fwd_f64", KernelId::BatchNormFwdF64),
+    ("k_batch_norm_update_running_f32", KernelId::BatchNormUpdateRunningF32),
+    ("k_batch_norm_update_running_f64", KernelId::BatchNormUpdateRunningF64),
     ("k_cross_entropy_f32", KernelId::CrossEntropyF32),
     ("k_cross_entropy_f64", KernelId::CrossEntropyF64),
     ("k_sdpa_f32", KernelId::SdpaF32),
@@ -434,6 +461,10 @@ pub(crate) const KERNEL_ID_MAP: &[(&str, KernelId)] = &[
     ("k_mse_sum_bwd_f64", KernelId::MseSumBwdF64),
     ("k_multi_axpy3_f32", KernelId::MultiAxpy3F32),
     ("k_multi_axpy3_f64", KernelId::MultiAxpy3F64),
+    ("k_wht_f32", KernelId::WhtF32),
+    ("k_wht_f64", KernelId::WhtF64),
+    ("k_wht_inverse_f32", KernelId::WhtInverseF32),
+    ("k_wht_inverse_f64", KernelId::WhtInverseF64),
 ];
 
 #[cfg(feature = "hip")]
@@ -462,25 +493,23 @@ pub(crate) fn round_size(size: usize) -> usize {
     (size + ALIGN - 1) & !(ALIGN - 1)
 }
 
-pub(crate) const SMALL_LARGE_BOUNDARY: usize = 1 << 20; // 1MB
-pub(crate) const SMALL_SPLIT_MIN: usize = 512;
-pub(crate) const LARGE_SPLIT_MIN: usize = 1 << 20; // 1MB
-pub(crate) const SMALL_ALLOC_SIZE: usize = 2 << 20; // 2MB
-pub(crate) const LARGE_ALLOC_SIZE: usize = 20 << 20; // 20MB
+/// GC triggers when allocated/(allocated+cached) exceeds this ratio.
 pub(crate) const GC_THRESHOLD: f64 = 0.97;
 
+// Power-of-2 bucket range: 512B (2^9) .. 256MB (2^28) → 20 buckets.
+const MIN_BUCKET_EXP: u32 = 9; // 512B
+const MAX_BUCKET_EXP: u32 = 28; // 256MB
+const BUCKET_COUNT: usize = (MAX_BUCKET_EXP - MIN_BUCKET_EXP + 1) as usize; // 20
+
+#[allow(dead_code)]
 pub(crate) trait GpuPtr: Copy + Send + Eq {
     fn null() -> Self;
-    fn offset(self, bytes: usize) -> Self;
 }
 
 #[cfg(feature = "cuda")]
 impl GpuPtr for u64 {
     fn null() -> Self {
         0
-    }
-    fn offset(self, bytes: usize) -> Self {
-        self + bytes as u64
     }
 }
 
@@ -489,109 +518,127 @@ impl GpuPtr for *mut std::ffi::c_void {
     fn null() -> Self {
         std::ptr::null_mut()
     }
-    fn offset(self, bytes: usize) -> Self {
-        unsafe { self.byte_add(bytes) }
-    }
 }
 
-pub(crate) struct FreeBlock<P: GpuPtr> {
-    pub ptr: P,
-    pub size: usize,
+/// Round `size` up to the next power of 2, clamped to [512, 256MB].
+/// Sizes > 256MB are rounded to 512B alignment via `round_size`.
+#[inline]
+pub(crate) fn bucket_size(size: usize) -> usize {
+    let min = 1usize << MIN_BUCKET_EXP;
+    let max = 1usize << MAX_BUCKET_EXP;
+    if size <= min {
+        return min;
+    }
+    if size > max {
+        return round_size(size);
+    }
+    size.next_power_of_two()
 }
+
+/// Map a bucket size to its index. Returns `None` for oversized allocations.
+#[inline]
+fn bucket_index(bucket_sz: usize) -> Option<usize> {
+    if !bucket_sz.is_power_of_two() {
+        return None;
+    }
+    let exp = bucket_sz.trailing_zeros();
+    if !(MIN_BUCKET_EXP..=MAX_BUCKET_EXP).contains(&exp) {
+        return None;
+    }
+    Some((exp - MIN_BUCKET_EXP) as usize)
+}
+
+/// Default number of allocs before auto-warm triggers.
+const AUTO_WARM_THRESHOLD: u64 = 2000;
 
 pub(crate) struct MemoryPool<P: GpuPtr> {
-    pub small_free: Vec<FreeBlock<P>>,
-    pub large_free: Vec<FreeBlock<P>>,
+    /// Per-bucket free lists. Index 0 = 512B, index 19 = 256MB.
+    buckets: [Vec<P>; BUCKET_COUNT],
+    /// Oversized blocks (> 256MB) stored as (ptr, size).
+    oversized: Vec<(P, usize)>,
     pub allocated_bytes: usize,
     pub cached_bytes: usize,
+    // Diagnostics
+    hits: u64,
+    misses: u64,
+    gc_count: u64,
+    // Allocation recording for eager pre-warm (first iteration)
+    recording: bool,
+    recorded_sizes: Vec<usize>,
+    warmed: bool,
+    /// Alloc counter for auto-warm: starts recording at first alloc,
+    /// triggers pre-warm when count reaches threshold.
+    alloc_count: u64,
+    auto_warm_threshold: u64,
 }
 
 impl<P: GpuPtr> MemoryPool<P> {
     pub fn new() -> Self {
         Self {
-            small_free: Vec::new(),
-            large_free: Vec::new(),
+            buckets: std::array::from_fn(|_| Vec::new()),
+            oversized: Vec::new(),
             allocated_bytes: 0,
             cached_bytes: 0,
+            hits: 0,
+            misses: 0,
+            gc_count: 0,
+            recording: true,
+            recorded_sizes: Vec::new(),
+            warmed: false,
+            alloc_count: 0,
+            auto_warm_threshold: AUTO_WARM_THRESHOLD,
         }
     }
 
-    /// Best-fit: find smallest block ≥ requested size. Returns index if found.
-    pub fn best_fit(pool: &[FreeBlock<P>], size: usize) -> Option<usize> {
-        let pos = pool.partition_point(|b| b.size < size);
-        (pos < pool.len()).then_some(pos)
-    }
-
-    pub fn split_min(size: usize) -> usize {
-        if size < SMALL_LARGE_BOUNDARY {
-            SMALL_SPLIT_MIN
-        } else {
-            LARGE_SPLIT_MIN
-        }
-    }
-
-    /// Try to allocate `rounded` bytes from `pool`.
-    /// `cached_bytes` is updated in-place.
-    /// Returns (ptr, actual_alloc_size) or None.
-    fn try_alloc_from(
-        pool: &mut Vec<FreeBlock<P>>,
-        rounded: usize,
-        cached_bytes: &mut usize,
-    ) -> Option<(P, usize)> {
-        let idx = Self::best_fit(pool, rounded)?;
-        let block = pool.remove(idx);
-        *cached_bytes -= block.size;
-        // Return the whole block without splitting.
-        // Each pool block = one cuMemAllocAsync allocation.
-        // Splitting would create sub-blocks whose pointers are invalid for cuMemFreeAsync.
-        Some((block.ptr, block.size))
-    }
-
-    /// Try to allocate from pool. Splits oversized blocks.
-    /// Searches the primary pool first; falls back to the other pool so that
-    /// small requests can reuse blocks coalesced into large_free (and vice
-    /// versa). This is critical during CUDA Graph capture where cuMemAlloc is
-    /// forbidden.
-    /// Returns (ptr, actual_alloc_size) or None.
+    /// Pop a block from the bucket matching `size`. O(1).
+    /// Returns (ptr, bucket_size) or None.
     pub fn try_alloc(&mut self, size: usize) -> Option<(P, usize)> {
+        self.alloc_count += 1;
+        if self.recording {
+            self.recorded_sizes.push(size);
+        }
+        let bsz = bucket_size(size);
+        if let Some(idx) = bucket_index(bsz) {
+            if let Some(ptr) = self.buckets[idx].pop() {
+                self.cached_bytes -= bsz;
+                self.hits += 1;
+                return Some((ptr, bsz));
+            }
+            self.misses += 1;
+            if pool_debug_enabled() {
+                eprintln!("[nabla pool] MISS bucket={bsz} req={size} avail=0");
+            }
+            return None;
+        }
+        // Oversized: exact-match search (rare path)
         let rounded = round_size(size);
-        if rounded < SMALL_LARGE_BOUNDARY {
-            // Primary: small pool. Fallback: large pool (large block serves
-            // small request via splitting — remainder stays in large_free).
-            if let result @ Some(_) =
-                Self::try_alloc_from(&mut self.small_free, rounded, &mut self.cached_bytes)
-            {
-                return result;
-            }
-            Self::try_alloc_from(&mut self.large_free, rounded, &mut self.cached_bytes)
+        let pos = self.oversized.iter().position(|(_, s)| *s >= rounded);
+        if let Some(pos) = pos {
+            let (ptr, actual) = self.oversized.swap_remove(pos);
+            self.cached_bytes -= actual;
+            self.hits += 1;
+            Some((ptr, actual))
         } else {
-            // Primary: large pool. Fallback: small pool (unlikely to satisfy a
-            // large request, but included for symmetry).
-            if let result @ Some(_) =
-                Self::try_alloc_from(&mut self.large_free, rounded, &mut self.cached_bytes)
-            {
-                return result;
+            self.misses += 1;
+            if pool_debug_enabled() {
+                eprintln!("[nabla pool] MISS oversized req={size} rounded={rounded}");
             }
-            Self::try_alloc_from(&mut self.small_free, rounded, &mut self.cached_bytes)
+            None
         }
     }
 
-    /// Return a block to the pool. No coalescing — each block stays as an
-    /// independent allocation unit so that GC can safely `cuMemFreeAsync` it
-    /// with the original pointer from `cuMemAllocAsync`.
+    /// Push a block back to the appropriate bucket. O(1).
     pub fn release(&mut self, ptr: P, size: usize) {
-        let pool = if size < SMALL_LARGE_BOUNDARY {
-            &mut self.small_free
+        if let Some(idx) = bucket_index(size) {
+            self.buckets[idx].push(ptr);
         } else {
-            &mut self.large_free
-        };
-        let pos = pool.partition_point(|b| b.size < size);
-        pool.insert(pos, FreeBlock { ptr, size });
+            self.oversized.push((ptr, size));
+        }
         self.cached_bytes += size;
     }
 
-    /// GC: free cached blocks if allocated exceeds threshold.
-    /// Calls `free_fn` to actually free device memory.
+    /// GC: free cached blocks if allocated/(allocated+cached) exceeds threshold.
+    /// Keeps 25% of cached bytes as headroom to avoid immediate re-allocation.
     pub fn maybe_gc<F: FnMut(P, usize)>(&mut self, free_fn: F) {
         let total = self.allocated_bytes + self.cached_bytes;
         if total == 0 {
@@ -599,36 +646,141 @@ impl<P: GpuPtr> MemoryPool<P> {
         }
         let usage_ratio = self.allocated_bytes as f64 / total as f64;
         if usage_ratio > GC_THRESHOLD && self.cached_bytes > 0 {
-            self.trim(0, free_fn);
+            self.gc_count += 1;
+            // Keep 25% of cached bytes as headroom instead of trimming to 0.
+            // This avoids the pattern: GC frees all → next allocs all miss → re-alloc spike.
+            let keep = self.cached_bytes / 4;
+            if pool_debug_enabled() {
+                eprintln!(
+                    "[nabla pool] GC #{} ratio={:.3} cached={}KB keep={}KB",
+                    self.gc_count, usage_ratio,
+                    self.cached_bytes / 1024, keep / 1024,
+                );
+            }
+            self.trim(keep, free_fn);
         }
     }
 
-    /// Free cached blocks until pool size ≤ target_bytes. Returns bytes freed.
+    /// Free cached blocks until cached_bytes ≤ target_bytes.
+    /// Frees from largest buckets first. Returns total bytes freed.
     pub fn trim<F: FnMut(P, usize)>(&mut self, target_bytes: usize, mut free_fn: F) -> usize {
         let mut freed = 0usize;
+        // Oversized first (largest)
         while self.cached_bytes > target_bytes {
-            if let Some(block) = self.large_free.pop() {
-                free_fn(block.ptr, block.size);
-                self.cached_bytes -= block.size;
-                freed += block.size;
-            } else if let Some(block) = self.small_free.pop() {
-                free_fn(block.ptr, block.size);
-                self.cached_bytes -= block.size;
-                freed += block.size;
+            if let Some((ptr, sz)) = self.oversized.pop() {
+                free_fn(ptr, sz);
+                self.cached_bytes -= sz;
+                freed += sz;
             } else {
+                break;
+            }
+        }
+        // Then buckets from largest to smallest
+        for idx in (0..BUCKET_COUNT).rev() {
+            while self.cached_bytes > target_bytes {
+                if let Some(ptr) = self.buckets[idx].pop() {
+                    let sz = 1usize << (idx as u32 + MIN_BUCKET_EXP);
+                    free_fn(ptr, sz);
+                    self.cached_bytes -= sz;
+                    freed += sz;
+                } else {
+                    break;
+                }
+            }
+            if self.cached_bytes <= target_bytes {
                 break;
             }
         }
         freed
     }
 
+    /// Pre-warm: for each requested size, ensure the bucket has enough blocks.
+    /// Returns the number of new blocks allocated.
+    pub fn pre_warm<F>(&mut self, sizes: &[usize], mut alloc_fn: F) -> usize
+    where
+        F: FnMut(usize) -> Option<(P, usize)>,
+    {
+        // Count how many blocks of each bucket size are needed
+        let mut needed = [0usize; BUCKET_COUNT];
+        for &s in sizes {
+            let bsz = bucket_size(s);
+            if let Some(idx) = bucket_index(bsz) {
+                needed[idx] += 1;
+            }
+        }
+        let mut added = 0usize;
+        for (idx, &need) in needed.iter().enumerate() {
+            let have = self.buckets[idx].len();
+            let deficit = need.saturating_sub(have);
+            let bsz = 1usize << (idx as u32 + MIN_BUCKET_EXP);
+            for _ in 0..deficit {
+                if let Some((ptr, actual)) = alloc_fn(bsz) {
+                    self.release(ptr, actual);
+                    added += 1;
+                }
+            }
+        }
+        added
+    }
+
+    /// Start recording allocation sizes for later pre-warm.
+    pub fn start_recording(&mut self) {
+        self.recorded_sizes.clear();
+        self.recording = true;
+    }
+
+    /// Stop recording and return the captured sizes.
+    /// After this call, `pre_warm` can be called with the returned sizes.
+    pub fn stop_recording(&mut self) -> Vec<usize> {
+        self.recording = false;
+        std::mem::take(&mut self.recorded_sizes)
+    }
+
+    /// Whether the pool has been pre-warmed from recorded allocations.
+    pub fn is_warmed(&self) -> bool { self.warmed }
+
+    /// Mark the pool as warmed (called after pre_warm with recorded sizes).
+    pub fn set_warmed(&mut self) { self.warmed = true; }
+
+    /// Returns true exactly once: when alloc_count reaches the auto-warm threshold
+    /// and the pool hasn't been warmed yet. Caller should stop recording and pre-warm.
+    pub fn should_auto_warm(&self) -> bool {
+        !self.warmed && self.recording && self.alloc_count >= self.auto_warm_threshold
+    }
+
+
+    /// Print diagnostic summary to stderr (NABLA_POOL_DEBUG=1).
+    pub fn print_diagnostics(&self) {
+        if !pool_debug_enabled() {
+            return;
+        }
+        let total = self.hits + self.misses;
+        let rate = if total > 0 { self.hits as f64 / total as f64 * 100.0 } else { 0.0 };
+        eprintln!(
+            "[nabla pool] hits={} misses={} rate={:.1}% gc={} alloc={}MB cached={}MB buckets=[{}]",
+            self.hits, self.misses, rate, self.gc_count,
+            self.allocated_bytes / (1024 * 1024),
+            self.cached_bytes / (1024 * 1024),
+            (0..BUCKET_COUNT)
+                .filter(|i| !self.buckets[*i].is_empty())
+                .map(|i| format!("{}:{}", 1usize << (i as u32 + MIN_BUCKET_EXP), self.buckets[i].len()))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+
     /// Drain all cached blocks, calling `free_fn` for each.
+    #[allow(dead_code)]
     pub fn drain_all<F: FnMut(P, usize)>(&mut self, mut free_fn: F) {
-        for block in self.small_free.drain(..) {
-            free_fn(block.ptr, block.size);
+        for (idx, bucket) in self.buckets.iter_mut().enumerate() {
+            let sz = 1usize << (idx as u32 + MIN_BUCKET_EXP);
+            for ptr in bucket.drain(..) {
+                free_fn(ptr, sz);
+            }
         }
-        for block in self.large_free.drain(..) {
-            free_fn(block.ptr, block.size);
+        for (ptr, sz) in self.oversized.drain(..) {
+            free_fn(ptr, sz);
         }
+        self.cached_bytes = 0;
     }
 }

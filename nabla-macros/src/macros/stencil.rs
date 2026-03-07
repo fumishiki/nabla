@@ -264,11 +264,6 @@ pub(crate) fn stencil_impl(input: TokenStream2) -> Result<TokenStream2> {
 }
 
 fn idx_slot(idx: &IdxExpr, idx_i: &str, idx_j: &str) -> Option<usize> {
-    if idx.var_name() == idx_i {
-        Some(0)
-    } else if idx.var_name() == idx_j {
-        Some(1)
-    } else {
-        None
-    }
+    let v = idx.var_name();
+    [idx_i, idx_j].iter().position(|&s| s == v)
 }

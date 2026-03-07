@@ -94,9 +94,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     #[cfg(feature = "cpu")]
     pub fn one_hot(indices: &[usize], n_classes: usize) -> Self {
-        Self::from_fn(indices.len(), n_classes, |r, c| {
-            if c == indices[r] { T::one() } else { T::zero() }
-        })
+        Self::from_fn(indices.len(), n_classes, |r, c| if c == indices[r] { T::one() } else { T::zero() })
     }
 
     /// Create tensor from slice with non-blocking H2D transfer.
@@ -151,16 +149,14 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         Self::from_storage(B::empty(nrows, ncols))
     }
 
-    /// Generate a 1-D tensor: `[start, start+step, start+2*step, ...]` with length `n`.
-    /// Generate a 1-D tensor: `[start, start+step, start+2*step, ...]` (CPU-only).
+    /// Generate a 1-D tensor: `[start, start+step, start+2*step, ...]` with length `n` (CPU-only).
     #[must_use]
     #[cfg(feature = "cpu")]
     pub fn arange(start: T, step: T, n: usize) -> Self {
         Self::from_fn(1, n, |_, c| start + step * T::from_f64(c as f64))
     }
 
-    /// Generate a 1-D tensor of `n` evenly spaced values from `start` to `end` (inclusive).
-    /// Generate a 1-D tensor of `n` evenly spaced values (CPU-only).
+    /// Generate a 1-D tensor of `n` evenly spaced values from `start` to `end` inclusive (CPU-only).
     #[must_use]
     #[cfg(feature = "cpu")]
     pub fn linspace(start: T, end: T, n: usize) -> Self {
@@ -240,6 +236,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 }
 
 /// Zero-copy read-only view into a sub-region of a [`Tensor`].
+#[cfg_attr(not(feature = "cpu"), allow(dead_code))]
 pub struct TensorView<'a, T: Scalar, B: Backend> {
     source: &'a Tensor<T, B>,
     row_start: usize,
@@ -371,6 +368,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 }
 
 #[inline]
+#[cfg_attr(not(feature = "cpu"), allow(dead_code))]
 fn next_index(idx: &mut usize, limit: usize) -> Option<usize> {
     if *idx >= limit {
         return None;
@@ -381,6 +379,7 @@ fn next_index(idx: &mut usize, limit: usize) -> Option<usize> {
 }
 
 /// Iterator over tensor rows, yielding `1 x ncols` tensors.
+#[cfg_attr(not(feature = "cpu"), allow(dead_code))]
 pub struct RowIter<'a, T: Scalar, B: Backend> {
     pub(super) tensor: &'a Tensor<T, B>,
     pub(super) idx: usize,
@@ -398,6 +397,7 @@ impl<T: Scalar> Iterator for RowIter<'_, T, Cpu> {
 }
 
 /// Iterator over tensor columns, yielding `nrows x 1` tensors.
+#[cfg_attr(not(feature = "cpu"), allow(dead_code))]
 pub struct ColIter<'a, T: Scalar, B: Backend> {
     pub(super) tensor: &'a Tensor<T, B>,
     pub(super) idx: usize,

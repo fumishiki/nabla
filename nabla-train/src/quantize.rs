@@ -303,7 +303,7 @@ mod cuda_dequant {
     use std::ffi::c_void;
 
     use nabla_core::backend::Cuda;
-    use nabla_core::cuda_backend::{cuda_launch_kernel_src, cuda_upload_u32};
+    use nabla_core::{cuda_launch_kernel_src, cuda_upload_u32};
 
     /// CUDA INT4 dequant-matmul kernel source (NVRTC JIT).
     const DEQUANT_MATMUL_SRC: &str = r#"

@@ -17,35 +17,17 @@ pub struct TrainingGraph {
 impl TrainingGraph {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            graph: None,
-            warmup_iters: 5,
-            iter_count: 0,
-            min_nodes: 3,
-            capture_disabled: false,
-        }
+        Self { graph: None, warmup_iters: 5, iter_count: 0, min_nodes: 3, capture_disabled: false }
     }
 
     #[must_use]
     pub fn with_warmup(warmup_iters: usize) -> Self {
-        Self {
-            graph: None,
-            warmup_iters,
-            iter_count: 0,
-            min_nodes: 3,
-            capture_disabled: false,
-        }
+        Self { warmup_iters, ..Self::new() }
     }
 
     #[must_use]
     pub fn with_min_nodes(min_nodes: usize) -> Self {
-        Self {
-            graph: None,
-            warmup_iters: 5,
-            iter_count: 0,
-            min_nodes: min_nodes.max(1),
-            capture_disabled: false,
-        }
+        Self { min_nodes: min_nodes.max(1), ..Self::new() }
     }
 
     pub fn step<F: FnMut()>(&mut self, f: &mut F) -> CudaResult<()> {
@@ -119,6 +101,177 @@ impl Default for TrainingGraph {
     }
 }
 
+struct ParamBinding {
+    original_ptr: u64,
+    refs: Vec<(usize, usize)>,
+}
+
+fn build_bindings(tracked_ptrs: &[u64], kernel_nodes: &[KernelNodeState]) -> Vec<ParamBinding> {
+    tracked_ptrs
+        .iter()
+        .map(|&ptr| {
+            let refs = kernel_nodes.iter().enumerate()
+                .flat_map(|(ni, node)| {
+                    node.arg_bytes.iter().enumerate()
+                        .filter(move |&(_, &v)| v == ptr)
+                        .map(move |(ai, _)| (ni, ai))
+                })
+                .collect();
+            ParamBinding { original_ptr: ptr, refs }
+        })
+        .collect()
+}
+
+/// Fused CUDA Graph with automatic parameter pointer rebinding.
+/// Tracks registered parameter device pointers, captures a training step
+/// into a CUDA Graph, and on replay automatically updates any kernel nodes
+/// whose arguments match relocated parameters.
+pub struct NablaGraph {
+    inner: Option<PyGraph>,
+    tracked_ptrs: Vec<u64>,
+    bindings: Vec<ParamBinding>,
+    warmup_iters: usize,
+    iter_count: usize,
+    capture_disabled: bool,
+    last_profile: Option<Vec<usize>>,
+}
+
+impl NablaGraph {
+    #[must_use]
+    pub fn with_warmup(warmup: usize) -> Self {
+        Self {
+            inner: None,
+            tracked_ptrs: Vec::new(),
+            bindings: Vec::new(),
+            warmup_iters: warmup.max(1),
+            iter_count: 0,
+            capture_disabled: false,
+            last_profile: None,
+        }
+    }
+
+    /// Execute one training step. During warmup, runs eagerly. On the first
+    /// post-warmup call, captures into a CUDA Graph and auto-binds parameter
+    /// pointers. Subsequent calls update changed pointers and replay the graph.
+    ///
+    /// `current_ptrs` must match the order of the initial `current_ptrs` from
+    /// the capture call (i.e., same parameters in the same order).
+    pub fn step<F: FnMut()>(&mut self, f: &mut F, current_ptrs: &[u64]) -> CudaResult<()> {
+        if self.capture_disabled {
+            f();
+            return Ok(());
+        }
+        self.iter_count += 1;
+
+        if self.iter_count <= self.warmup_iters {
+            if self.iter_count == 1 {
+                if let Some(ref sizes) = self.last_profile {
+                    let _ = cuda_pre_warm_pool(sizes);
+                }
+            }
+            f();
+            cuda_synchronize();
+            Ok(())
+        } else if self.inner.is_none() {
+            self.tracked_ptrs = current_ptrs.to_vec();
+            let captured = PyGraph::capture(|| f())?;
+            if captured.kernel_node_count() < 3 {
+                self.capture_disabled = true;
+                return Ok(());
+            }
+            self.bindings = self.auto_bind(&captured.kernel_nodes);
+            self.inner = Some(captured);
+            Ok(())
+        } else {
+            self.rebind_changed(current_ptrs)?;
+            self.inner.as_ref().ok_or(CudaError::NullPtr)?.launch()
+        }
+    }
+
+    fn auto_bind(&self, kernel_nodes: &[KernelNodeState]) -> Vec<ParamBinding> {
+        build_bindings(&self.tracked_ptrs, kernel_nodes)
+    }
+
+    fn rebind_changed(&mut self, current_ptrs: &[u64]) -> CudaResult<()> {
+        let graph = self.inner.as_mut().ok_or(CudaError::NullPtr)?;
+        for (i, &new_ptr) in current_ptrs.iter().enumerate() {
+            if i < self.bindings.len() && new_ptr != self.bindings[i].original_ptr {
+                for &(node_idx, arg_idx) in &self.bindings[i].refs {
+                    graph.update_node_param_ptr(node_idx, arg_idx, new_ptr)?;
+                }
+                self.bindings[i].original_ptr = new_ptr;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        self.inner = None;
+        self.bindings.clear();
+        self.tracked_ptrs.clear();
+        self.iter_count = 0;
+        self.capture_disabled = false;
+    }
+
+    #[must_use]
+    pub fn is_captured(&self) -> bool {
+        self.inner.is_some()
+    }
+
+    #[must_use]
+    pub fn kernel_node_count(&self) -> usize {
+        self.inner.as_ref().map_or(0, |g| g.kernel_node_count())
+    }
+
+    /// Analyze the captured graph for optimization opportunities.
+    pub fn analyze(&self) -> CudaResult<OptimizationReport> {
+        let graph = self.inner.as_ref().ok_or(CudaError::NullPtr)?;
+        let (_, report) = analyze_graph(graph.cu_graph)?;
+        Ok(report)
+    }
+
+    /// Analyze and apply elementwise fusion rewrites to the captured graph.
+    /// Re-instantiates the graph executable and rebinds parameters after rewriting.
+    pub fn optimize(&mut self) -> CudaResult<OptimizationReport> {
+        let graph = self.inner.as_mut().ok_or(CudaError::NullPtr)?;
+        let (report, applied, _cache_hit) = optimize_with_cache(graph.cu_graph)?;
+
+        if applied > 0 {
+            // SAFETY: cu_graph_exec is valid; destroying before re-instantiation.
+            unsafe {
+                cudarc::driver::sys::cuGraphExecDestroy(graph.cu_graph_exec);
+            }
+
+            let new_exec = unsafe {
+                let mut exec = std::mem::MaybeUninit::uninit();
+                // SAFETY: cu_graph is valid after node rewrites; instantiating a new executable.
+                cudarc::driver::sys::cuGraphInstantiateWithFlags(
+                    exec.as_mut_ptr(),
+                    graph.cu_graph,
+                    0,
+                )
+                .result()
+                .map_err(CudaError::Driver)?;
+                exec.assume_init()
+            };
+            graph.cu_graph_exec = new_exec;
+            graph.kernel_nodes = PyGraph::collect_kernel_nodes(graph.cu_graph)?;
+
+            let kernel_nodes = &self.inner.as_ref().ok_or(CudaError::NullPtr)?.kernel_nodes;
+            self.bindings = build_bindings(&self.tracked_ptrs, kernel_nodes);
+        }
+
+        // Extract allocation profile for pool pre-warming on next reset cycle
+        let graph = self.inner.as_ref().ok_or(CudaError::NullPtr)?;
+        let (analyzed_nodes, _) = analyze_graph(graph.cu_graph)?;
+        let profile = extract_allocation_profile(&analyzed_nodes);
+        let _ = cuda_pre_warm_pool(&profile.buffer_sizes);
+        self.last_profile = Some(profile.buffer_sizes);
+
+        Ok(report)
+    }
+}
+
 pub struct DoubleBuffer<T: Scalar> {
     buffers: [CudaStorage<T>; 2],
     active: usize,
@@ -183,6 +336,7 @@ unsafe impl<T: Scalar> Send for DoubleBuffer<T> {}
 unsafe impl<T: Scalar> Sync for DoubleBuffer<T> {}
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub(crate) enum GpuOp {
     Add {
         a_id: usize,
@@ -244,6 +398,7 @@ pub(crate) enum GpuOp {
     },
 }
 
+#[allow(dead_code)]
 pub(crate) struct GpuTape<T: Scalar> {
     ops: Vec<GpuOp>,
     buffers: HashMap<usize, CudaStorage<T>>,
@@ -251,6 +406,7 @@ pub(crate) struct GpuTape<T: Scalar> {
     next_id: usize,
 }
 
+#[allow(dead_code)]
 impl<T: Scalar> GpuTape<T> {
     pub(crate) fn new() -> Self {
         Self {
@@ -270,44 +426,24 @@ impl<T: Scalar> GpuTape<T> {
 
     pub(crate) fn record(&mut self, op: GpuOp, out: CudaStorage<T>) -> usize {
         let out_id = self.register(out);
+        macro_rules! patch {
+            ($variant:ident { $($field:ident),+ }) => {
+                GpuOp::$variant { $($field,)+ out_id }
+            };
+        }
         let patched = match op {
-            GpuOp::Add { a_id, b_id, .. } => GpuOp::Add { a_id, b_id, out_id },
-            GpuOp::Sub { a_id, b_id, .. } => GpuOp::Sub { a_id, b_id, out_id },
-            GpuOp::Neg { a_id, .. } => GpuOp::Neg { a_id, out_id },
-            GpuOp::Scale { a_id, s_idx, .. } => GpuOp::Scale {
-                a_id,
-                s_idx,
-                out_id,
-            },
-            GpuOp::Emul { a_id, b_id, .. } => GpuOp::Emul { a_id, b_id, out_id },
-            GpuOp::Matmul {
-                a_id,
-                b_id,
-                m,
-                k,
-                n,
-                ..
-            } => GpuOp::Matmul {
-                a_id,
-                b_id,
-                out_id,
-                m,
-                k,
-                n,
-            },
-            GpuOp::Exp { a_id, .. } => GpuOp::Exp { a_id, out_id },
-            GpuOp::Ln { a_id, .. } => GpuOp::Ln { a_id, out_id },
-            GpuOp::Sin { a_id, .. } => GpuOp::Sin { a_id, out_id },
-            GpuOp::Cos { a_id, .. } => GpuOp::Cos { a_id, out_id },
-            GpuOp::Tanh { a_id, .. } => GpuOp::Tanh { a_id, out_id },
-            GpuOp::SumAll {
-                a_id, rows, cols, ..
-            } => GpuOp::SumAll {
-                a_id,
-                out_id,
-                rows,
-                cols,
-            },
+            GpuOp::Add { a_id, b_id, .. } => patch!(Add { a_id, b_id }),
+            GpuOp::Sub { a_id, b_id, .. } => patch!(Sub { a_id, b_id }),
+            GpuOp::Neg { a_id, .. } => patch!(Neg { a_id }),
+            GpuOp::Scale { a_id, s_idx, .. } => patch!(Scale { a_id, s_idx }),
+            GpuOp::Emul { a_id, b_id, .. } => patch!(Emul { a_id, b_id }),
+            GpuOp::Matmul { a_id, b_id, m, k, n, .. } => patch!(Matmul { a_id, b_id, m, k, n }),
+            GpuOp::Exp { a_id, .. } => patch!(Exp { a_id }),
+            GpuOp::Ln { a_id, .. } => patch!(Ln { a_id }),
+            GpuOp::Sin { a_id, .. } => patch!(Sin { a_id }),
+            GpuOp::Cos { a_id, .. } => patch!(Cos { a_id }),
+            GpuOp::Tanh { a_id, .. } => patch!(Tanh { a_id }),
+            GpuOp::SumAll { a_id, rows, cols, .. } => patch!(SumAll { a_id, rows, cols }),
         };
         self.ops.push(patched);
         out_id

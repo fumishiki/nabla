@@ -1,484 +1,31 @@
-use std::ffi::{CString, c_void};
+use std::ffi::c_void;
 
 use cudarc::driver::result;
-use cudarc::driver::sys::{CUdeviceptr, CUfunction};
-use cudarc::nvrtc;
+use cudarc::driver::sys::CUdeviceptr;
 
 use crate::gpu_common::common::rtc::EnsureCache;
 use crate::gpu_common::{self, grid_1d, type_suffix};
-use crate::kernels_cu::{self, BLOCK_SIZE};
+use crate::kernels_cu::BLOCK_SIZE;
 use crate::scalar::Scalar;
 
 use super::*;
 
-const KERNEL_NAMES: &[&str] = &[
-    "k_cast_f32_to_f16",
-    "k_cast_f16_to_f32",
-    "k_cast_f64_to_f32",
-    "k_cast_f32_to_f64",
-    "k_cast_f32_to_fp8e4m3",
-    "k_cast_fp8e4m3_to_f32",
-    "k_cast_f32_to_fp8e5m2",
-    "k_cast_fp8e5m2_to_f32",
-    "k_cast_f32_to_fp4e2m1",
-    "k_cast_fp4e2m1_to_f32",
-    "k_masked_fill_f32",
-    "k_masked_fill_f64",
-    "k_masked_fill_f16",
-    "k_masked_fill_fp8e4m3",
-    "k_masked_fill_fp8e5m2",
-    "k_masked_fill_fp4e2m1",
-    "k_where_f32",
-    "k_where_f64",
-    "k_where_f16",
-    "k_where_fp8e4m3",
-    "k_where_fp8e5m2",
-    "k_where_fp4e2m1",
-    "k_neg_f32",
-    "k_recip_f32",
-    "k_exp_f32",
-    "k_ln_f32",
-    "k_log1p_f32",
-    "k_sin_f32",
-    "k_cos_f32",
-    "k_tanh_f32",
-    "k_sqrt_f32",
-    "k_abs_f32",
-    "k_ceil_f32",
-    "k_floor_f32",
-    "k_round_f32",
-    "k_erf_f32",
-    "k_asin_f32",
-    "k_acos_f32",
-    "k_atan_f32",
-    "k_atan2_f32",
-    "k_sinh_f32",
-    "k_cosh_f32",
-    "k_asinh_f32",
-    "k_acosh_f32",
-    "k_atanh_f32",
-    "k_log2_f32",
-    "k_log10_f32",
-    "k_sigmoid_f32",
-    "k_silu_f32",
-    "k_mish_f32",
-    "k_leaky_relu_f32",
-    "k_elu_f32",
-    "k_hardswish_f32",
-    "k_add_f32",
-    "k_sub_f32",
-    "k_emul_f32",
-    "k_ediv_f32",
-    "k_scale_f32",
-    "k_powf_f32",
-    "k_fill_f32",
-    "k_transpose_f32",
-    "k_matmul_f32",
-    "k_sum_f32",
-    "k_max_f32",
-    "k_min_f32",
-    "k_softmax_f32",
-    "k_layer_norm_f32",
-    "k_rms_norm_f32",
-    "k_group_norm_f32",
-    "k_sum_axis1_f32",
-    "k_max_axis1_f32",
-    "k_embedding_f32",
-    "k_cumsum_axis1_f32",
-    "k_cumprod_axis1_f32",
-    "k_neg_f16",
-    "k_recip_f16",
-    "k_exp_f16",
-    "k_ln_f16",
-    "k_log1p_f16",
-    "k_sin_f16",
-    "k_cos_f16",
-    "k_tan_f16",
-    "k_tanh_f16",
-    "k_sqrt_f16",
-    "k_abs_f16",
-    "k_ceil_f16",
-    "k_floor_f16",
-    "k_round_f16",
-    "k_erf_f16",
-    "k_asin_f16",
-    "k_acos_f16",
-    "k_atan_f16",
-    "k_atan2_f16",
-    "k_atan2_fp8e4m3",
-    "k_atan2_fp8e5m2",
-    "k_atan2_fp4e2m1",
-    "k_sinh_f16",
-    "k_cosh_f16",
-    "k_asinh_f16",
-    "k_acosh_f16",
-    "k_atanh_f16",
-    "k_log2_f16",
-    "k_log10_f16",
-    "k_sigmoid_f16",
-    "k_silu_f16",
-    "k_mish_f16",
-    "k_leaky_relu_f16",
-    "k_elu_f16",
-    "k_hardswish_f16",
-    "k_add_f16",
-    "k_sub_f16",
-    "k_emul_f16",
-    "k_ediv_f16",
-    "k_scale_f16",
-    "k_powf_f16",
-    "k_fill_f16",
-    "k_transpose_f16",
-    "k_matmul_f16",
-    "k_sum_f16",
-    "k_max_f16",
-    "k_min_f16",
-    "k_relu_bwd_f16",
-    "k_leaky_relu_bwd_f16",
-    "k_elu_bwd_f16",
-    "k_gelu_bwd_f16",
-    "k_abs_bwd_f16",
-    "k_expand_f16",
-    "k_mse_sum_fwd_f16",
-    "k_mse_sum_bwd_f16",
-    "k_multi_axpy3_f16",
-    "k_axpy_f16",
-    "k_softmax_f16",
-    "k_layer_norm_f16",
-    "k_rms_norm_f16",
-    "k_group_norm_f16",
-    "k_sum_axis1_f16",
-    "k_max_axis1_f16",
-    "k_embedding_f16",
-    "k_cumsum_axis1_f16",
-    "k_cumprod_axis1_f16",
-    "k_prod_partial_f16",
-    "k_max_pool2d_with_idx_f16",
-    "k_max_pool2d_f16",
-    "k_avg_pool2d_f16",
-    "k_adaptive_avg_pool2d_f16",
-    "k_im2col_f16",
-    "k_im1col_f16",
-    "k_im3col_f16",
-    "k_conv_transpose2d_f16",
-    "k_batch_norm_stats_f16",
-    "k_batch_norm_fwd_f16",
-    "k_cross_entropy_f16",
-    "k_sdpa_f16",
-    "k_neg_f64",
-    "k_recip_f64",
-    "k_exp_f64",
-    "k_ln_f64",
-    "k_log1p_f64",
-    "k_sin_f64",
-    "k_cos_f64",
-    "k_tanh_f64",
-    "k_sqrt_f64",
-    "k_abs_f64",
-    "k_ceil_f64",
-    "k_floor_f64",
-    "k_round_f64",
-    "k_erf_f64",
-    "k_asin_f64",
-    "k_acos_f64",
-    "k_atan_f64",
-    "k_atan2_f64",
-    "k_sinh_f64",
-    "k_cosh_f64",
-    "k_asinh_f64",
-    "k_acosh_f64",
-    "k_atanh_f64",
-    "k_log2_f64",
-    "k_log10_f64",
-    "k_sigmoid_f64",
-    "k_silu_f64",
-    "k_mish_f64",
-    "k_leaky_relu_f64",
-    "k_elu_f64",
-    "k_hardswish_f64",
-    "k_add_f64",
-    "k_sub_f64",
-    "k_emul_f64",
-    "k_ediv_f64",
-    "k_scale_f64",
-    "k_powf_f64",
-    "k_fill_f64",
-    "k_transpose_f64",
-    "k_matmul_f64",
-    "k_sum_f64",
-    "k_max_f64",
-    "k_min_f64",
-    "k_softmax_f64",
-    "k_layer_norm_f64",
-    "k_rms_norm_f64",
-    "k_group_norm_f64",
-    "k_sum_axis1_f64",
-    "k_max_axis1_f64",
-    "k_embedding_f64",
-    "k_cumsum_axis1_f64",
-    "k_cumprod_axis1_f64",
-    "k_prod_partial_f32",
-    "k_prod_partial_f64",
-    "k_max_pool2d_f32",
-    "k_max_pool2d_with_idx_f32",
-    "k_avg_pool2d_f32",
-    "k_adaptive_avg_pool2d_f32",
-    "k_max_pool2d_f64",
-    "k_max_pool2d_with_idx_f64",
-    "k_avg_pool2d_f64",
-    "k_adaptive_avg_pool2d_f64",
-    "k_im2col_f32",
-    "k_im2col_f64",
-    "k_im1col_f32",
-    "k_im1col_f64",
-    "k_im3col_f32",
-    "k_im3col_f64",
-    "k_batch_norm_stats_f32",
-    "k_batch_norm_fwd_f32",
-    "k_batch_norm_stats_f64",
-    "k_batch_norm_fwd_f64",
-    "k_cross_entropy_f32",
-    "k_cross_entropy_f64",
-    "k_sdpa_f32",
-    "k_sdpa_f64",
-    "k_conv_transpose2d_f32",
-    "k_conv_transpose2d_f64",
-    "k_axpy_f32",
-    "k_axpy_f64",
-    "k_relu_bwd_f32",
-    "k_relu_bwd_f64",
-    "k_leaky_relu_bwd_f32",
-    "k_leaky_relu_bwd_f64",
-    "k_elu_bwd_f32",
-    "k_elu_bwd_f64",
-    "k_gelu_bwd_f32",
-    "k_gelu_bwd_f64",
-    "k_abs_bwd_f32",
-    "k_abs_bwd_f64",
-    "k_expand_f32",
-    "k_expand_f64",
-    "k_mse_sum_fwd_f32",
-    "k_mse_sum_fwd_f64",
-    "k_mse_sum_bwd_f32",
-    "k_mse_sum_bwd_f64",
-    "k_multi_axpy3_f32",
-    "k_multi_axpy3_f64",
-];
-
-const FP8_SUFFIXES: &[&str] = &["fp8e4m3", "fp8e5m2", "fp4e2m1"];
-const FP8_UNARY_OPS: &[&str] = &[
-    "neg",
-    "recip",
-    "exp",
-    "ln",
-    "log1p",
-    "sin",
-    "cos",
-    "tan",
-    "tanh",
-    "sqrt",
-    "abs",
-    "ceil",
-    "floor",
-    "round",
-    "erf",
-    "asin",
-    "acos",
-    "atan",
-    "sinh",
-    "cosh",
-    "asinh",
-    "acosh",
-    "atanh",
-    "log2",
-    "log10",
-    "sigmoid",
-    "silu",
-    "mish",
-    "leaky_relu",
-    "elu",
-    "hardswish",
-];
-const FP8_BINARY_OPS: &[&str] = &["add", "sub", "emul", "ediv"];
-const FP8_EXTRA_OPS: &[&str] = &[
-    "scale",
-    "powf",
-    "fill",
-    "transpose",
-    "matmul",
-    "sum",
-    "max",
-    "min",
-    "softmax",
-    "layer_norm",
-    "rms_norm",
-    "group_norm",
-    "sum_axis1",
-    "max_axis1",
-    "embedding",
-    "cumsum_axis1",
-    "cumprod_axis1",
-    "prod_partial",
-    "max_pool2d_with_idx",
-    "max_pool2d",
-    "avg_pool2d",
-    "adaptive_avg_pool2d",
-    "im2col",
-    "im1col",
-    "im3col",
-    "conv_transpose2d",
-    "batch_norm_stats",
-    "batch_norm_fwd",
-    "cross_entropy",
-    "sdpa",
-    "axpy",
-    "expand",
-    "mse_sum_fwd",
-    "mse_sum_bwd",
-];
-
-/// Returns include paths for NVRTC (which has no default search paths).
-/// /usr/include is needed for cuda_fp16.h on systems where CUDA toolkit headers
-/// are installed there. Must NOT include system stdint.h — kernels define those
-/// types inline to avoid CUDA macro interference (see kernels_basic_ops.cuh).
-pub(super) fn nvrtc_include_paths() -> Vec<String> {
-    let candidates = [
-        "/usr/include",
-        "/usr/include/aarch64-linux-gnu",
-        "/usr/include/x86_64-linux-gnu",
-    ];
-    candidates
-        .iter()
-        .filter(|p| std::path::Path::new(p).is_dir())
-        .map(|p| p.to_string())
-        .collect()
+#[inline]
+pub(crate) fn kernel_name_buf<'a>(buf: &'a mut [u8; 64], op: &str, suffix: &str) -> &'a str {
+    let mut pos = 0;
+    buf[pos..pos + 2].copy_from_slice(b"k_");
+    pos += 2;
+    buf[pos..pos + op.len()].copy_from_slice(op.as_bytes());
+    pos += op.len();
+    buf[pos] = b'_';
+    pos += 1;
+    buf[pos..pos + suffix.len()].copy_from_slice(suffix.as_bytes());
+    pos += suffix.len();
+    // SAFETY: all kernel name components are ASCII
+    unsafe { std::str::from_utf8_unchecked(&buf[..pos]) }
 }
 
-pub(super) fn compile_all_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResult<()> {
-    let ptx = nvrtc::compile_ptx_with_opts(
-        kernels_cu::KERNELS,
-        nvrtc::CompileOptions {
-            arch: Some(arch),
-            include_paths: nvrtc_include_paths(),
-            ..Default::default()
-        },
-    )?;
-
-    let ptx_src = ptx.to_src();
-    let c_ptx = CString::new(ptx_src).map_err(|_| CudaError::NullPtr)?;
-    // SAFETY: loading compiled PTX data as a CUDA module.
-    let module = unsafe { result::module::load_data(c_ptx.as_ptr().cast::<c_void>())? };
-    let mut map = ctx
-        .kernels
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for &name in KERNEL_NAMES {
-        let c_fn = CString::new(name).map_err(|_| CudaError::NullPtr)?;
-        // SAFETY: getting function handle from loaded module.
-        let func = unsafe { result::module::get_function(module, c_fn)? };
-        map.insert(
-            name.to_owned(),
-            KernelEntry {
-                func,
-                _module: module,
-            },
-        );
-    }
-    for &suffix in FP8_SUFFIXES {
-        for &op in FP8_UNARY_OPS {
-            let name = format!("k_{op}_{suffix}");
-            let c_fn = CString::new(name.as_str()).map_err(|_| CudaError::NullPtr)?;
-            // SAFETY: getting function handle from loaded module.
-            let func = unsafe { result::module::get_function(module, c_fn)? };
-            map.insert(
-                name,
-                KernelEntry {
-                    func,
-                    _module: module,
-                },
-            );
-        }
-        for &op in FP8_BINARY_OPS {
-            let name = format!("k_{op}_{suffix}");
-            let c_fn = CString::new(name.as_str()).map_err(|_| CudaError::NullPtr)?;
-            // SAFETY: getting function handle from loaded module.
-            let func = unsafe { result::module::get_function(module, c_fn)? };
-            map.insert(
-                name,
-                KernelEntry {
-                    func,
-                    _module: module,
-                },
-            );
-        }
-        for &op in FP8_EXTRA_OPS {
-            let name = format!("k_{op}_{suffix}");
-            let c_fn = CString::new(name.as_str()).map_err(|_| CudaError::NullPtr)?;
-            // SAFETY: getting function handle from loaded module.
-            let func = unsafe { result::module::get_function(module, c_fn)? };
-            map.insert(
-                name,
-                KernelEntry {
-                    func,
-                    _module: module,
-                },
-            );
-        }
-    }
-    Ok(())
-}
-
-const WMMA_KERNEL_NAMES: &[&str] = &["k_matmul_wmma_f16"];
-
-pub(super) fn compile_wmma_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResult<()> {
-    let src = kernels_cu::WMMA_KERNELS;
-    if src.is_empty() {
-        return Ok(());
-    }
-
-    let ptx = nvrtc::compile_ptx_with_opts(
-        src,
-        nvrtc::CompileOptions {
-            arch: Some(arch),
-            include_paths: nvrtc_include_paths(),
-            ..Default::default()
-        },
-    )?;
-
-    let ptx_src = ptx.to_src();
-    let c_ptx = CString::new(ptx_src).map_err(|_| CudaError::NullPtr)?;
-    // SAFETY: loading compiled WMMA PTX as a CUDA module.
-    let module = unsafe { result::module::load_data(c_ptx.as_ptr().cast::<c_void>())? };
-
-    let mut map = ctx
-        .kernels
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for &name in WMMA_KERNEL_NAMES {
-        let c_fn = CString::new(name).map_err(|_| CudaError::NullPtr)?;
-        // SAFETY: getting function handle from loaded WMMA module.
-        let func = unsafe { result::module::get_function(module, c_fn)? };
-        map.insert(
-            name.to_owned(),
-            KernelEntry {
-                func,
-                _module: module,
-            },
-        );
-    }
-    Ok(())
-}
-
-pub(super) fn get_kernel(ctx: &CudaCtx, name: &str) -> CudaResult<CUfunction> {
-    let map = ctx
-        .kernels
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    map.get(name)
-        .map(|e| e.func)
-        .ok_or_else(|| CudaError::KernelNotFound(name.to_owned()))
-}
-
+#[inline]
 pub(super) fn cuda_grid_1d<T: Scalar>(n: usize) -> u32 {
     if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
         grid_1d((n + 3) / 4)
@@ -487,11 +34,13 @@ pub(super) fn cuda_grid_1d<T: Scalar>(n: usize) -> u32 {
     }
 }
 
-pub(super) fn launch_unary<T: Scalar>(a: &CudaStorage<T>, op: &str) -> CudaStorage<T> {
+#[inline]
+pub(crate) fn launch_unary<T: Scalar>(a: &CudaStorage<T>, op: &str) -> CudaStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
-    let name = format!("k_{op}_{}", type_suffix::<T>());
-    let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
+    let mut nbuf = [0u8; 64];
+    let name = kernel_name_buf(&mut nbuf, op, type_suffix::<T>());
+    let func = expect_ok(get_kernel(ctx, name), "CUDA kernel lookup");
     let out_buf = alloc_out::<T>(ctx, n);
     let n_u32 = n as u32;
     unsafe {
@@ -508,12 +57,42 @@ pub(super) fn launch_unary<T: Scalar>(a: &CudaStorage<T>, op: &str) -> CudaStora
                     &n_u32 as *const u32 as *mut c_void,
                 ],
             ),
-            &format!("CUDA launch {name}"),
+            "CUDA kernel launch",
         );
     }
     CudaStorage::new(a.nrows, a.ncols, out_buf)
 }
 
+#[inline]
+pub(crate) fn launch_unary_inplace<T: Scalar>(a: &mut CudaStorage<T>, op: &str) {
+    let ctx = get_ctx();
+    let n = a.n();
+    let mut nbuf = [0u8; 64];
+    let name = kernel_name_buf(&mut nbuf, op, type_suffix::<T>());
+    let func = expect_ok(get_kernel(ctx, name), "CUDA kernel lookup");
+    let n_u32 = n as u32;
+    // SAFETY: kernel is elementwise; reading and writing same buffer is safe.
+    unsafe {
+        expect_ok(
+            result::launch_kernel(
+                func,
+                (cuda_grid_1d::<T>(n), 1, 1),
+                (BLOCK_SIZE, 1, 1),
+                0,
+                ctx.stream.cu_stream(),
+                &mut [
+                    &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                    &n_u32 as *const u32 as *mut c_void,
+                ],
+            ),
+            "CUDA kernel launch inplace",
+        );
+    }
+    a.invalidate_cache();
+}
+
+#[inline]
 pub(super) fn launch_binary<T: Scalar>(
     a: &CudaStorage<T>,
     b: &CudaStorage<T>,
@@ -521,8 +100,9 @@ pub(super) fn launch_binary<T: Scalar>(
 ) -> CudaStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
-    let name = format!("k_{op}_{}", type_suffix::<T>());
-    let func = expect_ok(get_kernel(ctx, &name), "CUDA kernel lookup");
+    let mut nbuf = [0u8; 64];
+    let name = kernel_name_buf(&mut nbuf, op, type_suffix::<T>());
+    let func = expect_ok(get_kernel(ctx, name), "CUDA kernel lookup");
     let out_buf = alloc_out::<T>(ctx, n);
     let n_u32 = n as u32;
     unsafe {
@@ -540,8 +120,69 @@ pub(super) fn launch_binary<T: Scalar>(
                     &n_u32 as *const u32 as *mut c_void,
                 ],
             ),
-            &format!("CUDA launch {name}"),
+            "CUDA kernel launch",
         );
+    }
+    CudaStorage::new(a.nrows, a.ncols, out_buf)
+}
+
+#[inline]
+pub(super) fn launch_binary_alpha<T: Scalar>(
+    a: &CudaStorage<T>,
+    b: &CudaStorage<T>,
+    alpha: T,
+    op: &str,
+) -> CudaStorage<T> {
+    use std::any::TypeId;
+    let ctx = get_ctx();
+    let n = a.n();
+    let mut nbuf = [0u8; 64];
+    let name = kernel_name_buf(&mut nbuf, op, type_suffix::<T>());
+    let func = expect_ok(get_kernel(ctx, name), "CUDA kernel lookup");
+    let out_buf = alloc_out::<T>(ctx, n);
+    let n_u32 = n as u32;
+    if TypeId::of::<T>() == TypeId::of::<f64>() {
+        let alpha_f64 = alpha.to_f64();
+        unsafe {
+            expect_ok(
+                result::launch_kernel(
+                    func,
+                    (cuda_grid_1d::<T>(n), 1, 1),
+                    (BLOCK_SIZE, 1, 1),
+                    0,
+                    ctx.stream.cu_stream(),
+                    &mut [
+                        &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                        &b.buf.ptr as *const CUdeviceptr as *mut c_void,
+                        &alpha_f64 as *const f64 as *mut c_void,
+                        &out_buf.ptr as *const CUdeviceptr as *mut c_void,
+                        &n_u32 as *const u32 as *mut c_void,
+                    ],
+                ),
+                "CUDA kernel launch",
+            );
+        }
+    } else {
+        let alpha_f32 = alpha.to_f64() as f32;
+        unsafe {
+            expect_ok(
+                result::launch_kernel(
+                    func,
+                    (cuda_grid_1d::<T>(n), 1, 1),
+                    (BLOCK_SIZE, 1, 1),
+                    0,
+                    ctx.stream.cu_stream(),
+                    &mut [
+                        &a.buf.ptr as *const CUdeviceptr as *mut c_void,
+                        &b.buf.ptr as *const CUdeviceptr as *mut c_void,
+                        &alpha_f32 as *const f32 as *mut c_void,
+                        &out_buf.ptr as *const CUdeviceptr as *mut c_void,
+                        &n_u32 as *const u32 as *mut c_void,
+                    ],
+                ),
+                "CUDA kernel launch",
+            );
+        }
     }
     CudaStorage::new(a.nrows, a.ncols, out_buf)
 }
@@ -600,6 +241,11 @@ impl crate::backend::BackendCore for crate::backend::Cuda {
         ctx.stream.synchronize().or_panic("CUDA sync");
     }
 
+    #[inline]
+    fn device_ptr<T: Scalar>(storage: &CudaStorage<T>) -> u64 {
+        storage.buf.ptr
+    }
+
     gpu_common::gpu_binary_ops!(CudaStorage; add, sub);
 
     #[inline]
@@ -650,6 +296,19 @@ impl crate::backend::BackendReduce for crate::backend::Cuda {
     }
 
     #[inline]
+    fn sum_all_1x1<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> {
+        cuda_sum_all_1x1(a)
+    }
+    #[inline]
+    fn max_all_1x1<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> {
+        cuda_max_all_1x1(a)
+    }
+    #[inline]
+    fn min_all_1x1<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> {
+        cuda_min_all_1x1(a)
+    }
+
+    #[inline]
     fn diag<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> {
         cuda_diag(a)
     }
@@ -676,6 +335,11 @@ impl crate::backend::BackendReduce for crate::backend::Cuda {
 }
 
 impl crate::backend::BackendShape for crate::backend::Cuda {
+    #[inline]
+    fn reshape_metadata<T: Scalar>(a: &mut CudaStorage<T>, new_rows: usize, new_cols: usize) {
+        a.reshape_metadata(new_rows, new_cols);
+    }
+
     #[inline]
     fn reshape_copy<T: Scalar>(
         a: &CudaStorage<T>,
@@ -790,6 +454,11 @@ impl crate::backend::BackendShape for crate::backend::Cuda {
     }
 
     #[inline]
+    fn topk_rows<T: Scalar>(a: &CudaStorage<T>, k: usize) -> (CudaStorage<T>, CudaStorage<T>) {
+        cuda_topk_rows(a, k)
+    }
+
+    #[inline]
     fn meshgrid<T: Scalar>(
         x: &CudaStorage<T>,
         y: &CudaStorage<T>,
@@ -807,6 +476,16 @@ impl crate::backend::BackendShape for crate::backend::Cuda {
     }
 
     #[inline]
+    fn scatter_add<T: Scalar>(
+        dst: &mut CudaStorage<T>,
+        axis: usize,
+        indices: &[usize],
+        src: &CudaStorage<T>,
+    ) {
+        cuda_scatter_add(dst, axis, indices, src);
+    }
+
+    #[inline]
     fn kron<T: Scalar>(
         a: &CudaStorage<T>,
         b: &CudaStorage<T>,
@@ -816,6 +495,28 @@ impl crate::backend::BackendShape for crate::backend::Cuda {
         q: usize,
     ) -> CudaStorage<T> {
         cuda_kron(a, b, m, n, p, q)
+    }
+}
+
+/// Try cublasLt epilogue for concrete type `U`; fall back on error.
+///
+/// SAFETY: caller must verify `TypeId::of::<T>() == TypeId::of::<U>()`.
+fn try_lt_epilogue<T: Scalar, U: Scalar>(
+    a: &CudaStorage<T>, b: &CudaStorage<T>,
+    epilogue: Epilogue, bias: Option<CUdeviceptr>,
+    matmul_fn: fn(&mut CudaStorage<U>, &CudaStorage<U>, &CudaStorage<U>, Epilogue, Option<CUdeviceptr>) -> CudaResult<()>,
+    fallback: impl FnOnce() -> CudaStorage<T>,
+) -> CudaStorage<T> {
+    // SAFETY: TypeId check by caller guarantees T == U; same layout.
+    let (a_u, b_u) = unsafe {
+        (&*(a as *const CudaStorage<T> as *const CudaStorage<U>),
+         &*(b as *const CudaStorage<T> as *const CudaStorage<U>))
+    };
+    let mut out_u = cuda_zeros::<U>(a_u.nrows, b_u.ncols);
+    match matmul_fn(&mut out_u, a_u, b_u, epilogue, bias) {
+        // SAFETY: T == U verified by caller.
+        Ok(()) => unsafe { std::mem::transmute::<CudaStorage<U>, CudaStorage<T>>(out_u) },
+        Err(_) => fallback(),
     }
 }
 
@@ -841,30 +542,19 @@ impl crate::backend::BackendBlas for crate::backend::Cuda {
         epilogue_id: u8,
     ) -> CudaStorage<T> {
         use std::any::TypeId;
-        if TypeId::of::<T>() == TypeId::of::<f32>() && epilogue_id <= 1 {
-            let epilogue = if epilogue_id == 0 {
-                Epilogue::Relu
-            } else {
-                Epilogue::Gelu
-            };
-            // SAFETY: TypeId check above guarantees T == f32 at runtime.
-            let (a_f32, b_f32) = unsafe {
-                (
-                    &*(a as *const CudaStorage<T> as *const CudaStorage<f32>),
-                    &*(b as *const CudaStorage<T> as *const CudaStorage<f32>),
-                )
-            };
-            let mut out_f32 = cuda_zeros::<f32>(a_f32.nrows, b_f32.ncols);
-            match cuda_matmul_epilogue(&mut out_f32, a_f32, b_f32, epilogue, None) {
-                Ok(()) => {
-                    // SAFETY: T == f32 is verified by TypeId above.
-                    unsafe { std::mem::transmute::<CudaStorage<f32>, CudaStorage<T>>(out_f32) }
-                }
-                Err(_) => cuda_matmul_epilogue_fallback(a, b, epilogue_id),
+        let epilogue = if epilogue_id == 0 { Epilogue::Relu } else { Epilogue::Gelu };
+        let fallback = || cuda_matmul_epilogue_fallback(a, b, epilogue_id);
+        if epilogue_id <= 1 {
+            if TypeId::of::<T>() == TypeId::of::<f32>() {
+                // SAFETY: TypeId guarantees T == f32.
+                return try_lt_epilogue(a, b, epilogue, None, cuda_matmul_epilogue, fallback);
             }
-        } else {
-            cuda_matmul_epilogue_fallback(a, b, epilogue_id)
+            if TypeId::of::<T>() == TypeId::of::<half::bf16>() {
+                // SAFETY: TypeId guarantees T == half::bf16.
+                return try_lt_epilogue(a, b, epilogue, None, cuda_matmul_epilogue_bf16, fallback);
+            }
         }
+        fallback()
     }
 
     fn matmul_bias<T: Scalar>(
@@ -873,40 +563,21 @@ impl crate::backend::BackendBlas for crate::backend::Cuda {
         bias: &CudaStorage<T>,
     ) -> CudaStorage<T> {
         use std::any::TypeId;
-        if TypeId::of::<T>() == TypeId::of::<f32>() {
-            // SAFETY: TypeId check guarantees T == f32.
-            let (a_f32, b_f32, bias_f32) = unsafe {
-                (
-                    &*(a as *const CudaStorage<T> as *const CudaStorage<f32>),
-                    &*(b as *const CudaStorage<T> as *const CudaStorage<f32>),
-                    &*(bias as *const CudaStorage<T> as *const CudaStorage<f32>),
-                )
-            };
-            let mut out_f32 = cuda_zeros::<f32>(a_f32.nrows, b_f32.ncols);
-            match cuda_matmul_epilogue(
-                &mut out_f32,
-                a_f32,
-                b_f32,
-                Epilogue::Bias,
-                Some(bias_f32.buf.ptr),
-            ) {
-                Ok(()) => {
-                    // SAFETY: T == f32 verified above.
-                    unsafe { std::mem::transmute::<CudaStorage<f32>, CudaStorage<T>>(out_f32) }
-                }
-                Err(_) => {
-                    // Fallback: separate matmul + elementwise add
-                    let mut out = cuda_zeros::<T>(a.nrows, b.ncols);
-                    cuda_matmul(&mut out, a, b);
-                    cuda_add_bias_row(&out, bias)
-                }
-            }
-        } else {
-            // Non-f32: separate matmul + elementwise add
+        let bias_ptr = Some(bias.buf.ptr);
+        let fallback = || {
             let mut out = cuda_zeros::<T>(a.nrows, b.ncols);
             cuda_matmul(&mut out, a, b);
             cuda_add_bias_row(&out, bias)
+        };
+        if TypeId::of::<T>() == TypeId::of::<f32>() {
+            // SAFETY: TypeId guarantees T == f32.
+            return try_lt_epilogue(a, b, Epilogue::Bias, bias_ptr, cuda_matmul_epilogue, fallback);
         }
+        if TypeId::of::<T>() == TypeId::of::<half::bf16>() {
+            // SAFETY: TypeId guarantees T == half::bf16.
+            return try_lt_epilogue(a, b, Epilogue::Bias, bias_ptr, cuda_matmul_epilogue_bf16, fallback);
+        }
+        fallback()
     }
 
     #[inline]
@@ -919,6 +590,18 @@ impl crate::backend::BackendBlas for crate::backend::Cuda {
         n: usize,
     ) -> CudaStorage<T> {
         cuda_bmm(a, b, batch, m, k, n)
+    }
+
+    #[inline]
+    fn bmm_nt<T: Scalar>(
+        a: &CudaStorage<T>,
+        b: &CudaStorage<T>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> CudaStorage<T> {
+        cuda_bmm_nt(a, b, batch, m, k, n)
     }
 
     #[inline]
@@ -947,10 +630,26 @@ impl crate::backend::BackendBlas for crate::backend::Cuda {
     ) -> CudaStorage<T> {
         cuda_baddbmm(c, a, b, batch, m, k, n, beta, alpha)
     }
+
+    #[inline]
+    fn fp8_matmul_e4m3(
+        a: &CudaStorage<crate::scalar::Fp8E4M3>,
+        b: &CudaStorage<crate::scalar::Fp8E4M3>,
+    ) -> CudaStorage<half::bf16> {
+        cuda_fp8_matmul_e4m3(a, b)
+    }
+
+    #[inline]
+    fn fp8_matmul_e5m2(
+        a: &CudaStorage<crate::scalar::Fp8E5M2>,
+        b: &CudaStorage<crate::scalar::Fp8E5M2>,
+    ) -> CudaStorage<half::bf16> {
+        cuda_fp8_matmul_e5m2(a, b)
+    }
 }
 
 impl crate::backend::BackendNN for crate::backend::Cuda {
-    gpu_common::gpu_unary_ops!(CudaStorage; silu, mish, hardswish);
+    gpu_common::gpu_unary_ops!(CudaStorage; sigmoid, silu, mish, hardswish);
     #[inline]
     fn relu_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>) -> CudaStorage<T> {
         launch_binary(g, x, "relu_bwd")
@@ -959,17 +658,13 @@ impl crate::backend::BackendNN for crate::backend::Cuda {
     fn leaky_relu_backward<T: Scalar>(
         g: &CudaStorage<T>,
         x: &CudaStorage<T>,
-        _alpha: T,
+        alpha: T,
     ) -> CudaStorage<T> {
-        launch_binary(g, x, "leaky_relu_bwd")
+        launch_binary_alpha(g, x, alpha, "leaky_relu_bwd")
     }
     #[inline]
-    fn elu_backward<T: Scalar>(
-        g: &CudaStorage<T>,
-        x: &CudaStorage<T>,
-        _alpha: T,
-    ) -> CudaStorage<T> {
-        launch_binary(g, x, "elu_bwd")
+    fn elu_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>, alpha: T) -> CudaStorage<T> {
+        launch_binary_alpha(g, x, alpha, "elu_bwd")
     }
     #[inline]
     fn gelu_backward<T: Scalar>(g: &CudaStorage<T>, x: &CudaStorage<T>) -> CudaStorage<T> {
@@ -996,6 +691,14 @@ impl crate::backend::BackendNN for crate::backend::Cuda {
         vocab: usize,
     ) -> CudaStorage<T> {
         cuda_embedding_backward(indices, grad, vocab)
+    }
+    #[inline]
+    fn wht<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> {
+        cuda_wht(a)
+    }
+    #[inline]
+    fn wht_inverse<T: Scalar>(a: &CudaStorage<T>) -> CudaStorage<T> {
+        cuda_wht_inverse(a)
     }
 }
 
@@ -1030,11 +733,11 @@ impl crate::backend::BackendFusion for crate::backend::Cuda {
     ) -> Vec<CudaStorage<T>> {
         let mega_ops: Vec<MegaFuseOp> = ops
             .iter()
-            .map(|(inputs, expr, n_in, up)| MegaFuseOp {
+            .map(|(inputs, gpu_expr, n_inputs, uses_prev)| MegaFuseOp {
                 inputs: inputs.clone(),
-                gpu_expr: expr.clone(),
-                n_inputs: *n_in,
-                uses_prev: *up,
+                gpu_expr: gpu_expr.clone(),
+                n_inputs: *n_inputs,
+                uses_prev: *uses_prev,
             })
             .collect();
         cuda_mega_fuse_launch::<T>(&mega_ops, nrows, ncols, kernel_hash)

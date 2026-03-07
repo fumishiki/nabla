@@ -3,179 +3,50 @@ use crate::scalar::Scalar;
 use crate::tensor::Tensor;
 #[cfg(feature = "cpu")]
 use crate::tensor::two;
-#[cfg(any(feature = "cuda", feature = "hip", feature = "gpu"))]
-use std::any::TypeId;
 
-/// Configuration for 2-D convolution (stride, padding, dilation, groups).
-pub struct Conv2dConfig {
-    /// Stride in (height, width).
-    pub stride: (usize, usize),
-    /// Zero-padding in (height, width).
-    pub padding: (usize, usize),
-    /// Dilation in (height, width).
-    pub dilation: (usize, usize),
-    /// Number of groups for grouped convolution.
-    pub groups: usize,
-}
-
-impl Default for Conv2dConfig {
-    fn default() -> Self {
-        Self {
-            stride: (1, 1),
-            padding: (0, 0),
-            dilation: (1, 1),
-            groups: 1,
+macro_rules! conv_config {
+    ($name:ident, $doc:literal, $spatial:ty, $stride_def:expr, $pad_def:expr, $dil_def:expr) => {
+        #[doc = $doc]
+        pub struct $name {
+            /// Stride.
+            pub stride: $spatial,
+            /// Zero-padding.
+            pub padding: $spatial,
+            /// Dilation.
+            pub dilation: $spatial,
+            /// Number of groups for grouped convolution.
+            pub groups: usize,
         }
-    }
-}
 
-impl Conv2dConfig {
-    /// Set stride.
-    #[must_use]
-    pub fn stride(mut self, s: (usize, usize)) -> Self {
-        self.stride = s;
-        self
-    }
-    /// Set padding.
-    #[must_use]
-    pub fn padding(mut self, p: (usize, usize)) -> Self {
-        self.padding = p;
-        self
-    }
-    /// Set dilation.
-    #[must_use]
-    pub fn dilation(mut self, d: (usize, usize)) -> Self {
-        self.dilation = d;
-        self
-    }
-    /// Set groups.
-    #[must_use]
-    pub fn groups(mut self, g: usize) -> Self {
-        self.groups = g;
-        self
-    }
-}
-
-/// Configuration for 1-D convolution (stride, padding, dilation, groups).
-pub struct Conv1dConfig {
-    /// Stride.
-    pub stride: usize,
-    /// Zero-padding.
-    pub padding: usize,
-    /// Dilation.
-    pub dilation: usize,
-    /// Number of groups for grouped convolution.
-    pub groups: usize,
-}
-
-impl Default for Conv1dConfig {
-    fn default() -> Self {
-        Self {
-            stride: 1,
-            padding: 0,
-            dilation: 1,
-            groups: 1,
+        impl Default for $name {
+            fn default() -> Self {
+                Self { stride: $stride_def, padding: $pad_def, dilation: $dil_def, groups: 1 }
+            }
         }
-    }
-}
 
-impl Conv1dConfig {
-    /// Set stride.
-    #[must_use]
-    pub fn stride(mut self, s: usize) -> Self {
-        self.stride = s;
-        self
-    }
-    /// Set padding.
-    #[must_use]
-    pub fn padding(mut self, p: usize) -> Self {
-        self.padding = p;
-        self
-    }
-    /// Set dilation.
-    #[must_use]
-    pub fn dilation(mut self, d: usize) -> Self {
-        self.dilation = d;
-        self
-    }
-    /// Set groups.
-    #[must_use]
-    pub fn groups(mut self, g: usize) -> Self {
-        self.groups = g;
-        self
-    }
-}
-
-/// Configuration for 3-D convolution (stride, padding, dilation, groups).
-pub struct Conv3dConfig {
-    /// Stride in (depth, height, width).
-    pub stride: (usize, usize, usize),
-    /// Zero-padding in (depth, height, width).
-    pub padding: (usize, usize, usize),
-    /// Dilation in (depth, height, width).
-    pub dilation: (usize, usize, usize),
-    /// Number of groups for grouped convolution.
-    pub groups: usize,
-}
-
-impl Default for Conv3dConfig {
-    fn default() -> Self {
-        Self {
-            stride: (1, 1, 1),
-            padding: (0, 0, 0),
-            dilation: (1, 1, 1),
-            groups: 1,
+        impl $name {
+            /// Set stride.
+            #[must_use]
+            pub fn stride(mut self, s: $spatial) -> Self { self.stride = s; self }
+            /// Set padding.
+            #[must_use]
+            pub fn padding(mut self, p: $spatial) -> Self { self.padding = p; self }
+            /// Set dilation.
+            #[must_use]
+            pub fn dilation(mut self, d: $spatial) -> Self { self.dilation = d; self }
+            /// Set groups.
+            #[must_use]
+            pub fn groups(mut self, g: usize) -> Self { self.groups = g; self }
         }
-    }
+    };
 }
 
-impl Conv3dConfig {
-    /// Set stride.
-    #[must_use]
-    pub fn stride(mut self, s: (usize, usize, usize)) -> Self {
-        self.stride = s;
-        self
-    }
-    /// Set padding.
-    #[must_use]
-    pub fn padding(mut self, p: (usize, usize, usize)) -> Self {
-        self.padding = p;
-        self
-    }
-    /// Set dilation.
-    #[must_use]
-    pub fn dilation(mut self, d: (usize, usize, usize)) -> Self {
-        self.dilation = d;
-        self
-    }
-    /// Set groups.
-    #[must_use]
-    pub fn groups(mut self, g: usize) -> Self {
-        self.groups = g;
-        self
-    }
-}
+conv_config!(Conv1dConfig, "Configuration for 1-D convolution.", usize, 1, 0, 1);
+conv_config!(Conv2dConfig, "Configuration for 2-D convolution.", (usize, usize), (1, 1), (0, 0), (1, 1));
+conv_config!(Conv3dConfig, "Configuration for 3-D convolution.", (usize, usize, usize), (1, 1, 1), (0, 0, 0), (1, 1, 1));
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- Convolution ----
-    #[inline]
-    fn assert_bias_cpu(_op: &str) {
-        #[cfg(feature = "cuda")]
-        assert!(
-            TypeId::of::<B>() != TypeId::of::<crate::backend::Cuda>(),
-            "nabla: {_op} bias is CPU-only on CUDA; GPU path needs a dedicated bias kernel"
-        );
-        #[cfg(feature = "hip")]
-        assert!(
-            TypeId::of::<B>() != TypeId::of::<crate::backend::Hip>(),
-            "nabla: {_op} bias is CPU-only on HIP; GPU path needs a dedicated bias kernel"
-        );
-        #[cfg(feature = "gpu")]
-        assert!(
-            TypeId::of::<B>() != TypeId::of::<crate::backend::Gpu>(),
-            "nabla: {_op} bias is CPU-only on WGPU; GPU path needs a dedicated bias kernel"
-        );
-    }
 
     /// im2col: unfold input patches for convolution.
     #[allow(dead_code)]
@@ -248,7 +119,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             groups,
         ));
         if let Some(bi) = bias {
-            Self::assert_bias_cpu("conv2d");
+            super::assert_cpu_only::<B>("conv2d");
             #[cfg(feature = "cpu")]
             {
                 let out_h = (h + 2 * padding.0 - dilation.0 * (kh - 1) - 1) / stride.0 + 1;
@@ -301,7 +172,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             groups,
         ));
         if let Some(bi) = bias {
-            Self::assert_bias_cpu("conv1d");
+            super::assert_cpu_only::<B>("conv1d");
             #[cfg(feature = "cpu")]
             {
                 let out_len =
@@ -416,7 +287,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             output_padding,
         ));
         if let Some(bi) = bias {
-            Self::assert_bias_cpu("conv_transpose2d");
+            super::assert_cpu_only::<B>("conv_transpose2d");
             #[cfg(feature = "cpu")]
             {
                 let out_h = (h - 1) * stride.0 - 2 * padding.0 + kh + output_padding.0;
@@ -480,7 +351,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             groups,
         ));
         if let Some(bi) = bias {
-            Self::assert_bias_cpu("conv3d");
+            super::assert_cpu_only::<B>("conv3d");
             #[cfg(feature = "cpu")]
             {
                 let out_d = (d + 2 * padding.0 - dilation.0 * (kd - 1) - 1) / stride.0 + 1;

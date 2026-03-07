@@ -115,6 +115,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         self.abs().max_all()
     }
 
+    /// Per-tensor absolute maximum: `max(|self|)`. Alias for [`linf_norm`](Self::linf_norm).
+    #[must_use]
+    #[inline]
+    pub fn absmax(&self) -> T {
+        self.linf_norm()
+    }
+
     /// Lp norm: `(sum |x_i|^p)^(1/p)`, or `max|x_i|` for p=inf.
     #[must_use]
     #[cfg(feature = "cpu")]
@@ -167,16 +174,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             other.nrows() == 1 || other.ncols() == 1,
             "nabla: outer expects other to be a vector"
         );
-        let a = if self.ncols() == 1 {
-            self.clone()
-        } else {
-            self.t()
-        };
-        let b = if other.nrows() == 1 {
-            other.clone()
-        } else {
-            other.t()
-        };
+        let a = if self.ncols() == 1 { self.clone() } else { self.t() };
+        let b = if other.nrows() == 1 { other.clone() } else { other.t() };
         &a * &b
     }
 
@@ -411,54 +410,45 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         B::count_nonzero(&self.storage)
     }
 
+    fn cum_op(&self, axis: usize, axis1_fn: impl FnOnce(&B::Storage<T>) -> B::Storage<T>, name: &str) -> Self {
+        match axis {
+            1 => Self::from_storage(axis1_fn(&self.storage)),
+            0 => {
+                let t = Self::from_storage(B::transpose(&self.storage));
+                let result = Self::from_storage(axis1_fn(&t.storage));
+                Self::from_storage(B::transpose(&result.storage))
+            }
+            _ => panic!("nabla: {name} axis must be 0 or 1, got {axis}"),
+        }
+    }
+
+    fn resolve_dim(dim: i64, op: &str) -> usize {
+        let axis = if dim < 0 { (2i64 + dim) as isize } else { dim as isize };
+        Self::resolve_axis(axis, op)
+    }
+
     /// Cumulative sum along axis (0 = column-wise, 1 = row-wise).
     #[must_use]
     pub fn cumsum(&self, axis: usize) -> Self {
-        match axis {
-            1 => Self::from_storage(B::cumsum_axis1(&self.storage)),
-            0 => {
-                let t = Self::from_storage(B::transpose(&self.storage));
-                let cs = Self::from_storage(B::cumsum_axis1(&t.storage));
-                Self::from_storage(B::transpose(&cs.storage))
-            }
-            _ => panic!("nabla: cumsum axis must be 0 or 1, got {axis}"),
-        }
+        self.cum_op(axis, B::cumsum_axis1, "cumsum")
     }
 
     /// Cumulative product along axis.
     #[must_use]
     pub fn cumprod(&self, axis: usize) -> Self {
-        match axis {
-            1 => Self::from_storage(B::cumprod_axis1(&self.storage)),
-            0 => {
-                let t = Self::from_storage(B::transpose(&self.storage));
-                let cp = Self::from_storage(B::cumprod_axis1(&t.storage));
-                Self::from_storage(B::transpose(&cp.storage))
-            }
-            _ => panic!("nabla: cumprod axis must be 0 or 1, got {axis}"),
-        }
+        self.cum_op(axis, B::cumprod_axis1, "cumprod")
     }
 
     /// Cumulative sum along `dim` with signed (negative) index support.
     #[must_use]
     pub fn cumsum_dim(&self, dim: i64) -> Self {
-        let axis = if dim < 0 {
-            (2i64 + dim) as isize
-        } else {
-            dim as isize
-        };
-        self.cumsum(Self::resolve_axis(axis, "cumsum_dim"))
+        self.cumsum(Self::resolve_dim(dim, "cumsum_dim"))
     }
 
     /// Cumulative product along `dim` with signed (negative) index support.
     #[must_use]
     pub fn cumprod_dim(&self, dim: i64) -> Self {
-        let axis = if dim < 0 {
-            (2i64 + dim) as isize
-        } else {
-            dim as isize
-        };
-        self.cumprod(Self::resolve_axis(axis, "cumprod_dim"))
+        self.cumprod(Self::resolve_dim(dim, "cumprod_dim"))
     }
 
     /// Lp-norm along axis.
@@ -503,16 +493,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[cfg(feature = "cpu")]
     pub fn filter_sum(&self, pred: impl Fn(T) -> bool) -> T {
         let (m, n) = self.shape();
-        let mut acc = T::zero();
-        for r in 0..m {
-            for c in 0..n {
-                let v = self.get(r, c);
-                if pred(v) {
-                    acc = acc + v;
-                }
-            }
-        }
-        acc
+        (0..m).flat_map(|r| (0..n).map(move |c| self.get(r, c)))
+            .filter(|v| pred(*v))
+            .fold(T::zero(), |acc, v| acc + v)
     }
 
     /// Count of elements satisfying `pred`.
@@ -520,14 +503,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[cfg(feature = "cpu")]
     pub fn count_where(&self, pred: impl Fn(T) -> bool) -> usize {
         let (m, n) = self.shape();
-        let mut count = 0usize;
-        for r in 0..m {
-            for c in 0..n {
-                if pred(self.get(r, c)) {
-                    count += 1;
-                }
-            }
-        }
-        count
+        (0..m).flat_map(|r| (0..n).map(move |c| self.get(r, c)))
+            .filter(|v| pred(*v))
+            .count()
     }
 }

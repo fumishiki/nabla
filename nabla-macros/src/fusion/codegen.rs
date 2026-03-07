@@ -11,24 +11,19 @@ use syn::{Error, Expr, ExprBinary, ExprMethodCall, ExprPath, ExprUnary, Result};
 
 use super::expr::{contains_tensor, scalar_method_name};
 
+const CUDA_UNARY_MAP: &[(&str, &str)] = &[
+    ("exp", "exp"), ("ln", "log"), ("log1p", "log1p"), ("sin", "sin"),
+    ("cos", "cos"), ("tanh", "tanh"), ("sqrt", "sqrt"), ("abs", "fabs"),
+    ("erf", "erf"), ("ceil", "ceil"), ("floor", "floor"), ("round", "round"),
+];
+
 fn cuda_method_expr(method: &str, recv: &str) -> Option<String> {
-    match method {
-        "exp" => Some(format!("exp({recv})")),
-        "ln" => Some(format!("log({recv})")),
-        "log1p" => Some(format!("log1p({recv})")),
-        "sin" => Some(format!("sin({recv})")),
-        "cos" => Some(format!("cos({recv})")),
-        "tanh" => Some(format!("tanh({recv})")),
-        "sqrt" => Some(format!("sqrt({recv})")),
-        "abs" => Some(format!("fabs({recv})")),
-        "recip" => Some(format!("(1.0/({recv}))")),
-        "erf" => Some(format!("erf({recv})")),
-        "ceil" => Some(format!("ceil({recv})")),
-        "floor" => Some(format!("floor({recv})")),
-        "round" => Some(format!("round({recv})")),
-        "neg" => Some(format!("(-{recv})")),
-        _ => None,
-    }
+    if method == "recip" { return Some(format!("(1.0/({recv}))")); }
+    if method == "neg" { return Some(format!("(-{recv})")); }
+    CUDA_UNARY_MAP
+        .iter()
+        .find(|(m, _)| *m == method)
+        .map(|(_, c)| format!("{c}({recv})"))
 }
 
 fn cuda_binop(op: &syn::BinOp, ctx: &str) -> Result<&'static str> {
@@ -395,7 +390,7 @@ fn count_ops(
             ..
         }) => {
             let name = method.to_string();
-            let (t_ops, a_ops) = method_cost(&name);
+            let (t_ops, a_ops) = op_cost(&name);
             *transcendental += t_ops;
             *arithmetic += a_ops;
             count_ops(receiver, tensor_names, transcendental, arithmetic, inputs);
@@ -408,7 +403,7 @@ fn count_ops(
                 && path.segments.len() == 1
             {
                 let fname = path.segments[0].ident.to_string();
-                let (t_ops, a_ops) = free_fn_cost(&fname);
+                let (t_ops, a_ops) = op_cost(&fname);
                 *transcendental += t_ops;
                 *arithmetic += a_ops;
             }
@@ -426,19 +421,13 @@ fn count_ops(
     }
 }
 
-fn method_cost(method: &str) -> (usize, usize) {
-    match method {
-        "exp" | "ln" | "sqrt" | "sin" | "cos" | "tanh" | "erf" | "log1p" | "powf" => (1, 0),
-        "abs" | "ceil" | "floor" | "round" | "neg" | "recip" => (0, 1),
-        _ => (0, 0),
-    }
-}
+const TRANSCENDENTAL_OPS: &[&str] = &["exp", "ln", "sqrt", "sin", "cos", "tanh", "erf", "log1p"];
+const CHEAP_OPS: &[&str] = &["abs", "ceil", "floor", "round", "neg", "recip"];
 
-fn free_fn_cost(func: &str) -> (usize, usize) {
-    match func {
-        "exp" | "ln" | "sqrt" | "sin" | "cos" | "tanh" | "erf" | "log1p" => (1, 0),
-        _ => (0, 0),
-    }
+fn op_cost(name: &str) -> (usize, usize) {
+    if TRANSCENDENTAL_OPS.contains(&name) || name == "powf" { (1, 0) }
+    else if CHEAP_OPS.contains(&name) { (0, 1) }
+    else { (0, 0) }
 }
 
 pub(crate) fn expr_hash(s: &str) -> String {

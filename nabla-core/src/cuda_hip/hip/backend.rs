@@ -11,6 +11,7 @@ const KERNEL_NAMES: &[&str] = &[
     "k_log1p_f32",
     "k_sin_f32",
     "k_cos_f32",
+    "k_tan_f32",
     "k_tanh_f32",
     "k_sqrt_f32",
     "k_abs_f32",
@@ -63,6 +64,7 @@ const KERNEL_NAMES: &[&str] = &[
     "k_log1p_f64",
     "k_sin_f64",
     "k_cos_f64",
+    "k_tan_f64",
     "k_tanh_f64",
     "k_sqrt_f64",
     "k_abs_f64",
@@ -108,6 +110,77 @@ const KERNEL_NAMES: &[&str] = &[
     "k_embedding_f64",
     "k_cumsum_axis1_f64",
     "k_cumprod_axis1_f64",
+    "k_neg_bf16",
+    "k_recip_bf16",
+    "k_exp_bf16",
+    "k_ln_bf16",
+    "k_log1p_bf16",
+    "k_sin_bf16",
+    "k_cos_bf16",
+    "k_tan_bf16",
+    "k_tanh_bf16",
+    "k_sqrt_bf16",
+    "k_abs_bf16",
+    "k_ceil_bf16",
+    "k_floor_bf16",
+    "k_round_bf16",
+    "k_erf_bf16",
+    "k_asin_bf16",
+    "k_acos_bf16",
+    "k_atan_bf16",
+    "k_atan2_bf16",
+    "k_sinh_bf16",
+    "k_cosh_bf16",
+    "k_asinh_bf16",
+    "k_acosh_bf16",
+    "k_atanh_bf16",
+    "k_log2_bf16",
+    "k_log10_bf16",
+    "k_sigmoid_bf16",
+    "k_silu_bf16",
+    "k_mish_bf16",
+    "k_leaky_relu_bf16",
+    "k_elu_bf16",
+    "k_hardswish_bf16",
+    "k_add_bf16",
+    "k_sub_bf16",
+    "k_emul_bf16",
+    "k_ediv_bf16",
+    "k_scale_bf16",
+    "k_powf_bf16",
+    "k_fill_bf16",
+    "k_transpose_bf16",
+    "k_matmul_bf16",
+    "k_sum_bf16",
+    "k_max_bf16",
+    "k_min_bf16",
+    "k_softmax_bf16",
+    "k_layer_norm_bf16",
+    "k_rms_norm_bf16",
+    "k_group_norm_bf16",
+    "k_sum_axis1_bf16",
+    "k_max_axis1_bf16",
+    "k_embedding_bf16",
+    "k_cumsum_axis1_bf16",
+    "k_cumprod_axis1_bf16",
+    "k_prod_partial_bf16",
+    "k_max_pool2d_bf16",
+    "k_max_pool2d_with_idx_bf16",
+    "k_avg_pool2d_bf16",
+    "k_adaptive_avg_pool2d_bf16",
+    "k_im2col_bf16",
+    "k_batch_norm_stats_bf16",
+    "k_batch_norm_fwd_bf16",
+    "k_cross_entropy_bf16",
+    "k_sdpa_bf16",
+    "k_conv_transpose2d_bf16",
+    "k_axpy_bf16",
+    "k_relu_bwd_bf16",
+    "k_leaky_relu_bwd_bf16",
+    "k_elu_bwd_bf16",
+    "k_gelu_bwd_bf16",
+    "k_abs_bwd_bf16",
+    "k_expand_bf16",
     "k_prod_partial_f32",
     "k_prod_partial_f64",
     "k_max_pool2d_f32",
@@ -144,6 +217,10 @@ const KERNEL_NAMES: &[&str] = &[
     "k_abs_bwd_f64",
     "k_expand_f32",
     "k_expand_f64",
+    "k_wht_f32",
+    "k_wht_f64",
+    "k_wht_inverse_f32",
+    "k_wht_inverse_f64",
 ];
 
 pub(super) fn compile_all_kernels(ctx: &HipCtx) -> HipResult<()> {
@@ -347,6 +424,47 @@ pub(super) fn launch_binary<T: Scalar>(
     HipStorage::new(a.nrows, a.ncols, out_buf)
 }
 
+pub(super) fn launch_binary_alpha<T: Scalar>(
+    a: &HipStorage<T>,
+    b: &HipStorage<T>,
+    alpha: T,
+    op: &str,
+) -> HipStorage<T> {
+    use std::any::TypeId;
+    let n = a.n();
+    let (func, out_buf, n_u32) = hip_prepare_launch::<T>(n, op);
+    if TypeId::of::<T>() == TypeId::of::<f64>() {
+        let alpha_f64 = alpha.to_f64();
+        hip_launch(
+            func,
+            [grid_1d(n), 1, 1],
+            [BLOCK_SIZE, 1, 1],
+            &mut [
+                (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&b.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&alpha_f64 as *const f64).cast_mut().cast(),
+                (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&n_u32 as *const u32).cast_mut().cast(),
+            ],
+        );
+    } else {
+        let alpha_f32 = alpha.to_f64() as f32;
+        hip_launch(
+            func,
+            [grid_1d(n), 1, 1],
+            [BLOCK_SIZE, 1, 1],
+            &mut [
+                (&a.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&b.buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&alpha_f32 as *const f32).cast_mut().cast(),
+                (&out_buf.ptr as *const *mut c_void).cast_mut().cast(),
+                (&n_u32 as *const u32).cast_mut().cast(),
+            ],
+        );
+    }
+    HipStorage::new(a.nrows, a.ncols, out_buf)
+}
+
 impl crate::backend::private::Sealed for crate::backend::Hip {}
 
 impl crate::backend::BackendCore for crate::backend::Hip {
@@ -427,7 +545,7 @@ impl crate::backend::BackendBlas for crate::backend::Hip {
 }
 
 impl crate::backend::BackendNN for crate::backend::Hip {
-    gpu_common::gpu_unary_ops!(HipStorage; silu, mish, hardswish);
+    gpu_common::gpu_unary_ops!(HipStorage; sigmoid, silu, mish, hardswish);
     #[inline]
     fn relu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>) -> HipStorage<T> {
         launch_binary(g, x, "relu_bwd")
@@ -436,13 +554,13 @@ impl crate::backend::BackendNN for crate::backend::Hip {
     fn leaky_relu_backward<T: Scalar>(
         g: &HipStorage<T>,
         x: &HipStorage<T>,
-        _alpha: T,
+        alpha: T,
     ) -> HipStorage<T> {
-        launch_binary(g, x, "leaky_relu_bwd")
+        launch_binary_alpha(g, x, alpha, "leaky_relu_bwd")
     }
     #[inline]
-    fn elu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>, _alpha: T) -> HipStorage<T> {
-        launch_binary(g, x, "elu_bwd")
+    fn elu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>, alpha: T) -> HipStorage<T> {
+        launch_binary_alpha(g, x, alpha, "elu_bwd")
     }
     #[inline]
     fn gelu_backward<T: Scalar>(g: &HipStorage<T>, x: &HipStorage<T>) -> HipStorage<T> {
@@ -460,6 +578,14 @@ impl crate::backend::BackendNN for crate::backend::Hip {
         avg_pool2d=hip_avg_pool2d, adaptive_avg_pool2d=hip_adaptive_avg_pool2d,
         conv2d=hip_conv2d, conv1d=hip_conv1d, conv3d=hip_conv3d,
         conv_transpose2d=hip_conv_transpose2d,
+    }
+    #[inline]
+    fn wht<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
+        hip_wht(a)
+    }
+    #[inline]
+    fn wht_inverse<T: Scalar>(a: &HipStorage<T>) -> HipStorage<T> {
+        hip_wht_inverse(a)
     }
 }
 

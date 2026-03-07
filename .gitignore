@@ -1,11 +1,11 @@
 # Build
 /target/
-nabla-core/target/
-nabla-macros/target/
-nabla/target/
+**/target/
 
-# Docs (local only)
-docs/
+# Cache
+.cache/
+**/.cache/
+~/.cache/nabla/
 
 # IDE
 .idea/
@@ -17,11 +17,24 @@ docs/
 .DS_Store
 Thumbs.db
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
 # Models / large binaries
 *.gguf
+*.imatrix
+*.bin
+*.safetensors
+
+# Profiling / debug
+*.prof
+*.rlib
+perf.data
+perf.data.old
 
 # Environment
 .env
 .env.*
-nabla_bench/target/
-nabla-ml/target/

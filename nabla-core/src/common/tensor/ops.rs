@@ -372,32 +372,33 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     // ---- Broadcast operations ----
 
+    fn broadcast_op(&self, vec: &Self, axis: usize, op: &str, f: impl FnOnce(&B::Storage<T>, &B::Storage<T>) -> B::Storage<T>) -> Self {
+        let expanded = self.expand_broadcast_vec(vec, axis, op);
+        Tensor::from_storage(f(&self.storage, &expanded.storage))
+    }
+
     /// Add a row vector `(1xn)` to every row of `self (mxn)`.
     #[must_use]
     pub fn broadcast_add_rows(&self, row: &Self) -> Self {
-        let row_exp = self.expand_broadcast_vec(row, 0, "nabla: broadcast_add_rows");
-        Tensor::from_storage(B::add(&self.storage, &row_exp.storage))
+        self.broadcast_op(row, 0, "nabla: broadcast_add_rows", B::add)
     }
 
     /// Add a column vector `(mx1)` to every column of `self (mxn)`.
     #[must_use]
     pub fn broadcast_add_cols(&self, col: &Self) -> Self {
-        let col_exp = self.expand_broadcast_vec(col, 1, "nabla: broadcast_add_cols");
-        Tensor::from_storage(B::add(&self.storage, &col_exp.storage))
+        self.broadcast_op(col, 1, "nabla: broadcast_add_cols", B::add)
     }
 
     /// Element-wise multiply each row by a row vector `(1xn)`.
     #[must_use]
     pub fn broadcast_mul_rows(&self, row: &Self) -> Self {
-        let row_exp = self.expand_broadcast_vec(row, 0, "nabla: broadcast_mul_rows");
-        Tensor::from_storage(B::emul(&self.storage, &row_exp.storage))
+        self.broadcast_op(row, 0, "nabla: broadcast_mul_rows", B::emul)
     }
 
     /// Element-wise multiply each column by a column vector `(mx1)`.
     #[must_use]
     pub fn broadcast_mul_cols(&self, col: &Self) -> Self {
-        let col_exp = self.expand_broadcast_vec(col, 1, "nabla: broadcast_mul_cols");
-        Tensor::from_storage(B::emul(&self.storage, &col_exp.storage))
+        self.broadcast_op(col, 1, "nabla: broadcast_mul_cols", B::emul)
     }
 
     /// In-place add a row vector `(1xn)` to every row.
@@ -510,6 +511,33 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         out
     }
 
+    /// Newton-Schulz orthogonalization toward nearest orthogonal matrix.
+    ///
+    /// Pre-scales input by `1 / ||X||_F` for convergence, then iterates
+    /// the polar Newton-Schulz iteration: `X_{k+1} = X @ (1.5*I - 0.5*X^T@X)`.
+    /// Works for both square and rectangular matrices.
+    #[must_use]
+    pub fn newton_schulz_ortho(&self, iters: usize) -> Self {
+        let (rows, cols) = (self.nrows(), self.ncols());
+        assert!(rows > 0 && cols > 0, "newton_schulz_ortho: empty matrix");
+        let n = rows.min(cols);
+        let fnorm = self.norm();
+        assert!(
+            fnorm.to_f64() > 0.0,
+            "newton_schulz_ortho: zero-norm matrix"
+        );
+        let mut x = self * fnorm.math_recip();
+        let eye = Self::from_storage(B::identity(n));
+        let a_coeff = T::from_f64(1.5);
+        let b_coeff = T::from_f64(-0.5);
+        for _ in 0..iters {
+            let g = x.matmul_tn(&x);
+            let poly = &(&eye * a_coeff) + &(&g * b_coeff);
+            x = &x * &poly;
+        }
+        x
+    }
+
     /// Fused matmul + element-wise activation.
     #[must_use]
     #[cfg(feature = "cpu")]
@@ -535,117 +563,51 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 }
 
-impl<T: Scalar, B: Backend> Add for &Tensor<T, B> {
-    type Output = Tensor<T, B>;
+macro_rules! impl_broadcast_binop {
+    ($trait:ident, $method:ident, $backend_fn:ident, $name:literal) => {
+        impl<T: Scalar, B: Backend> $trait for &Tensor<T, B> {
+            type Output = Tensor<T, B>;
 
-    fn add(self, rhs: Self) -> Self::Output {
-        let (m, n) = self.shape();
-        let (p, q) = rhs.shape();
-        // Exact match — fast path via backend.
-        if m == p && n == q {
-            return Tensor::from_storage(B::add(&self.storage, &rhs.storage));
+            fn $method(self, rhs: Self) -> Self::Output {
+                let (m, n) = self.shape();
+                let (p, q) = rhs.shape();
+                if m == p && n == q {
+                    return Tensor::from_storage(B::$backend_fn(&self.storage, &rhs.storage));
+                }
+                // rhs is broadcastable to self's shape
+                if (p == 1 || p == m) && (q == 1 || q == n) && (p, q) != (m, n) {
+                    let rhs_exp = rhs.expand(m, n);
+                    return Tensor::from_storage(B::$backend_fn(&self.storage, &rhs_exp.storage));
+                }
+                // self is broadcastable to rhs's shape
+                if (m == 1 || m == p) && (n == 1 || n == q) && (m, n) != (p, q) {
+                    let self_exp = self.expand(p, q);
+                    return Tensor::from_storage(B::$backend_fn(&self_exp.storage, &rhs.storage));
+                }
+                panic!("nabla: {} ({}x{}) vs ({}x{}) -- shapes are not broadcast-compatible", $name, m, n, p, q);
+            }
         }
-        // (m,n) + (1,n) → broadcast row vector across rows
-        if p == 1 && q == n {
-            let rhs_exp = rhs.expand(m, n);
-            return Tensor::from_storage(B::add(&self.storage, &rhs_exp.storage));
-        }
-        // (m,n) + (m,1) → broadcast column vector across columns
-        if p == m && q == 1 {
-            let rhs_exp = rhs.expand(m, n);
-            return Tensor::from_storage(B::add(&self.storage, &rhs_exp.storage));
-        }
-        // (m,n) + (1,1) → broadcast scalar
-        if p == 1 && q == 1 {
-            let rhs_exp = rhs.expand(m, n);
-            return Tensor::from_storage(B::add(&self.storage, &rhs_exp.storage));
-        }
-        // (1,n) + (m,n) → commutative, swap operands
-        if m == 1 && n == q {
-            let self_exp = self.expand(p, q);
-            return Tensor::from_storage(B::add(&self_exp.storage, &rhs.storage));
-        }
-        // (m,1) + (m,n) → commutative, swap operands
-        if m == p && n == 1 {
-            let self_exp = self.expand(p, q);
-            return Tensor::from_storage(B::add(&self_exp.storage, &rhs.storage));
-        }
-        // (1,1) + (m,n) → broadcast scalar
-        if m == 1 && n == 1 {
-            let self_exp = self.expand(p, q);
-            return Tensor::from_storage(B::add(&self_exp.storage, &rhs.storage));
-        }
-        panic!("nabla: add ({m}x{n}) vs ({p}x{q}) -- shapes are not broadcast-compatible");
-    }
+    };
 }
 
-impl<T: Scalar, B: Backend> Sub for &Tensor<T, B> {
-    type Output = Tensor<T, B>;
+impl_broadcast_binop!(Add, add, add, "add");
+impl_broadcast_binop!(Sub, sub, sub, "sub");
 
-    fn sub(self, rhs: Self) -> Self::Output {
-        let (m, n) = self.shape();
-        let (p, q) = rhs.shape();
-        // Exact match — fast path via backend.
-        if m == p && n == q {
-            return Tensor::from_storage(B::sub(&self.storage, &rhs.storage));
+macro_rules! impl_assign_op {
+    ($trait:ident, $method:ident, $backend_fn:ident, $sym:literal) => {
+        impl<T: Scalar, B: Backend> $trait<&Tensor<T, B>> for Tensor<T, B> {
+            fn $method(&mut self, rhs: &Tensor<T, B>) {
+                let (m, n) = self.shape();
+                let (p, q) = rhs.shape();
+                assert!(m == p && n == q, "nabla: {} ({}x{}) vs ({}x{}) -- shapes must match", $sym, m, n, p, q);
+                self.storage = B::$backend_fn(&self.storage, &rhs.storage);
+            }
         }
-        // (m,n) - (1,n) → broadcast row vector across rows
-        if p == 1 && q == n {
-            let rhs_exp = rhs.expand(m, n);
-            return Tensor::from_storage(B::sub(&self.storage, &rhs_exp.storage));
-        }
-        // (m,n) - (m,1) → broadcast column vector across columns
-        if p == m && q == 1 {
-            let rhs_exp = rhs.expand(m, n);
-            return Tensor::from_storage(B::sub(&self.storage, &rhs_exp.storage));
-        }
-        // (m,n) - (1,1) → broadcast scalar
-        if p == 1 && q == 1 {
-            let rhs_exp = rhs.expand(m, n);
-            return Tensor::from_storage(B::sub(&self.storage, &rhs_exp.storage));
-        }
-        // (1,n) - (m,n) → row_vec - matrix = -(matrix - row_vec)
-        if m == 1 && n == q {
-            let self_exp = self.expand(p, q);
-            return Tensor::from_storage(B::sub(&self_exp.storage, &rhs.storage));
-        }
-        // (m,1) - (m,n) → col_vec - matrix
-        if m == p && n == 1 {
-            let self_exp = self.expand(p, q);
-            return Tensor::from_storage(B::sub(&self_exp.storage, &rhs.storage));
-        }
-        // (1,1) - (m,n) → scalar broadcast
-        if m == 1 && n == 1 {
-            let self_exp = self.expand(p, q);
-            return Tensor::from_storage(B::sub(&self_exp.storage, &rhs.storage));
-        }
-        panic!("nabla: sub ({m}x{n}) vs ({p}x{q}) -- shapes are not broadcast-compatible");
-    }
+    };
 }
 
-impl<T: Scalar, B: Backend> AddAssign<&Tensor<T, B>> for Tensor<T, B> {
-    fn add_assign(&mut self, rhs: &Tensor<T, B>) {
-        let (m, n) = self.shape();
-        let (p, q) = rhs.shape();
-        assert!(
-            m == p && n == q,
-            "nabla: += ({m}x{n}) vs ({p}x{q}) -- shapes must match"
-        );
-        self.storage = B::add(&self.storage, &rhs.storage);
-    }
-}
-
-impl<T: Scalar, B: Backend> SubAssign<&Tensor<T, B>> for Tensor<T, B> {
-    fn sub_assign(&mut self, rhs: &Tensor<T, B>) {
-        let (m, n) = self.shape();
-        let (p, q) = rhs.shape();
-        assert!(
-            m == p && n == q,
-            "nabla: -= ({m}x{n}) vs ({p}x{q}) -- shapes must match"
-        );
-        self.storage = B::sub(&self.storage, &rhs.storage);
-    }
-}
+impl_assign_op!(AddAssign, add_assign, add, "+=");
+impl_assign_op!(SubAssign, sub_assign, sub, "-=");
 
 impl<T: Scalar, B: Backend> MulAssign<T> for Tensor<T, B> {
     fn mul_assign(&mut self, rhs: T) {
@@ -664,6 +626,18 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             "nabla: axpy_inplace ({m}x{n}) vs ({p}x{q}) -- shapes must match"
         );
         B::axpy_inplace(&mut self.storage, alpha, &x.storage);
+    }
+
+    /// In-place add: `self[i] += other[i]`. Zero allocation.
+    #[inline]
+    pub fn add_assign_inplace(&mut self, other: &Self) {
+        self.axpy_inplace(T::one_impl(), other);
+    }
+
+    /// In-place scale: `self[i] *= scalar`. Replaces self with scaled result.
+    #[inline]
+    pub fn scale_assign(&mut self, scalar: T) {
+        self.storage = B::scale(&self.storage, scalar);
     }
 }
 
@@ -718,131 +692,57 @@ impl<T: Scalar, B: Backend> Div<T> for Tensor<T, B> {
     }
 }
 
-impl<T: Scalar, B: Backend> Add for Tensor<T, B> {
-    type Output = Self;
-
-    #[inline]
-    fn add(self, rhs: Self) -> Self::Output {
-        &self + &rhs
-    }
+// Owned-variant forwarding: all 3 combos delegate to &T op &T.
+macro_rules! impl_owned_binop_fwd {
+    ($trait:ident, $method:ident) => {
+        impl<T: Scalar, B: Backend> $trait for Tensor<T, B> {
+            type Output = Self;
+            #[inline]
+            fn $method(self, rhs: Self) -> Self::Output { (&self).$method(&rhs) }
+        }
+        impl<T: Scalar, B: Backend> $trait<Tensor<T, B>> for &Tensor<T, B> {
+            type Output = Tensor<T, B>;
+            #[inline]
+            fn $method(self, rhs: Tensor<T, B>) -> Self::Output { self.$method(&rhs) }
+        }
+        impl<T: Scalar, B: Backend> $trait<&Tensor<T, B>> for Tensor<T, B> {
+            type Output = Self;
+            #[inline]
+            fn $method(self, rhs: &Self) -> Self::Output { (&self).$method(rhs) }
+        }
+    };
 }
 
-impl<T: Scalar, B: Backend> Add<Tensor<T, B>> for &Tensor<T, B> {
-    type Output = Tensor<T, B>;
-
-    #[inline]
-    fn add(self, rhs: Tensor<T, B>) -> Self::Output {
-        self + &rhs
-    }
-}
-
-impl<T: Scalar, B: Backend> Add<&Tensor<T, B>> for Tensor<T, B> {
-    type Output = Self;
-
-    #[inline]
-    fn add(self, rhs: &Self) -> Self::Output {
-        &self + rhs
-    }
-}
-
-impl<T: Scalar, B: Backend> Sub for Tensor<T, B> {
-    type Output = Self;
-
-    #[inline]
-    fn sub(self, rhs: Self) -> Self::Output {
-        &self - &rhs
-    }
-}
-
-impl<T: Scalar, B: Backend> Sub<Tensor<T, B>> for &Tensor<T, B> {
-    type Output = Tensor<T, B>;
-
-    #[inline]
-    fn sub(self, rhs: Tensor<T, B>) -> Self::Output {
-        self - &rhs
-    }
-}
-
-impl<T: Scalar, B: Backend> Sub<&Tensor<T, B>> for Tensor<T, B> {
-    type Output = Self;
-
-    #[inline]
-    fn sub(self, rhs: &Self) -> Self::Output {
-        &self - rhs
-    }
-}
+impl_owned_binop_fwd!(Add, add);
+impl_owned_binop_fwd!(Sub, sub);
+impl_owned_binop_fwd!(Mul, mul);
 
 impl<T: Scalar, B: Backend> Neg for Tensor<T, B> {
     type Output = Self;
-
     #[inline]
-    fn neg(self) -> Self::Output {
-        -&self
-    }
+    fn neg(self) -> Self::Output { -&self }
 }
 
 impl<T: Scalar, B: Backend> Mul<T> for Tensor<T, B> {
     type Output = Self;
-
     #[inline]
-    fn mul(self, rhs: T) -> Self::Output {
-        &self * rhs
-    }
-}
-
-impl<T: Scalar, B: Backend> Mul for Tensor<T, B> {
-    type Output = Self;
-
-    #[inline]
-    fn mul(self, rhs: Self) -> Self::Output {
-        &self * &rhs
-    }
-}
-
-impl<T: Scalar, B: Backend> Mul<&Tensor<T, B>> for Tensor<T, B> {
-    type Output = Self;
-
-    #[inline]
-    fn mul(self, rhs: &Self) -> Self::Output {
-        &self * rhs
-    }
-}
-
-impl<T: Scalar, B: Backend> Mul<Tensor<T, B>> for &Tensor<T, B> {
-    type Output = Tensor<T, B>;
-
-    #[inline]
-    fn mul(self, rhs: Tensor<T, B>) -> Self::Output {
-        self * &rhs
-    }
+    fn mul(self, rhs: T) -> Self::Output { &self * rhs }
 }
 
 macro_rules! impl_scalar_lhs_ops {
     ($($t:ty),*) => { $(
-        /// `scalar * &Tensor` — scalar scaling (commutative).
         impl<B: Backend> Mul<&Tensor<$t, B>> for $t {
             type Output = Tensor<$t, B>;
-
             #[inline]
-            fn mul(self, rhs: &Tensor<$t, B>) -> Self::Output {
-                rhs * self
-            }
+            fn mul(self, rhs: &Tensor<$t, B>) -> Self::Output { rhs * self }
         }
-
-        /// `scalar * Tensor` — scalar scaling (commutative, owned).
         impl<B: Backend> Mul<Tensor<$t, B>> for $t {
             type Output = Tensor<$t, B>;
-
             #[inline]
-            fn mul(self, rhs: Tensor<$t, B>) -> Self::Output {
-                &rhs * self
-            }
+            fn mul(self, rhs: Tensor<$t, B>) -> Self::Output { self * &rhs }
         }
-
-        /// `scalar + &Tensor` — broadcast scalar add (commutative).
         impl<B: Backend> Add<&Tensor<$t, B>> for $t {
             type Output = Tensor<$t, B>;
-
             #[inline]
             fn add(self, rhs: &Tensor<$t, B>) -> Self::Output {
                 let (m, n) = rhs.shape();
@@ -850,21 +750,13 @@ macro_rules! impl_scalar_lhs_ops {
                 Tensor::from_storage(B::add(&s.storage, &rhs.storage))
             }
         }
-
-        /// `scalar + Tensor` — broadcast scalar add (commutative, owned).
         impl<B: Backend> Add<Tensor<$t, B>> for $t {
             type Output = Tensor<$t, B>;
-
             #[inline]
-            fn add(self, rhs: Tensor<$t, B>) -> Self::Output {
-                self + &rhs
-            }
+            fn add(self, rhs: Tensor<$t, B>) -> Self::Output { self + &rhs }
         }
-
-        /// `scalar - &Tensor` — broadcast scalar sub.
         impl<B: Backend> Sub<&Tensor<$t, B>> for $t {
             type Output = Tensor<$t, B>;
-
             #[inline]
             fn sub(self, rhs: &Tensor<$t, B>) -> Self::Output {
                 let (m, n) = rhs.shape();
@@ -872,21 +764,13 @@ macro_rules! impl_scalar_lhs_ops {
                 Tensor::from_storage(B::sub(&s.storage, &rhs.storage))
             }
         }
-
-        /// `scalar - Tensor` — broadcast scalar sub (owned).
         impl<B: Backend> Sub<Tensor<$t, B>> for $t {
             type Output = Tensor<$t, B>;
-
             #[inline]
-            fn sub(self, rhs: Tensor<$t, B>) -> Self::Output {
-                self - &rhs
-            }
+            fn sub(self, rhs: Tensor<$t, B>) -> Self::Output { self - &rhs }
         }
-
-        /// `scalar / &Tensor` — element-wise reciprocal scaled by scalar.
         impl<B: Backend> Div<&Tensor<$t, B>> for $t {
             type Output = Tensor<$t, B>;
-
             #[inline]
             fn div(self, rhs: &Tensor<$t, B>) -> Self::Output {
                 let (m, n) = rhs.shape();
@@ -894,15 +778,10 @@ macro_rules! impl_scalar_lhs_ops {
                 Tensor::from_storage(B::ediv(&s.storage, &rhs.storage))
             }
         }
-
-        /// `scalar / Tensor` — element-wise reciprocal scaled by scalar (owned).
         impl<B: Backend> Div<Tensor<$t, B>> for $t {
             type Output = Tensor<$t, B>;
-
             #[inline]
-            fn div(self, rhs: Tensor<$t, B>) -> Self::Output {
-                self / &rhs
-            }
+            fn div(self, rhs: Tensor<$t, B>) -> Self::Output { self / &rhs }
         }
     )* };
 }

@@ -64,6 +64,8 @@ pub(crate) struct TapeEntry<T: Scalar, B: Backend> {
     pub(super) deps: Vec<usize>,
     /// Name of the operation that created this entry (for Debug display).
     pub(super) op_name: &'static str,
+    /// Post-accumulation gradient hooks applied before backward propagation.
+    pub(crate) post_hooks: RefCell<Vec<Box<dyn Fn(&Tensor<T, B>) -> Tensor<T, B>>>>,
 }
 
 impl<T: Scalar, B: Backend> TapeEntry<T, B> {
@@ -77,6 +79,7 @@ impl<T: Scalar, B: Backend> TapeEntry<T, B> {
             backward: Box::new(backward),
             deps,
             op_name,
+            post_hooks: RefCell::new(Vec::new()),
         })
     }
 
@@ -252,6 +255,24 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
     /// [`Variable::backward`] completes.
     pub fn retain_grad(&self) {
         self.retained.set(true);
+    }
+
+    /// Register a gradient hook that transforms this variable's gradient during backward.
+    ///
+    /// Multiple hooks are applied in registration order. Each hook receives the
+    /// accumulated gradient and returns a transformed gradient.
+    ///
+    /// # Example
+    /// ```ignore
+    /// var.register_hook(|g| g * &mask);  // selective gradient masking
+    /// ```
+    pub fn register_hook<F>(&self, f: F)
+    where
+        F: Fn(&Tensor<T, B>) -> Tensor<T, B> + 'static,
+    {
+        if let Some(entry) = &self.tape_entry {
+            entry.post_hooks.borrow_mut().push(Box::new(f));
+        }
     }
 
     // -----------------------------------------------------------------------

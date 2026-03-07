@@ -450,16 +450,7 @@ pub(crate) fn mega_fuse_impl(input: TokenStream2) -> Result<TokenStream2> {
 
     let kernel_hash = expr_hash(&combined_hash);
     let gpu_expr_lits: Vec<TokenStream2> = gpu_exprs.iter().map(|e| quote! { #e }).collect();
-    let uses_prev_lits: Vec<TokenStream2> = uses_prev
-        .iter()
-        .map(|&b| {
-            if b {
-                quote! { true }
-            } else {
-                quote! { false }
-            }
-        })
-        .collect();
+    let uses_prev_lits: Vec<TokenStream2> = uses_prev.iter().map(|&b| quote! { #b }).collect();
     let op_ptrs: Vec<Vec<TokenStream2>> = op_inputs.iter().map(|v| storage_ptrs(v)).collect();
     let op_ptr_lists: Vec<TokenStream2> = op_ptrs
         .iter()

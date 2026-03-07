@@ -79,6 +79,7 @@ macro_rules! impl_real_mathops {
 impl_real_mathops!(f32, |x: f32| erf_approx(f64::from(x)) as f32);
 impl_real_mathops!(f64, erf_approx);
 
+#[cfg_attr(not(feature = "cpu"), allow(dead_code))]
 pub(crate) trait ReductionOps: Sized + Copy {
     /// Accumulate `self + other` for sum reduction.
     fn reduction_add(self, other: Self) -> Self;
@@ -96,22 +97,10 @@ pub(crate) trait ReductionOps: Sized + Copy {
 macro_rules! impl_real_reduction {
     ($ty:ty) => {
         impl ReductionOps for $ty {
-            #[inline]
-            fn reduction_add(self, other: Self) -> Self {
-                self + other
-            }
-            #[inline]
-            fn reduction_max(self, other: Self) -> Self {
-                self.max(other)
-            }
-            #[inline]
-            fn reduction_min(self, other: Self) -> Self {
-                self.min(other)
-            }
-            #[inline]
-            fn reduction_gt(self, other: Self) -> bool {
-                self > other
-            }
+            #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
+            #[inline] fn reduction_max(self, other: Self) -> Self { self.max(other) }
+            #[inline] fn reduction_min(self, other: Self) -> Self { self.min(other) }
+            #[inline] fn reduction_gt(self, other: Self) -> bool { self > other }
         }
     };
 }
@@ -186,31 +175,13 @@ macro_rules! impl_real_scalar {
         impl Scalar for $T {
             type Real = $T;
             const IS_REAL: bool = true;
-            #[inline]
-            fn zero() -> Self {
-                $zero
-            }
-            #[inline]
-            fn one() -> Self {
-                $one
-            }
-            #[inline]
-            fn conj(self) -> Self {
-                self
-            }
-            #[inline]
-            fn abs_val(self) -> Self::Real {
-                self.abs()
-            }
+            #[inline] fn zero() -> Self { $zero }
+            #[inline] fn one() -> Self { $one }
+            #[inline] fn conj(self) -> Self { self }
+            #[inline] fn abs_val(self) -> Self::Real { self.abs() }
             #[allow(clippy::cast_possible_truncation)]
-            #[inline]
-            fn from_f64(v: f64) -> Self {
-                $from_f64(v)
-            }
-            #[inline]
-            fn to_f64(self) -> f64 {
-                $to_f64(self)
-            }
+            #[inline] fn from_f64(v: f64) -> Self { $from_f64(v) }
+            #[inline] fn to_f64(self) -> f64 { $to_f64(self) }
         }
     };
 }
@@ -223,6 +194,18 @@ pub trait RealScalar: Scalar<Real = Self> + PartialOrd + Into<f64> {}
 
 impl RealScalar for f32 {}
 impl RealScalar for f64 {}
+
+/// ReductionOps for types that compare by a `.value` field (Dual, MultiDual).
+macro_rules! impl_value_reduction {
+    ([$($gen:tt)*] $ty:ty) => {
+        impl<$($gen)*> ReductionOps for $ty {
+            #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
+            #[inline] fn reduction_max(self, other: Self) -> Self { if self.value > other.value { self } else { other } }
+            #[inline] fn reduction_min(self, other: Self) -> Self { if self.value < other.value { self } else { other } }
+            #[inline] fn reduction_gt(self, other: Self) -> bool { self.value > other.value }
+        }
+    };
+}
 
 #[cfg(feature = "cpu")]
 mod complex;
@@ -276,22 +259,10 @@ mod half_impl {
     macro_rules! impl_half_reduction {
         ($ty:ty) => {
             impl ReductionOps for $ty {
-                #[inline]
-                fn reduction_add(self, other: Self) -> Self {
-                    <$ty>::from_f32(f32::from(self) + f32::from(other))
-                }
-                #[inline]
-                fn reduction_max(self, other: Self) -> Self {
-                    <$ty>::from_f32(f32::from(self).max(f32::from(other)))
-                }
-                #[inline]
-                fn reduction_min(self, other: Self) -> Self {
-                    <$ty>::from_f32(f32::from(self).min(f32::from(other)))
-                }
-                #[inline]
-                fn reduction_gt(self, other: Self) -> bool {
-                    f32::from(self) > f32::from(other)
-                }
+                #[inline] fn reduction_add(self, other: Self) -> Self { <$ty>::from_f32(f32::from(self) + f32::from(other)) }
+                #[inline] fn reduction_max(self, other: Self) -> Self { <$ty>::from_f32(f32::from(self).max(f32::from(other))) }
+                #[inline] fn reduction_min(self, other: Self) -> Self { <$ty>::from_f32(f32::from(self).min(f32::from(other))) }
+                #[inline] fn reduction_gt(self, other: Self) -> bool { f32::from(self) > f32::from(other) }
             }
         };
     }
@@ -304,31 +275,13 @@ mod half_impl {
             impl Scalar for $ty {
                 type Real = f32;
                 const IS_REAL: bool = true;
-                #[inline]
-                fn zero() -> Self {
-                    <$ty>::ZERO
-                }
-                #[inline]
-                fn one() -> Self {
-                    <$ty>::ONE
-                }
-                #[inline]
-                fn conj(self) -> Self {
-                    self
-                }
-                #[inline]
-                fn abs_val(self) -> Self::Real {
-                    f32::from(self).abs()
-                }
+                #[inline] fn zero() -> Self { <$ty>::ZERO }
+                #[inline] fn one() -> Self { <$ty>::ONE }
+                #[inline] fn conj(self) -> Self { self }
+                #[inline] fn abs_val(self) -> Self::Real { f32::from(self).abs() }
                 #[allow(clippy::cast_possible_truncation)]
-                #[inline]
-                fn from_f64(v: f64) -> Self {
-                    <$ty>::from_f32(v as f32)
-                }
-                #[inline]
-                fn to_f64(self) -> f64 {
-                    f64::from(f32::from(self))
-                }
+                #[inline] fn from_f64(v: f64) -> Self { <$ty>::from_f32(v as f32) }
+                #[inline] fn to_f64(self) -> f64 { f64::from(f32::from(self)) }
             }
         };
     }

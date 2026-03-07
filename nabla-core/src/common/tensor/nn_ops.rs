@@ -16,11 +16,7 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Element-wise sigmoid: `1 / (1 + exp(-x))`.
     #[must_use]
     pub fn sigmoid(&self) -> Self {
-        let (m, n) = self.shape();
-        let ones = Tensor::<T, B>::fill(1, 1, T::one()).expand(m, n);
-        let neg = -self;
-        let denom = &ones + &neg.exp();
-        ones.ediv(&denom)
+        Self::from_storage(B::sigmoid(&self.storage))
     }
 
     /// Element-wise GELU (tanh approximation):
@@ -447,13 +443,14 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         let d_head = d_model / num_heads;
         let seq_q = q.nrows();
         let seq_k = k.nrows();
-        let mut head_outputs: Vec<Self> = Vec::with_capacity(num_heads);
-        for h in 0..num_heads {
-            let q_h = q.submatrix(0, seq_q, h * d_head, (h + 1) * d_head);
-            let k_h = k.submatrix(0, seq_k, h * d_head, (h + 1) * d_head);
-            let v_h = v.submatrix(0, seq_k, h * d_head, (h + 1) * d_head);
-            head_outputs.push(Self::scaled_dot_product_attention(&q_h, &k_h, &v_h, mask));
-        }
+        let head_outputs: Vec<Self> = (0..num_heads)
+            .map(|h| {
+                let q_h = q.submatrix(0, seq_q, h * d_head, (h + 1) * d_head);
+                let k_h = k.submatrix(0, seq_k, h * d_head, (h + 1) * d_head);
+                let v_h = v.submatrix(0, seq_k, h * d_head, (h + 1) * d_head);
+                Self::scaled_dot_product_attention(&q_h, &k_h, &v_h, mask)
+            })
+            .collect();
         let refs: Vec<&Self> = head_outputs.iter().collect();
         Self::hcat(&refs)
     }
@@ -497,6 +494,30 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         ))
     }
 
+    // ---- Walsh-Hadamard Transform ----
+
+    /// Walsh-Hadamard Transform on each row. Columns must be power-of-2.
+    #[must_use]
+    pub fn wht(&self) -> Self {
+        assert!(
+            self.ncols().is_power_of_two(),
+            "WHT requires power-of-2 columns, got {}",
+            self.ncols()
+        );
+        Self::from_storage(B::wht(&self.storage))
+    }
+
+    /// Inverse Walsh-Hadamard Transform (WHT / N) on each row. Columns must be power-of-2.
+    #[must_use]
+    pub fn wht_inverse(&self) -> Self {
+        assert!(
+            self.ncols().is_power_of_two(),
+            "WHT requires power-of-2 columns, got {}",
+            self.ncols()
+        );
+        Self::from_storage(B::wht_inverse(&self.storage))
+    }
+
     // ---- Batched operations ----
 
     /// Batched matrix multiply.
@@ -507,6 +528,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         assert_eq!(other.nrows(), batch * k);
         assert_eq!(other.ncols(), n);
         Self::from_storage(B::bmm(&self.storage, &other.storage, batch, m, k, n))
+    }
+
+    /// Batched matrix multiply with B transposed: `C[b] = A[b] @ B[b]^T`.
+    #[must_use]
+    pub fn bmm_nt(&self, other: &Self, batch: usize, m: usize, k: usize, n: usize) -> Self {
+        assert_eq!(self.nrows(), batch * m);
+        assert_eq!(self.ncols(), k);
+        assert_eq!(other.nrows(), batch * n);
+        assert_eq!(other.ncols(), k);
+        Self::from_storage(B::bmm_nt(&self.storage, &other.storage, batch, m, k, n))
     }
 
     /// `C = alpha * A @ B + beta * C` (addmm).
@@ -546,5 +577,28 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             beta,
             alpha,
         ))
+    }
+}
+
+// ---- In-place CUDA ops ----
+
+#[cfg(feature = "cuda")]
+impl<T: Scalar> Tensor<T, crate::backend::Cuda> {
+    /// In-place sigmoid: `self[i] = 1 / (1 + exp(-self[i]))`. No allocation.
+    #[inline]
+    pub fn sigmoid_inplace(&mut self) {
+        crate::cuda_backend::launch_unary_inplace(&mut self.storage, "sigmoid");
+    }
+
+    /// In-place ReLU: `self[i] = max(0, self[i])`.
+    /// Uses `relu(x) = (x + |x|) * 0.5` with 1 temp allocation for abs.
+    pub fn relu_inplace(&mut self) {
+        let abs_storage = crate::cuda_backend::launch_unary(&self.storage, "abs");
+        <crate::backend::Cuda as crate::backend::BackendCore>::axpy_inplace(
+            &mut self.storage,
+            T::one_impl(),
+            &abs_storage,
+        );
+        crate::cuda_backend::cuda_scale_inplace(&mut self.storage, T::from_f64(0.5));
     }
 }

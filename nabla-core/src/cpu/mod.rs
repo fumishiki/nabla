@@ -344,6 +344,16 @@ impl crate::backend::BackendReduce for Cpu {
 }
 
 impl crate::backend::BackendShape for Cpu {
+    fn reshape_metadata<T: Scalar>(a: &mut CpuStorage<T>, new_rows: usize, new_cols: usize) {
+        assert_eq!(
+            a.nrows * a.ncols,
+            new_rows * new_cols,
+            "reshape_metadata: size mismatch"
+        );
+        a.nrows = new_rows;
+        a.ncols = new_cols;
+    }
+
     fn reshape_copy<T: Scalar>(
         a: &CpuStorage<T>,
         out_rows: usize,
@@ -716,6 +726,34 @@ impl crate::backend::BackendShape for Cpu {
         )
     }
 
+    fn topk_rows<T: Scalar>(a: &CpuStorage<T>, k: usize) -> (CpuStorage<T>, CpuStorage<T>) {
+        let rows = a.nrows;
+        let cols = a.ncols;
+        let mut vals = vec![T::zero(); rows * k];
+        let mut idxs = vec![T::zero(); rows * k];
+        for r in 0..rows {
+            let mut pairs: Vec<(T, usize)> =
+                (0..cols).map(|c| (a.get_unchecked(r, c), c)).collect();
+            pairs.sort_by(|a, b| b.0.to_f64().total_cmp(&a.0.to_f64()));
+            for c in 0..k {
+                vals[r * k + c] = pairs[c].0;
+                idxs[r * k + c] = T::from_f64(pairs[c].1 as f64);
+            }
+        }
+        (
+            CpuStorage {
+                data: vals,
+                nrows: rows,
+                ncols: k,
+            },
+            CpuStorage {
+                data: idxs,
+                nrows: rows,
+                ncols: k,
+            },
+        )
+    }
+
     fn meshgrid<T: Scalar>(x: &CpuStorage<T>, y: &CpuStorage<T>) -> (CpuStorage<T>, CpuStorage<T>) {
         let nx = x.nrows * x.ncols;
         let ny = y.nrows * y.ncols;
@@ -821,6 +859,10 @@ impl crate::backend::BackendBlas for Cpu {
 }
 
 impl crate::backend::BackendNN for Cpu {
+    fn sigmoid<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
+        a.map_elem(|x| T::one() / (T::one() + (T::zero() - x).math_exp()))
+    }
+
     fn silu<T: Scalar>(a: &CpuStorage<T>) -> CpuStorage<T> {
         a.map_elem(|x| {
             let s = T::one() / (T::one() + (T::zero() - x).math_exp());

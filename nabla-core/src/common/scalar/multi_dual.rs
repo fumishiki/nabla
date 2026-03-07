@@ -339,67 +339,15 @@ impl<T: RealScalar, const N: usize> MathOps for MultiDual<T, N> {
     }
 }
 
-impl<T: RealScalar, const N: usize> ReductionOps for MultiDual<T, N> {
-    #[inline]
-    fn reduction_add(self, other: Self) -> Self {
-        self + other
-    }
-    #[inline]
-    fn reduction_max(self, other: Self) -> Self {
-        if self.value > other.value {
-            self
-        } else {
-            other
-        }
-    }
-    #[inline]
-    fn reduction_min(self, other: Self) -> Self {
-        if self.value < other.value {
-            self
-        } else {
-            other
-        }
-    }
-    #[inline]
-    fn reduction_gt(self, other: Self) -> bool {
-        self.value > other.value
-    }
-}
+impl_value_reduction!([T: RealScalar, const N: usize] MultiDual<T, N>);
 
 impl<T: RealScalar, const N: usize> Scalar for MultiDual<T, N> {
     type Real = T;
     const IS_REAL: bool = false;
-    #[inline]
-    fn zero() -> Self {
-        MultiDual {
-            value: T::zero(),
-            derivs: [T::zero(); N],
-        }
-    }
-    #[inline]
-    fn one() -> Self {
-        MultiDual {
-            value: T::one(),
-            derivs: [T::zero(); N],
-        }
-    }
-    #[inline]
-    fn conj(self) -> Self {
-        self
-    }
-    #[inline]
-    fn abs_val(self) -> Self::Real {
-        self.value.abs_val()
-    }
-    #[inline]
-    fn from_f64(v: f64) -> Self {
-        MultiDual {
-            value: T::from_f64(v),
-            derivs: [T::zero(); N],
-        }
-    }
-    #[inline]
-    fn to_f64(self) -> f64 {
-        self.value.to_f64()
-    }
+    #[inline] fn zero() -> Self { Self::constant(T::zero()) }
+    #[inline] fn one() -> Self { Self::constant(T::one()) }
+    #[inline] fn conj(self) -> Self { self }
+    #[inline] fn abs_val(self) -> Self::Real { self.value.abs_val() }
+    #[inline] fn from_f64(v: f64) -> Self { Self::constant(T::from_f64(v)) }
+    #[inline] fn to_f64(self) -> f64 { self.value.to_f64() }
 }

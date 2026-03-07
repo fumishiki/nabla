@@ -1635,6 +1635,81 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     )
 }
 
+pub(crate) fn gpu_topk_rows<T: Scalar>(
+    a: &GpuStorage<T>,
+    k: usize,
+) -> (GpuStorage<T>, GpuStorage<T>) {
+    assert_is_f32::<T>();
+    let ctx = get_context();
+    let rows = a.nrows;
+    let cols = a.ncols;
+    let out_n = rows * k;
+    let out = GpuStorage::<f32>::empty_buf((out_n * 4) as u64);
+    let idx = GpuStorage::<f32>::empty_buf((out_n * 4) as u64);
+    // O(n·k) insertion-based topk per row
+    let shader = r#"
+@group(0) @binding(0) var<storage, read> inp: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out_val: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out_idx: array<f32>;
+@group(0) @binding(3) var<storage, read> params: array<u32>;
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let row = gid.x;
+    let rows = params[0];
+    let cols = params[1];
+    let k = params[2];
+    if row >= rows { return; }
+    let base_in = row * cols;
+    let base_out = row * k;
+    for (var i: u32 = 0u; i < k; i++) {
+        out_val[base_out + i] = inp[base_in + i];
+        out_idx[base_out + i] = f32(i);
+    }
+    for (var i: u32 = 1u; i < k; i++) {
+        let tv = out_val[base_out + i];
+        let ti = out_idx[base_out + i];
+        var j: i32 = i32(i) - 1;
+        while j >= 0 && out_val[base_out + u32(j)] < tv {
+            out_val[base_out + u32(j + 1)] = out_val[base_out + u32(j)];
+            out_idx[base_out + u32(j + 1)] = out_idx[base_out + u32(j)];
+            j--;
+        }
+        out_val[base_out + u32(j + 1)] = tv;
+        out_idx[base_out + u32(j + 1)] = ti;
+    }
+    for (var c: u32 = k; c < cols; c++) {
+        let val = inp[base_in + c];
+        if val > out_val[base_out + k - 1u] {
+            var j: i32 = i32(k) - 2;
+            while j >= 0 && out_val[base_out + u32(j)] < val {
+                out_val[base_out + u32(j + 1)] = out_val[base_out + u32(j)];
+                out_idx[base_out + u32(j + 1)] = out_idx[base_out + u32(j)];
+                j--;
+            }
+            out_val[base_out + u32(j + 1)] = val;
+            out_idx[base_out + u32(j + 1)] = f32(c);
+        }
+    }
+}
+"#;
+    let params = params_buf(&[rows as u32, cols as u32, k as u32]);
+    run_custom_shader(
+        ctx,
+        shader,
+        &[
+            (&a.buffer, true),
+            (&out, false),
+            (&idx, false),
+            (&params, true),
+        ],
+        rows as u32,
+    );
+    (
+        GpuStorage::from_buffer(rows, k, out),
+        GpuStorage::from_buffer(rows, k, idx),
+    )
+}
+
 pub(crate) fn gpu_meshgrid<T: Scalar>(
     x: &GpuStorage<T>,
     y: &GpuStorage<T>,
@@ -4071,6 +4146,13 @@ impl crate::backend::BackendShape for crate::backend::Gpu {
         descending: bool,
     ) -> (GpuStorage<T>, GpuStorage<T>) {
         gpu_sort_rows(a, descending)
+    }
+
+    fn topk_rows<T: crate::scalar::Scalar>(
+        a: &GpuStorage<T>,
+        k: usize,
+    ) -> (GpuStorage<T>, GpuStorage<T>) {
+        gpu_topk_rows(a, k)
     }
 
     fn meshgrid<T: crate::scalar::Scalar>(

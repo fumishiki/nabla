@@ -5,9 +5,8 @@ use std::sync::{Mutex, OnceLock};
 use hip_runtime_sys as hip;
 
 use crate::gpu_common::{
-    self, EnsureCache, KERNEL_COUNT, KernelId, LARGE_ALLOC_SIZE, MemoryPool, RtcStorage,
-    SMALL_ALLOC_SIZE, SMALL_LARGE_BOUNDARY, grid_1d, kernel_id, lock_or_recover, round_size,
-    type_suffix,
+    self, EnsureCache, KERNEL_COUNT, KernelId, MemoryPool, RtcStorage, bucket_size, grid_1d,
+    kernel_id, lock_or_recover, type_suffix,
 };
 use crate::kernels_cu::{self, BLOCK_SIZE};
 use crate::scalar::Scalar;
@@ -92,15 +91,21 @@ impl HipBuffer {
             pool.allocated_bytes += size_class;
             return Ok((ptr, size_class));
         }
-        let rounded = round_size(size_bytes);
-        let alloc_sz = if rounded < SMALL_LARGE_BOUNDARY {
-            rounded.max(SMALL_ALLOC_SIZE)
-        } else {
-            rounded.max(LARGE_ALLOC_SIZE)
-        };
+        let alloc_sz = bucket_size(size_bytes);
         drop(pool);
         let mut ptr: *mut c_void = core::ptr::null_mut();
-        check(unsafe { hip::hipMalloc(&mut ptr, alloc_sz) })?;
+        if check(unsafe { hip::hipMalloc(&mut ptr, alloc_sz) }).is_err() {
+            // OOM: free all cached pool blocks back to HIP and retry.
+            let mut pool = ctx
+                .pool
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pool.trim(0, |p, _| unsafe {
+                let _ = hip::hipFree(p);
+            });
+            drop(pool);
+            check(unsafe { hip::hipMalloc(&mut ptr, alloc_sz) })?;
+        }
         let mut pool = ctx
             .pool
             .lock()

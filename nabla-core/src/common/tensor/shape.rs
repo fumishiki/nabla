@@ -13,6 +13,12 @@ use super::variants::NdTensor;
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- Shape manipulation ----
 
+    /// Zero-copy reshape: change metadata only, no allocation or kernel launch.
+    #[inline]
+    pub fn reshape_inplace(&mut self, m: usize, n: usize) {
+        B::reshape_metadata(&mut self.storage, m, n);
+    }
+
     /// Reshape to `(m, n)`, preserving row-major element order.
     #[must_use]
     pub fn reshape(&self, m: usize, n: usize) -> Self {
@@ -214,65 +220,36 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     /// Split into at most `n` chunks along `axis` (last chunk may be smaller).
     #[must_use]
     pub fn chunk(&self, n: usize, axis: usize) -> Vec<Self> {
-        match axis {
-            0 => {
-                let r = self.nrows();
-                let chunk_size = r.div_ceil(n);
-                (0..n)
-                    .filter_map(|i| {
-                        let start = i * chunk_size;
-                        if start >= r {
-                            return None;
-                        }
-                        Some(self.slice_rows(start..((i + 1) * chunk_size).min(r)))
-                    })
-                    .collect()
-            }
-            1 => {
-                let c = self.ncols();
-                let chunk_size = c.div_ceil(n);
-                (0..n)
-                    .filter_map(|i| {
-                        let start = i * chunk_size;
-                        if start >= c {
-                            return None;
-                        }
-                        Some(self.slice_cols(start..((i + 1) * chunk_size).min(c)))
-                    })
-                    .collect()
-            }
+        let dim = match axis {
+            0 => self.nrows(),
+            1 => self.ncols(),
             _ => panic!("nabla: chunk axis {axis} out of bounds for 2-D tensor"),
-        }
+        };
+        let chunk_size = dim.div_ceil(n);
+        (0..n)
+            .filter_map(|i| {
+                let start = i * chunk_size;
+                (start < dim).then(|| {
+                    let end = ((i + 1) * chunk_size).min(dim);
+                    match axis { 0 => self.slice_rows(start..end), _ => self.slice_cols(start..end) }
+                })
+            })
+            .collect()
     }
 
     /// Split into chunks of given sizes along axis.
     #[must_use]
     pub fn split(&self, sizes: &[usize], axis: usize) -> Vec<Self> {
-        match axis {
-            0 => {
-                let mut offset = 0;
-                sizes
-                    .iter()
-                    .map(|&s| {
-                        let part = self.submatrix(offset, offset + s, 0, self.ncols());
-                        offset += s;
-                        part
-                    })
-                    .collect()
-            }
-            1 => {
-                let mut offset = 0;
-                sizes
-                    .iter()
-                    .map(|&s| {
-                        let part = self.submatrix(0, self.nrows(), offset, offset + s);
-                        offset += s;
-                        part
-                    })
-                    .collect()
-            }
-            _ => panic!("nabla: split axis must be 0 or 1, got {axis}"),
-        }
+        assert!(axis <= 1, "nabla: split axis must be 0 or 1, got {axis}");
+        let mut offset = 0;
+        sizes.iter().map(|&s| {
+            let part = match axis {
+                0 => self.submatrix(offset, offset + s, 0, self.ncols()),
+                _ => self.submatrix(0, self.nrows(), offset, offset + s),
+            };
+            offset += s;
+            part
+        }).collect()
     }
 
     // ---- Shape utilities ----
@@ -397,17 +374,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             0 => {
                 assert!(k <= m, "nabla: topk k={k} > nrows={m}");
                 let t = self.t();
-                let (vals_t, idxs_t) = t.sort(1, true);
-                let vals_k = vals_t.slice_cols(0..k);
-                let idxs_k = idxs_t.slice_cols(0..k);
-                (vals_k.t(), idxs_k.t())
+                let (vals_t, idxs_t) = B::topk_rows(&t.storage, k);
+                (
+                    Self::from_storage(vals_t).t(),
+                    Self::from_storage(idxs_t).t(),
+                )
             }
             1 => {
                 assert!(k <= n, "nabla: topk k={k} > ncols={n}");
-                let (vals, idxs) = self.sort(1, true);
-                let vals_k = vals.slice_cols(0..k);
-                let idxs_k = idxs.slice_cols(0..k);
-                (vals_k, idxs_k)
+                let (vals, idxs) = B::topk_rows(&self.storage, k);
+                (Self::from_storage(vals), Self::from_storage(idxs))
             }
             _ => panic!("nabla: topk axis must be 0 or 1, got {axis}"),
         }
@@ -561,6 +537,54 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             );
         }
         B::scatter_add_dim0(&mut self.storage, indices, &src.storage);
+    }
+
+    /// Scatter-add along arbitrary axis (0=rows, 1=cols).
+    pub fn scatter_add(&mut self, axis: usize, indices: &[usize], src: &Self) {
+        let (sr, sc) = src.shape();
+        let (mr, mc) = self.shape();
+        match axis {
+            0 => {
+                assert_eq!(
+                    indices.len(),
+                    sr,
+                    "nabla: scatter_add axis=0 indices length {} != src nrows {}",
+                    indices.len(),
+                    sr
+                );
+                assert_eq!(
+                    sc, mc,
+                    "nabla: scatter_add axis=0 ncols mismatch: src {sc} != self {mc}"
+                );
+                for &idx in indices {
+                    assert!(
+                        idx < mr,
+                        "nabla: scatter_add index {idx} out of bounds for {mr} rows"
+                    );
+                }
+            }
+            1 => {
+                assert_eq!(
+                    indices.len(),
+                    sc,
+                    "nabla: scatter_add axis=1 indices length {} != src ncols {}",
+                    indices.len(),
+                    sc
+                );
+                assert_eq!(
+                    sr, mr,
+                    "nabla: scatter_add axis=1 nrows mismatch: src {sr} != self {mr}"
+                );
+                for &idx in indices {
+                    assert!(
+                        idx < mc,
+                        "nabla: scatter_add index {idx} out of bounds for {mc} cols"
+                    );
+                }
+            }
+            _ => panic!("nabla: scatter_add axis must be 0 or 1, got {axis}"),
+        }
+        B::scatter_add(&mut self.storage, axis, indices, &src.storage);
     }
 }
 

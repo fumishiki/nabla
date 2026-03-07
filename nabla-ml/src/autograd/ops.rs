@@ -959,6 +959,439 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         Self::derived(&self.tape, out, entry)
     }
 
+    /// Broadcast multiply by column vector: self (m,n) * col (m,1) → (m,n).
+    #[must_use]
+    pub fn broadcast_mul_cols(&self, col: &Self) -> Self {
+        let out = (*self.data).broadcast_mul_cols(&*col.data);
+        let deps = Self::deps_of(&[self.entry_idx, col.entry_idx]);
+        let (lr, rr) = (self.input_refs(), col.input_refs());
+        let (x_data, c_data) = (Rc::clone(&self.data), Rc::clone(&col.data));
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.broadcast_mul_cols(&*c_data));
+                Self::prop(&rr, &g.emul(&*x_data).sum_axis(1));
+            },
+            deps,
+            "broadcast_mul_cols",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Broadcast multiply by row vector: self (m,n) * row (1,n) → (m,n).
+    #[must_use]
+    pub fn broadcast_mul_rows(&self, row: &Self) -> Self {
+        let out = (*self.data).broadcast_mul_rows(&*row.data);
+        let deps = Self::deps_of(&[self.entry_idx, row.entry_idx]);
+        let (lr, rr) = (self.input_refs(), row.input_refs());
+        let (x_data, r_data) = (Rc::clone(&self.data), Rc::clone(&row.data));
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, &g.broadcast_mul_rows(&*r_data));
+                Self::prop(&rr, &g.emul(&*x_data).sum_axis(0));
+            },
+            deps,
+            "broadcast_mul_rows",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Broadcast add row vector: self (m,n) + row (1,n) → (m,n).
+    #[must_use]
+    pub fn broadcast_add_rows(&self, row: &Self) -> Self {
+        let out = (*self.data).broadcast_add_rows(&*row.data);
+        let deps = Self::deps_of(&[self.entry_idx, row.entry_idx]);
+        let (lr, rr) = (self.input_refs(), row.input_refs());
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, g);
+                Self::prop(&rr, &g.sum_axis(0));
+            },
+            deps,
+            "broadcast_add_rows",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Select rows or columns by index tensor (not differentiable w.r.t. indices).
+    #[must_use]
+    pub fn index_select_var(&self, axis: usize, indices: &Tensor<T, B>) -> Self {
+        let out = self.data.index_select(axis, indices);
+        let deps = Self::deps_of(&[self.entry_idx]);
+        let lr = self.input_refs();
+        let (orig_rows, orig_cols) = self.data.shape();
+        let idx = indices.clone();
+        let entry = TapeEntry::new(
+            move |g| {
+                let mut grad_input = Tensor::zeros(orig_rows, orig_cols);
+                let idx_vec = idx.to_vec();
+                if axis == 0 {
+                    for (i, &idx_val) in idx_vec.iter().enumerate() {
+                        let row_idx = idx_val.to_f64() as usize;
+                        for c in 0..orig_cols {
+                            let cur = grad_input.get(row_idx, c);
+                            grad_input.set(row_idx, c, cur + g.get(i, c));
+                        }
+                    }
+                } else {
+                    for (j, &idx_val) in idx_vec.iter().enumerate() {
+                        let col_idx = idx_val.to_f64() as usize;
+                        for r in 0..orig_rows {
+                            let cur = grad_input.get(r, col_idx);
+                            grad_input.set(r, col_idx, cur + g.get(r, j));
+                        }
+                    }
+                }
+                Self::prop(&lr, &grad_input);
+            },
+            deps,
+            "index_select",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Slice rows by range, returning a smaller Variable.
+    ///
+    /// backward: zero-pad gradient back to original row count.
+    #[must_use]
+    pub fn slice_rows(&self, range: std::ops::Range<usize>) -> Self {
+        let out = self.data.slice_rows(range.clone());
+        let deps = Self::deps_of(&[self.entry_idx]);
+        let lr = self.input_refs();
+        let (orig_rows, cols) = self.data.shape();
+        let start = range.start;
+        let entry = TapeEntry::new(
+            move |g| {
+                let mut full = Tensor::zeros(orig_rows, cols);
+                full.slice_set(start..start + g.nrows(), .., &g);
+                Self::prop(&lr, &full);
+            },
+            deps,
+            "slice_rows",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Vertical concatenation of multiple Variables.
+    ///
+    /// backward: split gradient by row offsets and propagate to each input.
+    #[must_use]
+    pub fn vcat_var(vars: &[&Self]) -> Self {
+        let data_refs: Vec<&Tensor<T, B>> = vars.iter().map(|v| &*v.data).collect();
+        let out = Tensor::vcat(&data_refs);
+        let idx_list: Vec<Option<usize>> = vars.iter().map(|v| v.entry_idx).collect();
+        let deps = Self::deps_of(&idx_list);
+        let refs: Vec<_> = vars.iter().map(|v| v.input_refs()).collect();
+        let row_counts: Vec<usize> = vars.iter().map(|v| v.data.nrows()).collect();
+        let entry = TapeEntry::new(
+            move |g| {
+                let mut offset = 0;
+                for (i, &count) in row_counts.iter().enumerate() {
+                    let grad_slice = g.slice_rows(offset..offset + count);
+                    Self::prop(&refs[i], &grad_slice);
+                    offset += count;
+                }
+            },
+            deps,
+            "vcat",
+        );
+        Self::derived(&vars[0].tape, out, entry)
+    }
+
+    /// Expand a (1,n), (m,1), or (1,1) Variable to (m, n).
+    ///
+    /// backward: sum gradient along expanded dimensions.
+    #[must_use]
+    pub fn expand_var(&self, rows: usize, cols: usize) -> Self {
+        let (orig_r, orig_c) = self.data.shape();
+        let out = self.data.expand(rows, cols);
+        let deps = Self::deps_of(&[self.entry_idx]);
+        let lr = self.input_refs();
+        let entry = TapeEntry::new(
+            move |g| {
+                let reduced = match (orig_r == 1, orig_c == 1) {
+                    (true, true) => Tensor::fill(1, 1, g.sum_all()),
+                    (true, false) => g.sum_axis(0),
+                    (false, true) => g.sum_axis(1),
+                    (false, false) => g.clone(),
+                };
+                Self::prop(&lr, &reduced);
+            },
+            deps,
+            "expand",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Gather elements along `axis` using `index` tensor.
+    ///
+    /// backward: scatter gradient back using the same index.
+    #[must_use]
+    pub fn gather_var(&self, axis: usize, index: &Tensor<T, B>) -> Self {
+        let out = self.data.gather(axis, index);
+        let deps = Self::deps_of(&[self.entry_idx]);
+        let lr = self.input_refs();
+        let (src_r, src_c) = self.data.shape();
+        let idx = index.clone();
+        let entry = TapeEntry::new(
+            move |g| {
+                let zeros = Tensor::zeros(src_r, src_c);
+                let grad_input = zeros.scatter(axis, &idx, g);
+                Self::prop(&lr, &grad_input);
+            },
+            deps,
+            "gather",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Log-softmax along `axis`.
+    ///
+    /// backward: `grad - softmax * grad.sum_axis(axis).expand(m, n)`.
+    #[must_use]
+    pub fn log_softmax(&self, axis: usize) -> Self {
+        let out = self.data.log_softmax(axis);
+        let deps = Self::deps_of(&[self.entry_idx]);
+        let lr = self.input_refs();
+        let log_sm = out.clone();
+        let entry = TapeEntry::new(
+            move |g| {
+                let sm = log_sm.exp();
+                let (m, n) = sm.shape();
+                let sum_g = g.sum_axis(axis).expand(m, n);
+                let delta = g - &sm.emul(&sum_g);
+                Self::prop(&lr, &delta);
+            },
+            deps,
+            "log_softmax",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// A^T @ B where self is [m,k], rhs is [m,n], output is [k,n].
+    #[must_use]
+    pub fn matmul_tn(&self, rhs: &Self) -> Self {
+        let out = (*self.data).matmul_tn(&*rhs.data);
+        let deps = Self::deps_of(&[self.entry_idx, rhs.entry_idx]);
+        let (lr, rr) = (self.input_refs(), rhs.input_refs());
+        let (a_data, b_data) = (Rc::clone(&self.data), Rc::clone(&rhs.data));
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop_owned(&lr, (*b_data).matmul_nt(g));
+                Self::prop_owned(&rr, &*a_data * g);
+            },
+            deps,
+            "matmul_tn",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// A @ B^T where self is [m,k], rhs is [n,k], output is [m,n].
+    #[must_use]
+    pub fn matmul_nt(&self, rhs: &Self) -> Self {
+        let out = (*self.data).matmul_nt(&*rhs.data);
+        let deps = Self::deps_of(&[self.entry_idx, rhs.entry_idx]);
+        let (lr, rr) = (self.input_refs(), rhs.input_refs());
+        let (a_data, b_data) = (Rc::clone(&self.data), Rc::clone(&rhs.data));
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop_owned(&lr, g * &*b_data);
+                Self::prop_owned(&rr, g.matmul_tn(&*a_data));
+            },
+            deps,
+            "matmul_nt",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Batched matrix multiply: self [batch*m, k] @ rhs [batch*k, n] -> [batch*m, n].
+    #[must_use]
+    pub fn bmm_var(&self, rhs: &Self, batch: usize, m: usize, k: usize, n: usize) -> Self {
+        let out = (*self.data).bmm(&*rhs.data, batch, m, k, n);
+        let deps = Self::deps_of(&[self.entry_idx, rhs.entry_idx]);
+        let (lr, rr) = (self.input_refs(), rhs.input_refs());
+        let (a_data, b_data) = (Rc::clone(&self.data), Rc::clone(&rhs.data));
+        let entry = TapeEntry::new(
+            move |g| {
+                let mut da_parts = Vec::with_capacity(batch);
+                let mut db_parts = Vec::with_capacity(batch);
+                for bi in 0..batch {
+                    let g_b = g.slice_rows(bi * m..(bi + 1) * m);
+                    let a_b = a_data.slice_rows(bi * m..(bi + 1) * m);
+                    let b_b = b_data.slice_rows(bi * k..(bi + 1) * k);
+                    da_parts.push(g_b.matmul_nt(&b_b));
+                    db_parts.push(a_b.matmul_tn(&g_b));
+                }
+                let da_refs: Vec<&Tensor<T, B>> = da_parts.iter().collect();
+                let db_refs: Vec<&Tensor<T, B>> = db_parts.iter().collect();
+                Self::prop_owned(&lr, Tensor::vcat(&da_refs));
+                Self::prop_owned(&rr, Tensor::vcat(&db_refs));
+            },
+            deps,
+            "bmm",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Multiply by a frozen (constant) weight matrix. backward: grad @ w^T (input only).
+    #[must_use]
+    pub fn linear_const(&self, w: &Tensor<T, B>) -> Self {
+        let out = &*self.data * w;
+        let deps = Self::deps_of(&[self.entry_idx]);
+        let lr = self.input_refs();
+        let w_clone = w.clone();
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop_owned(&lr, g.matmul_nt(&w_clone));
+            },
+            deps,
+            "linear_const",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Add a frozen (constant) tensor. backward: identity (grad passes through).
+    #[must_use]
+    pub fn add_const(&self, c: &Tensor<T, B>) -> Self {
+        let out = &*self.data + c;
+        let deps = Self::deps_of(&[self.entry_idx]);
+        let lr = self.input_refs();
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, g);
+            },
+            deps,
+            "add_const",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Broadcast-add a frozen row bias [1, cols]. backward: identity.
+    #[must_use]
+    pub fn broadcast_add_rows_const(&self, bias: &Tensor<T, B>) -> Self {
+        let out = self.data.broadcast_add_rows(bias);
+        let deps = Self::deps_of(&[self.entry_idx]);
+        let lr = self.input_refs();
+        let entry = TapeEntry::new(
+            move |g| {
+                Self::prop(&lr, g);
+            },
+            deps,
+            "broadcast_add_rows_const",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// Index-select with a frozen index tensor. backward: scatter-add.
+    #[must_use]
+    pub fn index_select_const(&self, axis: usize, indices: &Tensor<T, B>) -> Self {
+        let out = self.data.index_select(axis, indices);
+        let deps = Self::deps_of(&[self.entry_idx]);
+        let lr = self.input_refs();
+        let (m, n) = self.data.shape();
+        let idx = indices.clone();
+        let entry = TapeEntry::new(
+            move |g| {
+                let idx_usize: Vec<usize> =
+                    idx.to_vec().iter().map(|v| v.to_f64() as usize).collect();
+                if axis == 0 {
+                    let mut dx = Tensor::zeros(m, n);
+                    dx.scatter_add_dim0(&idx_usize, &g);
+                    Self::prop_owned(&lr, dx);
+                } else {
+                    let mut dx_t = Tensor::zeros(n, m);
+                    dx_t.scatter_add_dim0(&idx_usize, &g.t());
+                    Self::prop_owned(&lr, dx_t.t());
+                }
+            },
+            deps,
+            "index_select_const",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    /// BMM with a frozen (constant) left matrix. backward: input grad only.
+    #[must_use]
+    pub fn bmm_const_left(
+        &self,
+        left: &Tensor<T, B>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> Self {
+        let out = left.bmm(&*self.data, batch, m, k, n);
+        let deps = Self::deps_of(&[self.entry_idx]);
+        let lr = self.input_refs();
+        let left_clone = left.clone();
+        let entry = TapeEntry::new(
+            move |g| {
+                let mut db_parts = Vec::with_capacity(batch);
+                for bi in 0..batch {
+                    let g_b = g.slice_rows(bi * m..(bi + 1) * m);
+                    let a_b = left_clone.slice_rows(bi * m..(bi + 1) * m);
+                    db_parts.push(a_b.matmul_tn(&g_b));
+                }
+                let db_refs: Vec<&Tensor<T, B>> = db_parts.iter().collect();
+                Self::prop_owned(&lr, Tensor::vcat(&db_refs));
+            },
+            deps,
+            "bmm_const_left",
+        );
+        Self::derived(&self.tape, out, entry)
+    }
+
+    // -----------------------------------------------------------------------
+    // Gradient checkpointing
+    // -----------------------------------------------------------------------
+
+    /// Gradient checkpointing: trades compute for memory.
+    ///
+    /// Runs `f` during forward to obtain the output value, but discards
+    /// intermediate activations.  During backward, `f` is re-executed with
+    /// gradient tracking to recompute the needed intermediates on-the-fly.
+    /// Reduces peak activation memory from O(L) to O(sqrt(L)) for L layers.
+    #[must_use]
+    pub fn checkpoint<F>(input: &Self, f: F) -> Self
+    where
+        F: Fn(&Self) -> Self + 'static,
+        T: 'static,
+        B: 'static,
+    {
+        // Forward: run f on a disposable tape to get output value only.
+        let output_tensor = {
+            let tmp_tape = Tape::new();
+            let Ok(tmp_input) = tmp_tape.variable(input.data().clone()) else {
+                return Self::derived(
+                    &input.tape,
+                    input.data().clone(),
+                    TapeEntry::new(|_| {}, vec![], "checkpoint_noop"),
+                );
+            };
+            let tmp_output = f(&tmp_input);
+            tmp_output.data().clone()
+        };
+
+        let deps = Self::deps_of(&[input.entry_idx]);
+        let input_refs = input.input_refs();
+        let input_data = Rc::clone(&input.data);
+        let entry = TapeEntry::new(
+            move |grad: &Tensor<T, B>| {
+                let inner_tape = Tape::new();
+                let Ok(inner_input) = inner_tape.variable((*input_data).clone()) else {
+                    return;
+                };
+                let inner_output = f(&inner_input);
+                let _ = inner_output.backward_with(grad);
+                if let Ok(input_grad) = inner_input.grad() {
+                    Self::prop_owned(&input_refs, input_grad);
+                }
+            },
+            deps,
+            "checkpoint",
+        );
+        Self::derived(&input.tape, output_tensor, entry)
+    }
+
     // -----------------------------------------------------------------------
     // Backward pass
     // -----------------------------------------------------------------------
@@ -1044,11 +1477,22 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
             if !reachable.contains(&i) {
                 continue;
             }
-            let borrow = entry.grad.borrow();
-            if let Some(ref g) = *borrow {
+            let raw_grad = entry.grad.borrow().clone();
+            if let Some(g) = raw_grad {
+                let hooks = entry.post_hooks.borrow();
+                let effective = if hooks.is_empty() {
+                    g
+                } else {
+                    let mut eff = g;
+                    for hook in hooks.iter() {
+                        eff = hook(&eff);
+                    }
+                    eff
+                };
+                drop(hooks);
                 if check_nan {
-                    let (_, n) = g.shape();
-                    let data = g.to_vec();
+                    let (_, n) = effective.shape();
+                    let data = effective.to_vec();
                     for (idx, v) in data.iter().enumerate() {
                         let f = v.to_f64();
                         if f.is_nan() || f.is_infinite() {
@@ -1060,9 +1504,8 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
                         }
                     }
                 }
-                (entry.backward)(g);
+                (entry.backward)(&effective);
             }
-            drop(borrow);
         }
 
         Ok(())
