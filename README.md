@@ -4,7 +4,6 @@
 
 <p align="center">
   <a href="https://github.com/fumishiki/nabla/actions/workflows/ci.yml"><img src="https://github.com/fumishiki/nabla/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://crates.io/crates/nabla"><img src="https://img.shields.io/crates/v/nabla.svg" alt="crates.io"></a>
   <a href="https://docs.rs/nabla"><img src="https://docs.rs/nabla/badge.svg" alt="docs.rs"></a>
   <a href="https://github.com/fumishiki/nabla"><img src="https://tokei.rs/b1/github/fumishiki/nabla?category=code" alt="Lines of Code"></a>
   <a href="https://github.com/fumishiki/nabla/stargazers"><img src="https://img.shields.io/github/stars/fumishiki/nabla?style=flat" alt="GitHub Stars"></a>
