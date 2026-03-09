@@ -1167,7 +1167,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         Self::derived(&self.tape, out, entry)
     }
 
-    /// A^T @ B where self is [m,k], rhs is [m,n], output is [k,n].
+    /// A^T @ B where self is \[m,k\], rhs is \[m,n\], output is \[k,n\].
     #[must_use]
     pub fn matmul_tn(&self, rhs: &Self) -> Self {
         let out = (*self.data).matmul_tn(&*rhs.data);
@@ -1185,7 +1185,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         Self::derived(&self.tape, out, entry)
     }
 
-    /// A @ B^T where self is [m,k], rhs is [n,k], output is [m,n].
+    /// A @ B^T where self is \[m,k\], rhs is \[n,k\], output is \[m,n\].
     #[must_use]
     pub fn matmul_nt(&self, rhs: &Self) -> Self {
         let out = (*self.data).matmul_nt(&*rhs.data);

@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "nabla"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "egg",
  "half",
@@ -645,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "nabla-cli"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "cudarc",
  "hip-runtime-sys",
@@ -658,7 +658,7 @@ dependencies = [
 
 [[package]]
 name = "nabla-core"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "cudarc",
  "half",
@@ -670,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "nabla-interface"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "half",
  "nabla",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "nabla-macros"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "egg",
  "ordered-float",
@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "nabla-train"
-version = "0.1.0"
+version = "0.10.0"
 dependencies = [
  "nabla",
  "nabla-core",
