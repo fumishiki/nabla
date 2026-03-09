@@ -27,13 +27,13 @@ nabla is a **computation engine**, not a framework. It executes mathematically i
 | AD (reverse/forward), ODE, CAS | what to differentiate, solver choice |
 | optimizer, scheduler, trainer, dataloader | model architecture decisions |
 
-Four-layer architecture: `nabla-macros` (notation) -> `nabla-core` (compute) -> `nabla-ml` (application) -> `nabla-train` (training). See [directory.md](directory.md) for details.
+Five-layer architecture: `nabla-macros` (notation) -> `nabla-core` (compute) -> `nabla-ml` (application) -> `nabla-train` (training) -> `nabla-interface` (export+inference). See [directory.md](directory.md) for details.
 
 ---
 
 ## §2 Architecture
 
-### 2.1 Four-layer dependency graph
+### 2.1 Five-layer dependency graph
 
 ```
 nabla-macros  (Layer 1: Notation)    — proc macros: mat!, einsum!, fuse!, sym!, #[derive(Module)]
@@ -56,11 +56,13 @@ Exactly one of `{cpu, wgpu, cuda, hip}` via feature flag. All 6 pairwise conflic
 | Feature | Backend | Scalar Types | Special Capabilities |
 |---|---|---|---|
 | `cpu` (default) | `Cpu` (pure Rust + rayon) | f32, f64, f16, bf16, c32, c64, Dual | Full linalg, sparse, CAS eval |
-| `gpu` | `Gpu` (wgpu/WGSL) | f32 *(f64 unsupported — WGSL core spec has no f64 type)* | BCSR SpMM, register-tile MMA |
+| `wgpu` | `Gpu` (wgpu/WGSL) | f32 *(f64 unsupported — WGSL core spec has no f64 type)* | BCSR SpMM, register-tile MMA |
 | `cuda` | `Cuda` (cuBLAS/nvrtc) | f32, f64, f16, bf16, fp8 (E4M3/E5M2), fp4 (E2M1) | Tensor cores (WMMA f16/bf16 matmul), Graph capture, cublasLt epilogue |
 | `hip` | `Hip` (hipBLAS/hiprtc) | f32, f64 | CDNA support, rocWMMA f16 matmul |
 
 All tensors use `Tensor<T>` = `Tensor<T, DefaultBackend>`. Backend trait: all computation methods are **required** (no default body) — no implicit CPU fallback.
+
+**GPU dispatch**: Switch between CPU and GPU with no code changes: `--features cpu` / `--features cuda`. No PyTorch-style `model.to('cuda')` needed — determined at compile time.
 
 ### 2.3 Backend trait architecture
 
@@ -78,12 +80,15 @@ The `Backend` trait uses a **sealed sub-trait** pattern — external crate imple
 
 Blanket impl: `impl<B: BackendCore + BackendMath + BackendReduce + BackendShape + BackendBlas + BackendNN + BackendFusion> Backend for B {}`.
 
+**Named axes**: `Tensor<T,B,Axes=()>` — compile error on axis mismatch. `StaticMatrix` const-generic shape algebra.
+
 ### 2.4 Memory model
 
 - **Zero-GC**: Rust ownership (`Drop`) manages all allocations — no garbage collector.
 - **Zero-copy**: `TensorView` borrows data without allocation; `Cow` semantics for lazy cloning.
 - **Lazy readback**: GPU storage defers device-to-host transfer until `.get()` / `.to_vec()`.
 - **Thread-local RNG**: `set_seed()` / `clear_seed()` for reproducible initialization.
+- **N-D tensor policy**: `NdTensor<T>` is CPU-only. GPU computation uses 2D (cuBLAS GEMM, FlashAttention, im2col+GEMM). N-D → 2D conversion: `slice_2d` / `into_2d`.
 
 ### 2.5 GPU kernel hyperparameters
 
@@ -137,7 +142,7 @@ CPU-only APIs (compile-time `cpu` feature only): closure-based `Tensor::map`/`ma
 **GpuStorage**: backend buffer + lazy `Mutex<Option<Vec<T>>>` host cache. Readback on `.get()`/`.to_vec()` only.
 CUDA NVRTC requires CUDA headers to be installed and discoverable at build time (e.g., under `/usr/include` or distro include paths).
 
-**All GPU Backends**: As of 2026-03-05, all GPU backends (CUDA/HIP/WGPU) implement **all 126 Backend trait methods** (100% feature parity). All 7 sub-traits (BackendCore, BackendMath, BackendReduce, BackendShape, BackendBlas, BackendNN, BackendFusion) are fully implemented across all backends.
+**All GPU Backends**: All GPU backends (CUDA/HIP/WGPU) implement **all 126 Backend trait methods** (100% feature parity). All 7 sub-traits (BackendCore, BackendMath, BackendReduce, BackendShape, BackendBlas, BackendNN, BackendFusion) are fully implemented across all backends.
 
 ### 2.9 Kernel sources — unified implementation
 
@@ -208,7 +213,7 @@ nabla covers the mathematically fixed computations provided by PyTorch's `torch.
 | **D. Activation** | 10 | relu, gelu, sigmoid, softmax, silu, mish, leaky_relu, elu, hardswish, log_softmax | ✅ float4 + fuse! |
 | **E. Loss** | 9 | cross_entropy, mse, mse_sum (fused), l1, smooth_l1, bce_logits, nll, kl_div, cosine_embedding | ✅ fused GPU |
 | **F. Attention** | 3 | SDPA (FlashAttention-2), multi_head_attention, embedding | ✅ GPU kernels |
-| **G. Manipulation** | 19 | reshape/permute/cat/stack/squeeze/flatten/chunk/pad/gather/scatter/index_select/masked_fill/where/triu/tril/roll/flip/meshgrid/topk/sort | ✅ CPU |
+| **G. Manipulation** | 19 | reshape/permute/cat/stack/squeeze/flatten/chunk/pad/gather/scatter/index_select/masked_fill/where/triu/tril/roll/flip/meshgrid/topk/sort | ✅ GPU kernels |
 | **H. Batched** | 5 | bmm, bmm_nt, baddbmm, addmm, batched reductions | ✅ cuBLAS |
 | **I. Construction** | 11 | zeros/ones/full/eye/arange/linspace/rand/randn/empty/clone/contiguous | ✅ |
 | **J. Reduction** | 10 | sum/max/min/mean/var/std/argmax/argmin (all + axis), cumsum/cumprod, prod, norm, count_nonzero | ✅ GPU (Blelloch, warp shuffle) |
@@ -258,7 +263,13 @@ Operators: `+` `-` `*` `/` (owned + borrowed combos), `scalar * &Tensor`, `epow(
 
 NN ops: softmax, reshape, transpose, linear_forward, dropout, clamp, loss ops. Module/Optimizer: `Module` trait, `Sequential`, `AdamW`, `GradScaler`. `impl_var_op!` macro absorbs boilerplate for std::ops trait impls (Add/Sub/Mul x 4 ownership combos). See [notation.md](notation.md) §7 for details.
 
-**TensorLike coverage** (✅): All Variable ops used by redesign forward are registered — binary ops (matmul_tn, matmul_nt, broadcast_mul_cols/rows, broadcast_add_rows) in `tensor_like_ops!` macro, parametric ops (slice_rows, expand, gather, index_select, bmm, bmm_nt, log_softmax, clamp, vcat) + const ops (linear_const, add_const, broadcast_add_rows_const, index_select_const, bmm_const_left) in `TensorLikeExt` trait, fused ops (matmul_bias) in `TensorLikeMatmulBias` trait.
+**TensorLike unification**: `TensorLike<T,B>` trait abstracts over `Tensor` and `Variable`, enabling generic compute functions. Module layers write math logic once via `tl_add`/`tl_matmul`/`tl_relu`/etc. — the trait dispatches to the correct implementation. `tensor_like_ops!` macro generates the trait definition + both impls from a concise DSL (binary/unary/unary_param categories). Used in `Activation` (7 activation functions) and `Linear` (matmul + bias via `impl_layer!`). Eliminates the Tensor/Variable "two-world" duplication for pure compute logic; parameter wrapping (`tape.variable()`) is auto-generated by `impl_layer!`.
+
+**TensorLike coverage** (✅): All Variable ops used in typical model forward passes are registered — binary ops (matmul_tn, matmul_nt, broadcast_mul_cols/rows, broadcast_add_rows) in `tensor_like_ops!` macro, parametric ops (slice_rows, expand, gather, index_select, bmm, bmm_nt, log_softmax, clamp, vcat) + const ops (linear_const, add_const, broadcast_add_rows_const, index_select_const, bmm_const_left) in `TensorLikeExt` trait, fused ops (matmul_bias) in `TensorLikeMatmulBias` trait.
+
+**Gradient checkpointing**: Autograd-level `Variable::checkpoint(f)` discards intermediate activations during forward, re-computes them during backward. Reduces activation memory from O(L) to O(√L) for L layers. No backend kernel needed — uses existing autograd tape mechanism.
+
+**Gradient hooks**: `Variable::register_hook(f)` registers a closure `Fn(&Tensor<T,B>) -> Tensor<T,B>` that transforms the accumulated gradient before backward propagation. Multiple hooks compose in registration order. Zero overhead when no hooks are registered (empty-vec check). Use cases: gradient masking (SUS), gradient scaling (MOSS), gradient clipping, gradient noise injection. Example: `var.register_hook(|g| g * &mask)`.
 
 ---
 
@@ -414,21 +425,9 @@ println!("{report}");
 
 ---
 
-## §6 Implementation Design Notes
+## §6 Kernel File Layout
 
-**Named axes**: `Tensor<T,B,Axes=()>` — compile error on axis mismatch. `StaticMatrix` const-generic shape algebra.
-
-**TensorLike unification**: `TensorLike<T,B>` trait abstracts over `Tensor` and `Variable`, enabling generic compute functions. Module layers write math logic once via `tl_add`/`tl_matmul`/`tl_relu`/etc. — the trait dispatches to the correct implementation. `tensor_like_ops!` macro generates the trait definition + both impls from a concise DSL (binary/unary/unary_param categories). Used in `Activation` (7 activation functions) and `Linear` (matmul + bias via `impl_layer!`). Eliminates the Tensor/Variable "two-world" duplication for pure compute logic; parameter wrapping (`tape.variable()`) is auto-generated by `impl_layer!`.
-
-**N-D tensor policy**: `NdTensor<T>` is CPU-only. GPU computation uses 2D (cuBLAS GEMM, FlashAttention, im2col+GEMM). N-D → 2D conversion: `slice_2d` / `into_2d`.
-
-**GPU dispatch**: Switch between CPU and GPU with no code changes: `--features cpu` / `--features cuda`. No PyTorch-style `model.to('cuda')` needed — determined at compile time.
-
----
-
-## §7 Kernel File Layout
-
-### 7.1 CUDA Dtype Coverage
+### 6.1 CUDA Dtype Coverage
 
 Full CUDA dtype coverage for `f32`, `f64`, `f16`, `bf16`, `fp8` (`E4M3`, `E5M2`), and `fp4` (`E2M1`) across the Feature Catalog in §3, with no implicit CPU fallback in the CUDA path. 63 f16 + 82 bf16 kernel variants registered (full parity). BF16 kernels compute in f32 via `__nv_bfloat16` ↔ `float` conversion; cuBLAS matmul uses native `CUDA_R_16BF` with `CUBLAS_COMPUTE_32F` accumulation. cublasLt epilogue (Relu/Gelu/Bias) supports both f32 and bf16. FP8 GEMM via cublasLt: `CUDA_R_8F_E4M3`/`E5M2` inputs → bf16 output (Hopper+).
 
@@ -440,7 +439,7 @@ Full CUDA dtype coverage for `f32`, `f64`, `f16`, `bf16`, `fp8` (`E4M3`, `E5M2`)
 - Pooling: `max_pool1d` GPU-path compatible via backend pooling dispatch
 - Shape ops: all 20+ shape ops (gather/scatter/index_select/topk/sort/roll/flip/meshgrid/pad/triu/tril/kron) have dedicated CUDA kernels. Only `count_nonzero`/`norm_lp` use default CPU impl (diagnostic-only, not in hot paths)
 
-### 7.2 Kernel Source Files
+### 6.2 Kernel Source Files
 
 CUDA/HIP kernel sources split into 6 focused `.cuh` units + 3 specialized files, wired through `common/kernels/mod.rs`:
 
@@ -458,9 +457,9 @@ CUDA/HIP kernel sources split into 6 focused `.cuh` units + 3 specialized files,
 
 **k_defs.cuh separation**: All shared macros, constants, and type dispatch logic are separated from kernel implementations. `k_defs.cuh` is included by all other kernel files and contains `DISPATCH_DTYPE` (type dispatch macro), `DISPATCH_OP` (op dispatch macro), vectorization helpers (`float4` load/store), and warp shuffle primitives. This ensures kernel files contain only kernel logic with no duplicated infrastructure.
 
-### 7.3 QAT GPU Primitives
+### 6.3 QAT GPU Primitives
 
-GPU computation primitives required by downstream QAT / optimizer pipelines (redesign-train). nabla provides the kernel; the user composes them.
+GPU computation primitives required by downstream QAT / optimizer pipelines. nabla provides the kernel; the user composes them.
 
 | Primitive | Tensor API | Backend method | Kernel | Status |
 |---|---|---|---|---|
@@ -470,8 +469,6 @@ GPU computation primitives required by downstream QAT / optimizer pipelines (red
 | **cublasLt bf16 epilogue** | `matmul_epilogue`/`matmul_bias` | `BackendBlas::matmul_epilogue` | cublasLt `CUDA_R_16BF` | ✅ |
 | **FP8 GEMM (cublasLt)** | `Tensor::fp8_matmul()` | `BackendBlas::fp8_matmul_e4m3`/`e5m2` | cublasLt `CUDA_R_8F_E4M3`/`E5M2` → bf16 out | ✅ |
 | **scatter_add axis** | `Tensor::scatter_add(axis, ..)` | `BackendShape::scatter_add` | JIT `k_scatter_add_dim1` (atomicAdd) | ✅ |
-| **Gradient checkpointing** | `Variable::checkpoint(f)` | (autograd-level, no backend method) | re-runs forward on backward | ✅ |
-| **Gradient hooks** | `Variable::register_hook(f)` | (autograd-level, no backend method) | transforms grad before propagation | ✅ |
 
 **Walsh-Hadamard Transform (WHT)**: In-place iterative butterfly O(N log N). Applies the unnormalized Hadamard matrix $H_n$ to each row independently. Row length must be power-of-2; non-power-of-2 rows are zero-padded to next power-of-2 and truncated. `wht_inverse()` applies WHT then divides by N (orthogonal inverse). Used by WUSH, RHT, QuaRot, HALO for outlier redistribution in FP4/FP8 quantization.
 
@@ -479,15 +476,11 @@ GPU computation primitives required by downstream QAT / optimizer pipelines (red
 
 **Per-tensor absmax scale**: `absmax = max(|tensor|)` → `scale = absmax / max_representable`. Single GPU reduction. Used for FP8/FP4 dynamic quantization scaling.
 
-**Gradient checkpointing**: Autograd-level `Variable::checkpoint(f)` discards intermediate activations during forward, re-computes them during backward. Reduces activation memory from O(L) to O(√L) for L layers. No backend kernel needed — uses existing autograd tape mechanism.
-
-**Gradient hooks**: `Variable::register_hook(f)` registers a closure `Fn(&Tensor<T,B>) -> Tensor<T,B>` that transforms the accumulated gradient before backward propagation. Multiple hooks compose in registration order. Zero overhead when no hooks are registered (empty-vec check). Use cases: gradient masking (SUS), gradient scaling (MOSS), gradient clipping, gradient noise injection. Example: `var.register_hook(|g| g * &mask)`.
-
 ---
 
-## §8 CLI Tool — `nabla`
+## §7 CLI Tool — `nabla`
 
-A standalone binary (`nabla-cli` crate) providing four subcommands for hardware diagnostics, benchmarking, model export, and inference. No Python required.
+A standalone binary (`nabla-cli` crate) providing five subcommands for hardware diagnostics, benchmarking, model export, inference, and checkpoint inspection. No Python required.
 
 ```
 nabla <SUBCOMMAND> [OPTIONS]
@@ -497,7 +490,7 @@ Install: `cargo install --path nabla-cli` or `cargo install nabla-cli` (crates.i
 
 ---
 
-### 8.1 `nabla info` — Hardware Diagnostics
+### 7.1 `nabla info` — Hardware Diagnostics
 
 Detect and display available GPU backends, device properties, and VRAM.
 
@@ -536,7 +529,7 @@ RAM     : 251 GiB total / 228 GiB free
 
 ---
 
-### 8.2 `nabla bench` — Benchmark Runner
+### 7.2 `nabla bench` — Benchmark Runner
 
 Run matrix multiply and MLP training-step benchmarks matching the README figures.
 
@@ -580,7 +573,7 @@ nabla bench — MLP 784→256→128→10, leaky_relu, SGD, f32
 
 ---
 
-### 8.3 `nabla export` — Model Export & Quantization
+### 7.3 `nabla export` — Model Export & Quantization
 
 Convert a trained nabla model to GGUF or ONNX.
 
@@ -613,7 +606,7 @@ nabla export ./checkpoints/model.bin --format gguf --quant IQ4_XS --imatrix cali
 
 ---
 
-### 8.4 `nabla run` — GGUF Inference (Streaming)
+### 7.4 `nabla run` — GGUF Inference (Streaming)
 
 Run text generation from a GGUF file via `nabla-interface` + llama.cpp.
 
@@ -652,18 +645,27 @@ Generated 64 tokens in 1.2 s (53.3 tok/s)
 
 ---
 
-### Acceptance Tests
+### 7.5 `nabla inspect` — Checkpoint Inspector
 
-- `nabla-cli/tests/info.rs`: `nabla info` exits 0 on CI (GPU available), JSON output parses correctly
-- `nabla-cli/tests/bench.rs`: `nabla bench --workload matmul --iters 5 --warmup 1` completes without error; JSON output schema matches
-- `nabla-cli/tests/export.rs`: export small Linear model to GGUF Q4_0 and ONNX; verify file exists and size > 0
-- `nabla-cli/tests/run.rs`: skipped unless `features = ["llama"]` and GGUF fixture present
+Inspect the contents of a nabla checkpoint: tensor names, shapes, and statistics.
 
----
+```
+nabla inspect <CKPT_PATH> [--no-stats] [--filter <PATTERN>] [--json]
+```
 
-## §9 CLI — inspect + serve
+**Examples**:
+```bash
+nabla inspect ./checkpoints/model.bin                    # full tensor table with stats
+nabla inspect ./checkpoints/model.bin --filter "layer.0" # filter by name substring
+nabla inspect ./checkpoints/model.bin --json             # machine-readable JSON
+```
 
-### §9.1 nabla inspect
+**Behaviour**:
+- Loads checkpoint and prints one row per tensor: name, shape, numel, min, max, mean, std
+- `--no-stats` skips per-tensor min/max/mean/std (faster for large checkpoints)
+- `--filter <pattern>` filters tensor names by substring match
+- `--json` outputs a JSON array of tensor entries
+- Footer prints total parameter count
 
 | REQ-ID | Requirement | Status |
 |---|---|---|
@@ -673,7 +675,14 @@ Generated 64 tokens in 1.2 s (53.3 tok/s)
 | CLI-INSP-04 | `--json` outputs machine-readable JSON array | ✅ |
 | CLI-INSP-05 | Footer: total parameter count | ✅ |
 
-#### Acceptance tests
+---
+
+### Acceptance Tests
+
+- `nabla-cli/tests/info.rs`: `nabla info` exits 0 on CI (GPU available), JSON output parses correctly
+- `nabla-cli/tests/bench.rs`: `nabla bench --workload matmul --iters 5 --warmup 1` completes without error; JSON output schema matches
+- `nabla-cli/tests/export.rs`: export small Linear model to GGUF Q4_0 and ONNX; verify file exists and size > 0
+- `nabla-cli/tests/run.rs`: skipped unless `features = ["llama"]` and GGUF fixture present
 - `nabla inspect <ckpt> --help` exits 0
 - `nabla inspect <ckpt>` prints table with header row and at least one tensor
 - `nabla inspect <ckpt> --json` outputs valid JSON array
