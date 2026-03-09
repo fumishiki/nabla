@@ -1062,7 +1062,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
         let entry = TapeEntry::new(
             move |g| {
                 let mut full = Tensor::zeros(orig_rows, cols);
-                full.slice_set(start..start + g.nrows(), .., &g);
+                full.slice_set(start..start + g.nrows(), .., g);
                 Self::prop(&lr, &full);
             },
             deps,
@@ -1295,7 +1295,7 @@ impl<T: Scalar, B: Backend> Variable<T, B> {
                     idx.to_vec().iter().map(|v| v.to_f64() as usize).collect();
                 if axis == 0 {
                     let mut dx = Tensor::zeros(m, n);
-                    dx.scatter_add_dim0(&idx_usize, &g);
+                    dx.scatter_add_dim0(&idx_usize, g);
                     Self::prop_owned(&lr, dx);
                 } else {
                     let mut dx_t = Tensor::zeros(n, m);
