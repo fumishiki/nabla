@@ -71,6 +71,7 @@ pub(super) enum ShaderOp {
     ActivationLeakyRelu,
     ActivationElu,
     ActivationHardswish,
+    ActivationSigmoid,
     Softmax,
     LayerNorm,
     RmsNorm,

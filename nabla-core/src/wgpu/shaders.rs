@@ -50,6 +50,7 @@ pub(super) fn generate_shader(key: PipelineKey) -> String {
         ShaderOp::ActivationLeakyRelu => gen_activation_leaky_relu(wg, scalar),
         ShaderOp::ActivationElu => gen_activation_elu(wg, scalar),
         ShaderOp::ActivationHardswish => gen_activation_hardswish(wg, scalar),
+        ShaderOp::ActivationSigmoid => gen_activation_sigmoid(wg, scalar),
         ShaderOp::Softmax => gen_softmax(wg, scalar),
         ShaderOp::LayerNorm => gen_layer_norm(wg, scalar),
         ShaderOp::RmsNorm => gen_rms_norm(wg, scalar),
@@ -821,6 +822,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let x = a[i];
     let v = clamp(x + 3.0, 0.0, 6.0);
     out[i] = x * v / 6.0;
+}}
+",
+        ty = ty
+    )
+}
+
+fn gen_activation_sigmoid(wg: u32, scalar: ScalarKind) -> String {
+    let ty = scalar_ty(scalar);
+    format!(
+        r"
+@group(0) @binding(0) var<storage, read> a: array<{ty}>;
+@group(0) @binding(1) var<storage, read_write> out: array<{ty}>;
+@group(0) @binding(2) var<storage, read> params: array<u32>;
+@compute @workgroup_size({wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let i = gid.x;
+    let n = params[0];
+    if i >= n {{ return; }}
+    let x = a[i];
+    out[i] = 1.0 / (1.0 + exp(-x));
 }}
 ",
         ty = ty

@@ -302,10 +302,10 @@ pub trait BackendMath: BackendCore {
     ) -> Self::Storage<T> {
         let (rows, cols) = (Self::nrows(a), Self::ncols(a));
         Self::from_fn(rows, cols, |r, c| {
-            if Self::get(cond, r, c).to_f64() != 0.0 {
-                Self::get(a, r, c)
-            } else {
+            if Self::get(cond, r, c).to_f64() == 0.0 {
                 Self::get(b, r, c)
+            } else {
+                Self::get(a, r, c)
             }
         })
     }

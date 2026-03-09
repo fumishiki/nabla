@@ -281,14 +281,13 @@ fn classify(input: &EinsumInput) -> ContractionKind {
             && !free.is_empty()
             && a.indices.len() == b.indices.len()
             && a.indices.len() == free.len()
-        {
-            if rhs.iter().all(|t| {
+            && rhs.iter().all(|t| {
                 t.indices
                     .iter()
                     .all(|i| free_names.contains(&i.to_string()))
-            }) {
-                return ContractionKind::Hadamard;
-            }
+            })
+        {
+            return ContractionKind::Hadamard;
         }
 
         // Batch GEMM: both >=3D, 1 contraction, matching leading batch dims.
@@ -497,10 +496,8 @@ where
             }))
         }
         _ => {
-            let shape_exprs: Vec<TokenStream2> = free_indices
-                .iter()
-                .map(|fi| dim_lookup(fi))
-                .collect::<Result<_>>()?;
+            let shape_exprs: Vec<TokenStream2> =
+                free_indices.iter().map(dim_lookup).collect::<Result<_>>()?;
             let idx_bindings: Vec<TokenStream2> = free_indices
                 .iter()
                 .enumerate()
@@ -593,12 +590,11 @@ fn codegen_trace(input: &EinsumInput) -> Result<TokenStream2> {
 fn codegen_outer(input: &EinsumInput) -> Result<TokenStream2> {
     let (a_bind, a_stmt) = bind_ref(&input.rhs_terms[0].name);
     let (b_bind, b_stmt) = bind_ref(&input.rhs_terms[1].name);
-    let (row, col) =
-        if input.rhs_terms[0].indices[0].to_string() == input.output_indices[0].to_string() {
-            (quote! { #a_bind }, quote! { #b_bind })
-        } else {
-            (quote! { #b_bind }, quote! { #a_bind })
-        };
+    let (row, col) = if input.rhs_terms[0].indices[0] == input.output_indices[0] {
+        (quote! { #a_bind }, quote! { #b_bind })
+    } else {
+        (quote! { #b_bind }, quote! { #a_bind })
+    };
     Ok(quote! {{ #a_stmt #b_stmt
         nabla::tensor::Tensor::from_fn(#row.nrows(), #col.nrows(), |__i, __j| {
             nabla::scalar::math_utils::mul(&#row.get(__i, 0), &#col.get(__j, 0))

@@ -499,6 +499,19 @@ pub(crate) fn gpu_silu<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
     GpuStorage::from_buffer(a.nrows, a.ncols, buf)
 }
 
+pub(crate) fn gpu_sigmoid<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+    assert_is_f32_or_f16::<T>();
+    let ctx = get_context();
+    let buf = run_activation_1in::<T>(
+        ctx,
+        ShaderOp::ActivationSigmoid,
+        &a.buffer,
+        a.nrows * a.ncols,
+        &[],
+    );
+    GpuStorage::from_buffer(a.nrows, a.ncols, buf)
+}
+
 pub(crate) fn gpu_mish<T: Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
     assert_is_f32_or_f16::<T>();
     let ctx = get_context();
@@ -4308,6 +4321,9 @@ impl crate::backend::BackendNN for crate::backend::Gpu {
     }
     fn elu<T: crate::scalar::Scalar>(a: &GpuStorage<T>, alpha: T) -> GpuStorage<T> {
         gpu_elu(a, alpha)
+    }
+    fn sigmoid<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
+        gpu_sigmoid(a)
     }
     fn hardswish<T: crate::scalar::Scalar>(a: &GpuStorage<T>) -> GpuStorage<T> {
         gpu_hardswish(a)
