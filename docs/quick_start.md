@@ -13,9 +13,9 @@ CAS symbols live in a separate prelude: `use nabla::cas_prelude::*;` (or use `sy
 
 ```toml
 [dependencies]
-nabla = { path = "../nabla-ml", features = ["cpu"] }
+nabla = { git = "https://github.com/fumishiki/nabla", features = ["cpu"] }
 # Training stack (optimizers, dataloader, trainer):
-nabla-train = { path = "../nabla-train" }
+nabla-train = { git = "https://github.com/fumishiki/nabla" }
 ```
 
 Exactly one backend feature must be enabled — mutual exclusion enforced at compile time:
@@ -555,9 +555,9 @@ let sol = prob.solve_dormand_prince(&config)?;
 
 ```toml
 # Pick one:
-nabla = { path = "..", features = ["cuda"] }
-nabla = { path = "..", features = ["wgpu"] }
-nabla = { path = "..", features = ["hip"] }
+nabla = { git = "https://github.com/fumishiki/nabla", features = ["cuda"] }
+nabla = { git = "https://github.com/fumishiki/nabla", features = ["wgpu"] }
+nabla = { git = "https://github.com/fumishiki/nabla", features = ["hip"] }
 ```
 
 No `model.to('cuda')` — the backend is resolved at compile time.
@@ -717,8 +717,8 @@ fn main() {
 ```toml
 # Cargo.toml
 [dependencies]
-nabla-interface = { path = "../nabla-interface" }                    # GGUF export only
-nabla-interface = { path = "../nabla-interface", features = ["llama"] }  # + llama.cpp inference
+nabla-interface = { git = "https://github.com/fumishiki/nabla" }                    # GGUF export only
+nabla-interface = { git = "https://github.com/fumishiki/nabla", features = ["llama"] }  # + llama.cpp inference
 ```
 
 ### 17.1 GGUF Export

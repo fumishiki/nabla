@@ -323,7 +323,7 @@ impl_layer! {
 
 ### TensorLike coverage (✅ registered)
 
-All 13 Variable ops needed by redesign forward are registered in `TensorLike`/`TensorLikeExt`/`TensorLikeMatmulBias`:
+All Variable ops used in typical model forward passes are registered in `TensorLike`/`TensorLikeExt`/`TensorLikeMatmulBias`:
 
 | Op | Variable method | Backward | TensorLike |
 |---|---|---|---|
@@ -347,7 +347,7 @@ All 13 Variable ops needed by redesign forward are registered in `TensorLike`/`T
 | `index_select_const` | `index_select_const(axis, &Tensor)` | scatter-add | ✅ `TensorLikeExt` |
 | `bmm_const_left` | `bmm_const_left(&Tensor, batch, m, k, n)` | a^T @ grad per batch | ✅ `TensorLikeExt` |
 
-Used by: model, calm, attn, moe, blast, diffusion, optimizer (redesign forward pass).
+These ops enable generic model forward passes to work seamlessly with both Tensor and Variable.
 
 ### Optimizer
 

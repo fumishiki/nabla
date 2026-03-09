@@ -41,7 +41,7 @@ nabla/                       [workspace root]
 │       ├── macros/
 │       │   ├── mod.rs       re-exports
 │       │   ├── fuse.rs      fuse! / mega_fuse! / fuse_! codegen (484L)
-│       │   ├── einsum.rs    einsum! parser + contraction path + codegen (797L)
+│       │   ├── einsum.rs    einsum! parser + contraction path + codegen (937L)
 │       │   ├── attrs.rs     nabla_grad / nabla_main attribute macros (52L)
 │       │   ├── mat.rs       mat! / block! matrix literal parsing (299L)
 │       │   ├── stencil.rs   stencil! offset indexing (269L)
@@ -102,8 +102,8 @@ nabla/                       [workspace root]
 │       ├── lib.rs            #[path] routing + feature-gate compile_error!
 │       ├── common/           shared code (cpu + gpu)
 │       │   ├── backend/      Backend trait module (directory module)
-│       │   │   ├── mod.rs    Backend trait (sealed) + DefaultBackend + NablaError + Result (940L)
-│       │   │   └── nn.rs     NN-specific backend trait methods (453L)
+│       │   │   ├── mod.rs    Backend trait (sealed) + DefaultBackend + NablaError + Result (993L)
+│       │   │   └── nn.rs     NN-specific backend trait methods (682L)
 │       │   ├── layout.rs     LinearLayout<N> F₂ binary matrix swizzle (158L)
 │       │   ├── norm_attn_ops.rs  shared norm/attention op implementations (497L)
 │       │   ├── scalar/
@@ -150,11 +150,11 @@ nabla/                       [workspace root]
 │           ├── cuda/         CUDA backend (split by feature)
 │           │   ├── mod.rs           re-exports (46L)
 │           │   ├── backend.rs       CudaBackend impl + device mgmt (769L)
-│           │   ├── core.rs          storage + alloc + memcpy + launch (1044L)
+│           │   ├── core.rs          storage + alloc + memcpy + launch (1400L)
 │           │   ├── blas_ops.rs      cuBLAS/cublasLt GEMM + FP8 (824L)
 │           │   ├── ops.rs           element-wise + math Backend ops (781L)
 │           │   ├── reduce.rs        reductions + pooling dispatch (917L)
-│           │   ├── fusion.rs        fuse! runtime dispatch (307L)
+│           │   ├── fusion.rs        fuse! runtime dispatch (374L)
 │           │   ├── graph.rs         NablaGraph + CUDA graph capture (799L)
 │           │   ├── graph_compile.rs GraphCompiler optimization passes (478L)
 │           │   ├── norm_attn_ops.rs norm + attention ops (303L)
@@ -270,13 +270,7 @@ nabla/                       [workspace root]
     ├── directory.md         directory structure reference
     ├── notation.md          DSL notation & macro reference
     ├── quick_start.md       tutorial and code examples
-    ├── spec.md              full specification
-    └── specs/               detailed design specifications
-        ├── overview.md
-        ├── requirements.md
-        ├── interfaces.md
-        ├── test-plan.md
-        └── traceability.md
+    └── spec.md              full specification
 ```
 
 Dependencies:
