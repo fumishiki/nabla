@@ -90,9 +90,8 @@ pub(crate) fn is_elementwise_fusible(expr: &Expr) -> bool {
 }
 
 pub(crate) fn contains_tensor(expr: &Expr, tensor_names: &[String]) -> bool {
-    let mut pred = |e: &Expr| {
-        single_ident(e).is_some_and(|ident| tensor_names.contains(&ident.to_string()))
-    };
+    let mut pred =
+        |e: &Expr| single_ident(e).is_some_and(|ident| tensor_names.contains(&ident.to_string()));
     expr_any(expr, &mut pred)
 }
 
@@ -150,11 +149,20 @@ pub(crate) fn collect_all_path_idents(expr: &Expr, out: &mut Vec<Ident>) {
 }
 
 const SCALAR_METHOD_MAP: &[(&str, &str)] = &[
-    ("exp", "math_exp"), ("ln", "math_ln"), ("log1p", "math_log1p"),
-    ("sin", "math_sin"), ("cos", "math_cos"), ("tanh", "math_tanh"),
-    ("sqrt", "math_sqrt"), ("abs", "math_abs"), ("recip", "math_recip"),
-    ("erf", "math_erf"), ("ceil", "math_ceil"), ("floor", "math_floor"),
-    ("round", "math_round"), ("powf", "math_powf"),
+    ("exp", "math_exp"),
+    ("ln", "math_ln"),
+    ("log1p", "math_log1p"),
+    ("sin", "math_sin"),
+    ("cos", "math_cos"),
+    ("tanh", "math_tanh"),
+    ("sqrt", "math_sqrt"),
+    ("abs", "math_abs"),
+    ("recip", "math_recip"),
+    ("erf", "math_erf"),
+    ("ceil", "math_ceil"),
+    ("floor", "math_floor"),
+    ("round", "math_round"),
+    ("powf", "math_powf"),
 ];
 
 pub(crate) fn scalar_method_name(method: &str) -> Option<&'static str> {

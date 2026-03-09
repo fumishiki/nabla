@@ -20,30 +20,68 @@ macro_rules! conv_config {
 
         impl Default for $name {
             fn default() -> Self {
-                Self { stride: $stride_def, padding: $pad_def, dilation: $dil_def, groups: 1 }
+                Self {
+                    stride: $stride_def,
+                    padding: $pad_def,
+                    dilation: $dil_def,
+                    groups: 1,
+                }
             }
         }
 
         impl $name {
             /// Set stride.
             #[must_use]
-            pub fn stride(mut self, s: $spatial) -> Self { self.stride = s; self }
+            pub fn stride(mut self, s: $spatial) -> Self {
+                self.stride = s;
+                self
+            }
             /// Set padding.
             #[must_use]
-            pub fn padding(mut self, p: $spatial) -> Self { self.padding = p; self }
+            pub fn padding(mut self, p: $spatial) -> Self {
+                self.padding = p;
+                self
+            }
             /// Set dilation.
             #[must_use]
-            pub fn dilation(mut self, d: $spatial) -> Self { self.dilation = d; self }
+            pub fn dilation(mut self, d: $spatial) -> Self {
+                self.dilation = d;
+                self
+            }
             /// Set groups.
             #[must_use]
-            pub fn groups(mut self, g: usize) -> Self { self.groups = g; self }
+            pub fn groups(mut self, g: usize) -> Self {
+                self.groups = g;
+                self
+            }
         }
     };
 }
 
-conv_config!(Conv1dConfig, "Configuration for 1-D convolution.", usize, 1, 0, 1);
-conv_config!(Conv2dConfig, "Configuration for 2-D convolution.", (usize, usize), (1, 1), (0, 0), (1, 1));
-conv_config!(Conv3dConfig, "Configuration for 3-D convolution.", (usize, usize, usize), (1, 1, 1), (0, 0, 0), (1, 1, 1));
+conv_config!(
+    Conv1dConfig,
+    "Configuration for 1-D convolution.",
+    usize,
+    1,
+    0,
+    1
+);
+conv_config!(
+    Conv2dConfig,
+    "Configuration for 2-D convolution.",
+    (usize, usize),
+    (1, 1),
+    (0, 0),
+    (1, 1)
+);
+conv_config!(
+    Conv3dConfig,
+    "Configuration for 3-D convolution.",
+    (usize, usize, usize),
+    (1, 1, 1),
+    (0, 0, 0),
+    (1, 1, 1)
+);
 
 impl<T: Scalar, B: Backend> Tensor<T, B> {
     // ---- Convolution ----

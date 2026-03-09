@@ -86,6 +86,5 @@ pub use cuda_backend::{
     cuda_matmul_epilogue, cuda_matmul_epilogue_bf16, cuda_pool_diagnostics,
     cuda_pool_start_recording, cuda_pool_stop_recording_and_warm, cuda_pre_warm_pool,
     cuda_synchronize, cuda_to_vec_async, cuda_transfer_stats, cuda_transfer_stats_reset,
-    cuda_upload_u32, extract_allocation_profile,
-    optimize_with_cache,
+    cuda_upload_u32, extract_allocation_profile, optimize_with_cache,
 };

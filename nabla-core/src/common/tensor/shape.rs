@@ -231,7 +231,10 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
                 let start = i * chunk_size;
                 (start < dim).then(|| {
                     let end = ((i + 1) * chunk_size).min(dim);
-                    match axis { 0 => self.slice_rows(start..end), _ => self.slice_cols(start..end) }
+                    match axis {
+                        0 => self.slice_rows(start..end),
+                        _ => self.slice_cols(start..end),
+                    }
                 })
             })
             .collect()
@@ -242,14 +245,17 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     pub fn split(&self, sizes: &[usize], axis: usize) -> Vec<Self> {
         assert!(axis <= 1, "nabla: split axis must be 0 or 1, got {axis}");
         let mut offset = 0;
-        sizes.iter().map(|&s| {
-            let part = match axis {
-                0 => self.submatrix(offset, offset + s, 0, self.ncols()),
-                _ => self.submatrix(0, self.nrows(), offset, offset + s),
-            };
-            offset += s;
-            part
-        }).collect()
+        sizes
+            .iter()
+            .map(|&s| {
+                let part = match axis {
+                    0 => self.submatrix(offset, offset + s, 0, self.ncols()),
+                    _ => self.submatrix(0, self.nrows(), offset, offset + s),
+                };
+                offset += s;
+                part
+            })
+            .collect()
     }
 
     // ---- Shape utilities ----

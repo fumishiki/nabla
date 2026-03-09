@@ -5,11 +5,11 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use cudarc::driver::sys::{CUdeviceptr, CUfunction, CUgraph, CUgraphNode, CUstreamCaptureMode};
-use cudarc::driver::{CudaGraph as CudarcCudaGraph, result};
 use crate::gpu_common::{lock_or_recover, round_size, type_suffix};
 use crate::kernels_cu;
 use crate::scalar::Scalar;
+use cudarc::driver::sys::{CUdeviceptr, CUfunction, CUgraph, CUgraphNode, CUstreamCaptureMode};
+use cudarc::driver::{CudaGraph as CudarcCudaGraph, result};
 
 use super::*;
 
@@ -83,28 +83,66 @@ impl OptimizationReport {
 impl std::fmt::Display for OptimizationReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "=== NablaGraph Optimization Report ===")?;
-        writeln!(f, "Total graph nodes: {}, kernel nodes: {}", self.total_nodes, self.kernel_nodes)?;
+        writeln!(
+            f,
+            "Total graph nodes: {}, kernel nodes: {}",
+            self.total_nodes, self.kernel_nodes
+        )?;
         writeln!(f, "Elementwise ops: {}", self.elementwise_count)?;
         if !self.fusion_candidates.is_empty() {
-            let saved: usize = self.fusion_candidates.iter().map(|c| c.node_indices.len() - 1).sum();
-            writeln!(f, "Fusion candidates: {} (saves {saved} launches)", self.fusion_candidates.len())?;
+            let saved: usize = self
+                .fusion_candidates
+                .iter()
+                .map(|c| c.node_indices.len() - 1)
+                .sum();
+            writeln!(
+                f,
+                "Fusion candidates: {} (saves {saved} launches)",
+                self.fusion_candidates.len()
+            )?;
             for (i, c) in self.fusion_candidates.iter().enumerate() {
-                writeln!(f, "  [{i}] {} ops: {} (est. {:.1}x)", c.node_indices.len(), c.ops.join(" -> "), c.estimated_speedup)?;
+                writeln!(
+                    f,
+                    "  [{i}] {} ops: {} (est. {:.1}x)",
+                    c.node_indices.len(),
+                    c.ops.join(" -> "),
+                    c.estimated_speedup
+                )?;
             }
         }
         if !self.epilogue_candidates.is_empty() {
-            writeln!(f, "Epilogue candidates: {} (matmul+activation -> cublasLt)", self.epilogue_candidates.len())?;
+            writeln!(
+                f,
+                "Epilogue candidates: {} (matmul+activation -> cublasLt)",
+                self.epilogue_candidates.len()
+            )?;
             for c in &self.epilogue_candidates {
-                writeln!(f, "  matmul[{}] + {}[{}]", c.matmul_idx, c.activation, c.activation_idx)?;
+                writeln!(
+                    f,
+                    "  matmul[{}] + {}[{}]",
+                    c.matmul_idx, c.activation, c.activation_idx
+                )?;
             }
         }
         if !self.transpose_elim_candidates.is_empty() {
-            let v = self.transpose_elim_candidates.first().map_or("tn", |c| c.variant);
-            writeln!(f, "Transpose elimination: {} (transpose+matmul -> matmul_{v})", self.transpose_elim_candidates.len())?;
+            let v = self
+                .transpose_elim_candidates
+                .first()
+                .map_or("tn", |c| c.variant);
+            writeln!(
+                f,
+                "Transpose elimination: {} (transpose+matmul -> matmul_{v})",
+                self.transpose_elim_candidates.len()
+            )?;
         }
         let total = self.estimated_node_reduction();
         if total > 0 {
-            writeln!(f, "Estimated reduction: {} -> {} kernel launches ({total} eliminated)", self.kernel_nodes, self.kernel_nodes.saturating_sub(total))?;
+            writeln!(
+                f,
+                "Estimated reduction: {} -> {} kernel launches ({total} eliminated)",
+                self.kernel_nodes,
+                self.kernel_nodes.saturating_sub(total)
+            )?;
         } else {
             writeln!(f, "No optimization opportunities detected.")?;
         }
@@ -113,37 +151,96 @@ impl std::fmt::Display for OptimizationReport {
 }
 
 pub(super) fn build_reverse_kernel_map(ctx: &CudaCtx) -> HashMap<usize, String> {
-    let map = ctx.kernels.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-    map.iter().map(|(name, entry)| (entry.func as usize, name.clone())).collect()
+    let map = ctx
+        .kernels
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.iter()
+        .map(|(name, entry)| (entry.func as usize, name.clone()))
+        .collect()
 }
 
 pub(super) fn classify_kernel(name: &str) -> KernelClass {
     const UNARY: &[&str] = &[
-        "neg", "recip", "exp", "ln", "log1p", "log2", "log10", "sin", "cos", "tan", "tanh",
-        "sqrt", "abs", "ceil", "floor", "round", "erf", "asin", "acos", "atan", "sinh", "cosh",
-        "asinh", "acosh", "atanh", "sigmoid", "silu", "mish", "hardswish", "sign",
+        "neg",
+        "recip",
+        "exp",
+        "ln",
+        "log1p",
+        "log2",
+        "log10",
+        "sin",
+        "cos",
+        "tan",
+        "tanh",
+        "sqrt",
+        "abs",
+        "ceil",
+        "floor",
+        "round",
+        "erf",
+        "asin",
+        "acos",
+        "atan",
+        "sinh",
+        "cosh",
+        "asinh",
+        "acosh",
+        "atanh",
+        "sigmoid",
+        "silu",
+        "mish",
+        "hardswish",
+        "sign",
     ];
     const BINARY: &[&str] = &[
         "add", "sub", "emul", "ediv", "powf", "atan2", "scale", "axpy", "fill",
     ];
     const ACT_BWD: &[&str] = &[
-        "relu_bwd", "leaky_relu_bwd", "elu_bwd", "sigmoid_bwd", "tanh_bwd", "silu_bwd", "gelu_bwd",
+        "relu_bwd",
+        "leaky_relu_bwd",
+        "elu_bwd",
+        "sigmoid_bwd",
+        "tanh_bwd",
+        "silu_bwd",
+        "gelu_bwd",
     ];
 
     let base = name.strip_prefix("k_").unwrap_or(name);
     let op = base.rsplit_once('_').map_or(base, |(op, _)| op);
 
-    if UNARY.contains(&op) { return KernelClass::UnaryElementwise; }
-    if BINARY.contains(&op) || ACT_BWD.contains(&op) { return KernelClass::BinaryElementwise; }
-    if op.contains("pool") { return KernelClass::Other; }
+    if UNARY.contains(&op) {
+        return KernelClass::UnaryElementwise;
+    }
+    if BINARY.contains(&op) || ACT_BWD.contains(&op) {
+        return KernelClass::BinaryElementwise;
+    }
+    if op.contains("pool") {
+        return KernelClass::Other;
+    }
 
-    if ["sum", "max", "min", "prod"].iter().any(|p| op.starts_with(p))
+    if ["sum", "max", "min", "prod"]
+        .iter()
+        .any(|p| op.starts_with(p))
         || matches!(op, "softmax" | "log_softmax")
-    { return KernelClass::Reduction; }
-    if op.contains("matmul") || op.contains("gemm") { return KernelClass::Matmul; }
-    if op.contains("norm") || op.contains("batch_norm") { return KernelClass::Norm; }
-    if ["conv", "im2col", "im1col", "im3col"].iter().any(|p| op.contains(p)) { return KernelClass::Conv; }
-    if op.starts_with("fused_") || op.starts_with("mega_") || op.starts_with("fuse_reduce_") { return KernelClass::Fused; }
+    {
+        return KernelClass::Reduction;
+    }
+    if op.contains("matmul") || op.contains("gemm") {
+        return KernelClass::Matmul;
+    }
+    if op.contains("norm") || op.contains("batch_norm") {
+        return KernelClass::Norm;
+    }
+    if ["conv", "im2col", "im1col", "im3col"]
+        .iter()
+        .any(|p| op.contains(p))
+    {
+        return KernelClass::Conv;
+    }
+    if op.starts_with("fused_") || op.starts_with("mega_") || op.starts_with("fuse_reduce_") {
+        return KernelClass::Fused;
+    }
     KernelClass::Other
 }
 
@@ -171,19 +268,30 @@ pub(super) fn node_dependencies(node: CUgraphNode) -> CudaResult<Vec<CUgraphNode
 }
 
 fn count_kernel_params(p: &cudarc::driver::sys::CUDA_KERNEL_NODE_PARAMS) -> usize {
-    if p.kernelParams.is_null() { return 0; }
+    if p.kernelParams.is_null() {
+        return 0;
+    }
     let mut count = 0usize;
     // SAFETY: kernelParams is a null-terminated *mut *mut c_void array.
-    unsafe { while !(*p.kernelParams.add(count)).is_null() { count += 1; } }
+    unsafe {
+        while !(*p.kernelParams.add(count)).is_null() {
+            count += 1;
+        }
+    }
     count
 }
 
 // SAFETY: caller must ensure kernelParams has at least `n` valid entries.
-unsafe fn read_kernel_arg_values(p: &cudarc::driver::sys::CUDA_KERNEL_NODE_PARAMS, n: usize) -> Vec<u64> {
+unsafe fn read_kernel_arg_values(
+    p: &cudarc::driver::sys::CUDA_KERNEL_NODE_PARAMS,
+    n: usize,
+) -> Vec<u64> {
     let mut v = vec![0u64; n];
     for i in 0..n {
         // SAFETY: kernelParams[i] points to the snapshotted arg value.
-        unsafe { v[i] = ((*p.kernelParams.add(i)) as *const u64).read_unaligned(); }
+        unsafe {
+            v[i] = ((*p.kernelParams.add(i)) as *const u64).read_unaligned();
+        }
     }
     v
 }
@@ -245,23 +353,38 @@ pub fn analyze_graph(cu_graph: CUgraph) -> CudaResult<(Vec<AnalyzedNode>, Optimi
     let all_nodes = fetch_graph_nodes(cu_graph)?;
     let total_nodes = all_nodes.len();
 
-    let handle_to_idx: HashMap<usize, usize> = all_nodes.iter().enumerate().map(|(i, &n)| (n as usize, i)).collect();
+    let handle_to_idx: HashMap<usize, usize> = all_nodes
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| (n as usize, i))
+        .collect();
 
     let mut analyzed: Vec<AnalyzedNode> = Vec::with_capacity(total_nodes);
     let mut kernel_idx_map: HashMap<usize, usize> = HashMap::with_capacity(total_nodes);
 
     for (all_idx, &node) in all_nodes.iter().enumerate() {
-        let Some(p) = extract_kernel_params(node)? else { continue; };
+        let Some(p) = extract_kernel_params(node)? else {
+            continue;
+        };
         let kernel_name = reverse_map.get(&(p.func as usize)).cloned();
-        let class = kernel_name.as_deref().map_or(KernelClass::Other, classify_kernel);
+        let class = kernel_name
+            .as_deref()
+            .map_or(KernelClass::Other, classify_kernel);
         let n_args = count_kernel_params(&p);
         // SAFETY: kernelParams validated by count_kernel_params.
         let arg_values = unsafe { read_kernel_arg_values(&p, n_args) };
         kernel_idx_map.insert(all_idx, analyzed.len());
         analyzed.push(AnalyzedNode {
-            node, func: p.func, kernel_name, class, n_args, arg_values,
-            grid: (p.gridDimX, p.gridDimY, p.gridDimZ), block: (p.blockDimX, p.blockDimY, p.blockDimZ),
-            deps: Vec::new(), dependents: Vec::new(),
+            node,
+            func: p.func,
+            kernel_name,
+            class,
+            n_args,
+            arg_values,
+            grid: (p.gridDimX, p.gridDimY, p.gridDimZ),
+            block: (p.blockDimX, p.blockDimY, p.blockDimZ),
+            deps: Vec::new(),
+            dependents: Vec::new(),
         });
     }
 
@@ -284,12 +407,22 @@ pub fn analyze_graph(cu_graph: CUgraph) -> CudaResult<(Vec<AnalyzedNode>, Optimi
     let epilogue_candidates = detect_epilogue_patterns(&analyzed);
     let transpose_elim_candidates = detect_transpose_elim(&analyzed);
 
-    let report = OptimizationReport { total_nodes, kernel_nodes: analyzed.len(), elementwise_count, fusion_candidates, epilogue_candidates, transpose_elim_candidates };
+    let report = OptimizationReport {
+        total_nodes,
+        kernel_nodes: analyzed.len(),
+        elementwise_count,
+        fusion_candidates,
+        epilogue_candidates,
+        transpose_elim_candidates,
+    };
     Ok((analyzed, report))
 }
 
 fn is_elementwise(class: KernelClass) -> bool {
-    matches!(class, KernelClass::UnaryElementwise | KernelClass::BinaryElementwise)
+    matches!(
+        class,
+        KernelClass::UnaryElementwise | KernelClass::BinaryElementwise
+    )
 }
 
 fn detect_fusion_chains(nodes: &[AnalyzedNode]) -> Vec<FusionCandidate> {
@@ -297,7 +430,9 @@ fn detect_fusion_chains(nodes: &[AnalyzedNode]) -> Vec<FusionCandidate> {
     let mut candidates = Vec::new();
 
     for start in 0..nodes.len() {
-        if visited[start] || !is_elementwise(nodes[start].class) { continue; }
+        if visited[start] || !is_elementwise(nodes[start].class) {
+            continue;
+        }
         let mut chain = vec![start];
         let mut chain_set: HashSet<usize> = HashSet::new();
         chain_set.insert(start);
@@ -305,12 +440,24 @@ fn detect_fusion_chains(nodes: &[AnalyzedNode]) -> Vec<FusionCandidate> {
         let mut current = start;
 
         loop {
-            if nodes[current].dependents.len() != 1 { break; }
+            if nodes[current].dependents.len() != 1 {
+                break;
+            }
             let next = nodes[current].dependents[0];
-            if visited[next] || !is_elementwise(nodes[next].class) { break; }
-            let non_chain_deps = nodes[next].deps.iter().filter(|&&d| !chain_set.contains(&d)).count();
-            if nodes[next].class == KernelClass::BinaryElementwise && non_chain_deps > 1 { break; }
-            if nodes[next].class == KernelClass::UnaryElementwise && non_chain_deps > 0 { break; }
+            if visited[next] || !is_elementwise(nodes[next].class) {
+                break;
+            }
+            let non_chain_deps = nodes[next]
+                .deps
+                .iter()
+                .filter(|&&d| !chain_set.contains(&d))
+                .count();
+            if nodes[next].class == KernelClass::BinaryElementwise && non_chain_deps > 1 {
+                break;
+            }
+            if nodes[next].class == KernelClass::UnaryElementwise && non_chain_deps > 0 {
+                break;
+            }
             chain.push(next);
             chain_set.insert(next);
             visited[next] = true;
@@ -337,7 +484,9 @@ fn detect_fusion_chains(nodes: &[AnalyzedNode]) -> Vec<FusionCandidate> {
 fn detect_epilogue_patterns(nodes: &[AnalyzedNode]) -> Vec<EpilogueCandidate> {
     let mut candidates = Vec::new();
     for (i, node) in nodes.iter().enumerate() {
-        if node.class != KernelClass::Matmul || node.dependents.len() != 1 { continue; }
+        if node.class != KernelClass::Matmul || node.dependents.len() != 1 {
+            continue;
+        }
         let next = node.dependents[0];
         let op = super::graph_compile::extract_op(nodes[next].kernel_name.as_deref().unwrap_or(""));
         let activation = match op {
@@ -346,7 +495,11 @@ fn detect_epilogue_patterns(nodes: &[AnalyzedNode]) -> Vec<EpilogueCandidate> {
             _ => continue,
         };
         if nodes[next].deps.len() == 1 && nodes[next].deps[0] == i {
-            candidates.push(EpilogueCandidate { matmul_idx: i, activation_idx: next, activation: activation.to_string() });
+            candidates.push(EpilogueCandidate {
+                matmul_idx: i,
+                activation_idx: next,
+                activation: activation.to_string(),
+            });
         }
     }
     candidates
@@ -356,11 +509,23 @@ fn detect_transpose_elim(nodes: &[AnalyzedNode]) -> Vec<TransposeElimCandidate> 
     let mut candidates = Vec::new();
     for (i, node) in nodes.iter().enumerate() {
         let name = node.kernel_name.as_deref().unwrap_or("");
-        if !name.contains("transpose") || node.dependents.len() != 1 { continue; }
+        if !name.contains("transpose") || node.dependents.len() != 1 {
+            continue;
+        }
         let next = node.dependents[0];
-        if nodes[next].class != KernelClass::Matmul { continue; }
-        let variant = if nodes[next].deps.first() == Some(&i) { "tn" } else { "nt" };
-        candidates.push(TransposeElimCandidate { transpose_idx: i, matmul_idx: next, variant });
+        if nodes[next].class != KernelClass::Matmul {
+            continue;
+        }
+        let variant = if nodes[next].deps.first() == Some(&i) {
+            "tn"
+        } else {
+            "nt"
+        };
+        candidates.push(TransposeElimCandidate {
+            transpose_idx: i,
+            matmul_idx: next,
+            variant,
+        });
     }
     candidates
 }
@@ -371,10 +536,15 @@ pub struct AllocationProfile {
 }
 
 pub(super) fn dtype_bytes(kernel_name: &str) -> usize {
-    if kernel_name.ends_with("_f64") { 8 }
-    else if kernel_name.ends_with("_f16") || kernel_name.ends_with("_bf16") { 2 }
-    else if kernel_name.contains("fp8") || kernel_name.contains("fp4") { 1 }
-    else { 4 }
+    if kernel_name.ends_with("_f64") {
+        8
+    } else if kernel_name.ends_with("_f16") || kernel_name.ends_with("_bf16") {
+        2
+    } else if kernel_name.contains("fp8") || kernel_name.contains("fp4") {
+        1
+    } else {
+        4
+    }
 }
 
 pub fn extract_allocation_profile(analyzed: &[AnalyzedNode]) -> AllocationProfile {
@@ -400,7 +570,10 @@ pub fn extract_allocation_profile(analyzed: &[AnalyzedNode]) -> AllocationProfil
     let mut buffer_sizes: Vec<usize> = ptr_max_size.into_values().collect();
     buffer_sizes.sort_unstable();
     let peak_bytes = buffer_sizes.iter().sum();
-    AllocationProfile { buffer_sizes, peak_bytes }
+    AllocationProfile {
+        buffer_sizes,
+        peak_bytes,
+    }
 }
 
 // ── Graph Runtime ────────────────────────────────────────────────────────────
@@ -432,10 +605,16 @@ impl Drop for CaptureGuard {
 }
 
 fn clear_stream_capture(stream: cudarc::driver::sys::CUstream) {
-    let Ok(status) = (unsafe { result::stream::is_capturing(stream) }) else { return };
-    if status == cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE { return; }
+    let Ok(status) = (unsafe { result::stream::is_capturing(stream) }) else {
+        return;
+    };
+    if status == cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE {
+        return;
+    }
     if let Ok(graph) = unsafe { result::stream::end_capture(stream) } {
-        if !graph.is_null() { unsafe { cudarc::driver::sys::cuGraphDestroy(graph) }; }
+        if !graph.is_null() {
+            unsafe { cudarc::driver::sys::cuGraphDestroy(graph) };
+        }
     }
 }
 
@@ -449,19 +628,32 @@ unsafe impl Sync for NablaCudaGraph {}
 
 impl NablaCudaGraph {
     fn begin_capture() -> CudaResult<()> {
-        get_ctx().stream.begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)?;
+        get_ctx()
+            .stream
+            .begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)?;
         Ok(())
     }
 
     fn end_capture() -> CudaResult<Self> {
         let ctx = get_ctx();
         // SAFETY: transmuting 0u32 to flags enum (no flags set).
-        let flags: cudarc::driver::sys::CUgraphInstantiate_flags = unsafe { std::mem::transmute(0u32) };
-        let graph = ctx.stream.end_capture(flags).map_err(|e| { clear_stream_capture(ctx.stream.cu_stream()); CudaError::Driver(e) })?.ok_or(CudaError::NullPtr)?;
+        let flags: cudarc::driver::sys::CUgraphInstantiate_flags =
+            unsafe { std::mem::transmute(0u32) };
+        let graph = ctx
+            .stream
+            .end_capture(flags)
+            .map_err(|e| {
+                clear_stream_capture(ctx.stream.cu_stream());
+                CudaError::Driver(e)
+            })?
+            .ok_or(CudaError::NullPtr)?;
         Ok(Self { inner: graph })
     }
 
-    pub fn launch(&self) -> CudaResult<()> { self.inner.launch()?; Ok(()) }
+    pub fn launch(&self) -> CudaResult<()> {
+        self.inner.launch()?;
+        Ok(())
+    }
 }
 
 pub fn cuda_graph_capture<F: FnOnce()>(f: F) -> CudaResult<NablaCudaGraph> {
@@ -495,14 +687,28 @@ pub fn cuda_to_vec_async<T: Scalar>(storage: &CudaStorage<T>) -> CudaResult<Vec<
     if n == 0 {
         return Ok(host);
     }
-    let _d2h_guard = ctx.d2h_mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    ctx.stream.context().bind_to_thread().map_err(CudaError::Driver)?;
+    let _d2h_guard = ctx
+        .d2h_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ctx.stream
+        .context()
+        .bind_to_thread()
+        .map_err(CudaError::Driver)?;
     // SAFETY: event lifecycle is contained within this function.
     unsafe {
-        let event = result::event::create(cudarc::driver::sys::CUevent_flags::CU_EVENT_DISABLE_TIMING).map_err(CudaError::Driver)?;
+        let event =
+            result::event::create(cudarc::driver::sys::CUevent_flags::CU_EVENT_DISABLE_TIMING)
+                .map_err(CudaError::Driver)?;
         result::event::record(event, ctx.stream.cu_stream()).map_err(CudaError::Driver)?;
-        result::stream::wait_event(ctx.copy_stream.cu_stream(), event, cudarc::driver::sys::CUevent_wait_flags::CU_EVENT_WAIT_DEFAULT).map_err(CudaError::Driver)?;
-        result::memcpy_dtoh_async(&mut host, storage.buf.ptr, ctx.copy_stream.cu_stream()).map_err(CudaError::Driver)?;
+        result::stream::wait_event(
+            ctx.copy_stream.cu_stream(),
+            event,
+            cudarc::driver::sys::CUevent_wait_flags::CU_EVENT_WAIT_DEFAULT,
+        )
+        .map_err(CudaError::Driver)?;
+        result::memcpy_dtoh_async(&mut host, storage.buf.ptr, ctx.copy_stream.cu_stream())
+            .map_err(CudaError::Driver)?;
         ctx.copy_stream.synchronize().map_err(CudaError::Driver)?;
         result::event::destroy(event).map_err(CudaError::Driver)?;
     }
@@ -510,7 +716,13 @@ pub fn cuda_to_vec_async<T: Scalar>(storage: &CudaStorage<T>) -> CudaResult<Vec<
 }
 
 pub fn cuda_copy_from_host<T: Scalar>(storage: &CudaStorage<T>, data: &[T]) {
-    assert_eq!(storage.n(), data.len(), "cuda_copy_from_host: size mismatch (buffer={}, data={})", storage.n(), data.len());
+    assert_eq!(
+        storage.n(),
+        data.len(),
+        "cuda_copy_from_host: size mismatch (buffer={}, data={})",
+        storage.n(),
+        data.len()
+    );
     let ctx = get_ctx();
     // SAFETY: copying from host slice to pre-allocated GPU buffer of matching size.
     unsafe {
@@ -545,7 +757,10 @@ unsafe impl Send for PyGraph {}
 impl Drop for PyGraph {
     fn drop(&mut self) {
         // SAFETY: both handles are non-null (set in PyGraph::capture) and we
-        unsafe { cudarc::driver::sys::cuGraphExecDestroy(self.cu_graph_exec); cudarc::driver::sys::cuGraphDestroy(self.cu_graph); }
+        unsafe {
+            cudarc::driver::sys::cuGraphExecDestroy(self.cu_graph_exec);
+            cudarc::driver::sys::cuGraphDestroy(self.cu_graph);
+        }
     }
 }
 
@@ -554,62 +769,114 @@ impl PyGraph {
         let ctx = get_ctx();
         let cu_stream = ctx.stream.cu_stream();
 
-        ctx.stream.begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)?;
+        ctx.stream
+            .begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)?;
         let _guard = CaptureGuard::new();
 
         f();
         drop(_guard);
 
-        let cu_graph = unsafe { result::stream::end_capture(cu_stream) }
-            .map_err(|e| { clear_stream_capture(cu_stream); CudaError::Driver(e) })?;
-        if cu_graph.is_null() { return Err(CudaError::NullPtr); }
+        let cu_graph = unsafe { result::stream::end_capture(cu_stream) }.map_err(|e| {
+            clear_stream_capture(cu_stream);
+            CudaError::Driver(e)
+        })?;
+        if cu_graph.is_null() {
+            return Err(CudaError::NullPtr);
+        }
 
         let cu_graph_exec = unsafe {
             // SAFETY: cu_graph is a valid non-null graph from cuStreamEndCapture.
             let mut exec = std::mem::MaybeUninit::uninit();
-            if let Err(e) = cudarc::driver::sys::cuGraphInstantiateWithFlags(exec.as_mut_ptr(), cu_graph, 0).result() {
+            if let Err(e) =
+                cudarc::driver::sys::cuGraphInstantiateWithFlags(exec.as_mut_ptr(), cu_graph, 0)
+                    .result()
+            {
                 cudarc::driver::sys::cuGraphDestroy(cu_graph);
                 return Err(CudaError::Driver(e));
             }
             exec.assume_init()
         };
-        if cu_graph_exec.is_null() { unsafe { cudarc::driver::sys::cuGraphDestroy(cu_graph) }; return Err(CudaError::NullPtr); }
+        if cu_graph_exec.is_null() {
+            unsafe { cudarc::driver::sys::cuGraphDestroy(cu_graph) };
+            return Err(CudaError::NullPtr);
+        }
 
-        Ok(Self { cu_graph, cu_graph_exec, cu_stream, kernel_nodes: Self::collect_kernel_nodes(cu_graph)? })
+        Ok(Self {
+            cu_graph,
+            cu_graph_exec,
+            cu_stream,
+            kernel_nodes: Self::collect_kernel_nodes(cu_graph)?,
+        })
     }
 
     pub(super) fn collect_kernel_nodes(cu_graph: CUgraph) -> CudaResult<Vec<KernelNodeState>> {
         let mut kernel_nodes = Vec::new();
         for node in fetch_graph_nodes(cu_graph)? {
-            let Some(raw_params) = extract_kernel_params(node)? else { continue; };
+            let Some(raw_params) = extract_kernel_params(node)? else {
+                continue;
+            };
             let n_args = count_kernel_params(&raw_params);
             // SAFETY: kernelParams validated by count_kernel_params above.
             let mut arg_bytes = unsafe { read_kernel_arg_values(&raw_params, n_args) };
-            let mut arg_ptrs: Vec<*mut c_void> = arg_bytes.iter_mut().map(|v| (v as *mut u64).cast::<c_void>()).collect();
+            let mut arg_ptrs: Vec<*mut c_void> = arg_bytes
+                .iter_mut()
+                .map(|v| (v as *mut u64).cast::<c_void>())
+                .collect();
             arg_ptrs.push(std::ptr::null_mut());
             let mut params = raw_params;
             params.kernelParams = arg_ptrs.as_mut_ptr();
             params.extra = std::ptr::null_mut();
-            kernel_nodes.push(KernelNodeState { node, params, arg_bytes, _arg_ptrs: arg_ptrs });
+            kernel_nodes.push(KernelNodeState {
+                node,
+                params,
+                arg_bytes,
+                _arg_ptrs: arg_ptrs,
+            });
         }
         Ok(kernel_nodes)
     }
 
     pub fn launch(&self) -> CudaResult<()> {
         // SAFETY: cu_graph_exec and cu_stream are valid for the lifetime of self.
-        unsafe { cudarc::driver::sys::cuGraphLaunch(self.cu_graph_exec, self.cu_stream).result().map_err(CudaError::Driver) }
+        unsafe {
+            cudarc::driver::sys::cuGraphLaunch(self.cu_graph_exec, self.cu_stream)
+                .result()
+                .map_err(CudaError::Driver)
+        }
     }
 
-    pub fn update_node_param_ptr(&mut self, node_idx: usize, param_idx: usize, new_ptr: CUdeviceptr) -> CudaResult<()> {
+    pub fn update_node_param_ptr(
+        &mut self,
+        node_idx: usize,
+        param_idx: usize,
+        new_ptr: CUdeviceptr,
+    ) -> CudaResult<()> {
         let state = &mut self.kernel_nodes[node_idx];
         state.arg_bytes[param_idx] = new_ptr;
         // SAFETY: cu_graph_exec is valid; state.node is a kernel node in this graph.
-        unsafe { cudarc::driver::sys::cuGraphExecKernelNodeSetParams_v2(self.cu_graph_exec, state.node, &state.params).result().map_err(CudaError::Driver) }
+        unsafe {
+            cudarc::driver::sys::cuGraphExecKernelNodeSetParams_v2(
+                self.cu_graph_exec,
+                state.node,
+                &state.params,
+            )
+            .result()
+            .map_err(CudaError::Driver)
+        }
     }
 
-    #[must_use] pub fn kernel_node_count(&self) -> usize { self.kernel_nodes.len() }
-    #[must_use] pub fn arg_count(&self, node_idx: usize) -> usize { self.kernel_nodes[node_idx].arg_bytes.len() }
-    #[must_use] pub fn get_param(&self, node_idx: usize, param_idx: usize) -> CUdeviceptr { self.kernel_nodes[node_idx].arg_bytes[param_idx] }
+    #[must_use]
+    pub fn kernel_node_count(&self) -> usize {
+        self.kernel_nodes.len()
+    }
+    #[must_use]
+    pub fn arg_count(&self, node_idx: usize) -> usize {
+        self.kernel_nodes[node_idx].arg_bytes.len()
+    }
+    #[must_use]
+    pub fn get_param(&self, node_idx: usize, param_idx: usize) -> CUdeviceptr {
+        self.kernel_nodes[node_idx].arg_bytes[param_idx]
+    }
 }
 
 pub struct PyGraphTrainingGraph {
@@ -620,22 +887,49 @@ pub struct PyGraphTrainingGraph {
 
 impl PyGraphTrainingGraph {
     #[must_use]
-    pub fn new() -> Self { Self { graph: None, warmup_iters: 5, iter_count: 0 } }
+    pub fn new() -> Self {
+        Self {
+            graph: None,
+            warmup_iters: 5,
+            iter_count: 0,
+        }
+    }
 
     #[must_use]
-    pub fn with_warmup(warmup_iters: usize) -> Self { Self { graph: None, warmup_iters, iter_count: 0 } }
+    pub fn with_warmup(warmup_iters: usize) -> Self {
+        Self {
+            graph: None,
+            warmup_iters,
+            iter_count: 0,
+        }
+    }
 
-    pub fn graph(&mut self) -> Option<&mut PyGraph> { self.graph.as_mut() }
+    pub fn graph(&mut self) -> Option<&mut PyGraph> {
+        self.graph.as_mut()
+    }
 
     pub fn step<F: FnMut()>(&mut self, f: &mut F) -> CudaResult<()> {
         self.iter_count += 1;
-        if self.iter_count <= self.warmup_iters { f(); cuda_synchronize(); Ok(()) }
-        else if self.graph.is_none() { self.graph = Some(PyGraph::capture(|| f())?); Ok(()) }
-        else { self.graph.as_ref().ok_or(CudaError::NullPtr)?.launch() }
+        if self.iter_count <= self.warmup_iters {
+            f();
+            cuda_synchronize();
+            Ok(())
+        } else if self.graph.is_none() {
+            self.graph = Some(PyGraph::capture(|| f())?);
+            Ok(())
+        } else {
+            self.graph.as_ref().ok_or(CudaError::NullPtr)?.launch()
+        }
     }
 
-    pub fn reset(&mut self) { self.graph = None; self.iter_count = 0; }
-    #[must_use] pub fn is_captured(&self) -> bool { self.graph.is_some() }
+    pub fn reset(&mut self) {
+        self.graph = None;
+        self.iter_count = 0;
+    }
+    #[must_use]
+    pub fn is_captured(&self) -> bool {
+        self.graph.is_some()
+    }
 }
 
 impl Default for PyGraphTrainingGraph {
@@ -660,15 +954,31 @@ unsafe impl Send for ConditionalHandle {}
 unsafe impl Sync for ConditionalHandle {}
 
 impl ConditionalHandle {
-    unsafe fn new(graph: CUgraph, cu_ctx: cudarc::driver::sys::CUcontext, default_value: u32) -> CudaResult<Self> {
+    unsafe fn new(
+        graph: CUgraph,
+        cu_ctx: cudarc::driver::sys::CUcontext,
+        default_value: u32,
+    ) -> CudaResult<Self> {
         use cudarc::driver::sys as cds;
         let mut raw: cds::CUgraphConditionalHandle = 0;
         // SAFETY: all pointers valid; pHandle_out points to a local stack slot.
-        let r = unsafe { cds::cuGraphConditionalHandleCreate(&mut raw, graph, cu_ctx, default_value, cds::CU_GRAPH_COND_ASSIGN_DEFAULT) };
-        if r != cds::CUresult::CUDA_SUCCESS { return Err(CudaError::Driver(cudarc::driver::DriverError(r))); }
+        let r = unsafe {
+            cds::cuGraphConditionalHandleCreate(
+                &mut raw,
+                graph,
+                cu_ctx,
+                default_value,
+                cds::CU_GRAPH_COND_ASSIGN_DEFAULT,
+            )
+        };
+        if r != cds::CUresult::CUDA_SUCCESS {
+            return Err(CudaError::Driver(cudarc::driver::DriverError(r)));
+        }
         Ok(Self { raw })
     }
-    fn raw(&self) -> cudarc::driver::sys::CUgraphConditionalHandle { self.raw }
+    fn raw(&self) -> cudarc::driver::sys::CUgraphConditionalHandle {
+        self.raw
+    }
 }
 
 pub struct ConditionalGraph {
@@ -684,77 +994,144 @@ unsafe impl Sync for ConditionalGraph {}
 impl Drop for ConditionalGraph {
     fn drop(&mut self) {
         // SAFETY: each pointer is destroyed exactly once.
-        if !self.cu_exec.is_null() { unsafe { cudarc::driver::sys::cuGraphExecDestroy(self.cu_exec) }; }
-        if !self.cu_graph.is_null() { unsafe { cudarc::driver::sys::cuGraphDestroy(self.cu_graph) }; }
+        if !self.cu_exec.is_null() {
+            unsafe { cudarc::driver::sys::cuGraphExecDestroy(self.cu_exec) };
+        }
+        if !self.cu_graph.is_null() {
+            unsafe { cudarc::driver::sys::cuGraphDestroy(self.cu_graph) };
+        }
     }
 }
 
 impl ConditionalGraph {
-    pub fn new<F: Fn(CUgraph) -> CudaResult<()>>(kind: ConditionalKind, default_value: u32, bodies: &[F]) -> CudaResult<Self> {
+    pub fn new<F: Fn(CUgraph) -> CudaResult<()>>(
+        kind: ConditionalKind,
+        default_value: u32,
+        bodies: &[F],
+    ) -> CudaResult<Self> {
         use cudarc::driver::sys as cds;
         let cu_ctx = get_ctx().stream.context().cu_ctx();
         let mut cu_graph: CUgraph = std::ptr::null_mut();
         // SAFETY: cuGraphCreate writes a valid handle into cu_graph on success.
         let r = unsafe { cds::cuGraphCreate(&mut cu_graph, 0) };
-        if r != cds::CUresult::CUDA_SUCCESS { return Err(CudaError::Driver(cudarc::driver::DriverError(r))); }
+        if r != cds::CUresult::CUDA_SUCCESS {
+            return Err(CudaError::Driver(cudarc::driver::DriverError(r)));
+        }
 
         macro_rules! bail {
-            ($e:expr) => {{ unsafe { cds::cuGraphDestroy(cu_graph) }; return Err($e); }};
+            ($e:expr) => {{
+                unsafe { cds::cuGraphDestroy(cu_graph) };
+                return Err($e);
+            }};
         }
 
         // SAFETY: cu_graph is valid and will outlive the handle.
-        let handle = match unsafe { ConditionalHandle::new(cu_graph, cu_ctx, default_value) } { Ok(h) => h, Err(e) => bail!(e) };
+        let handle = match unsafe { ConditionalHandle::new(cu_graph, cu_ctx, default_value) } {
+            Ok(h) => h,
+            Err(e) => bail!(e),
+        };
         let (cond_type, size) = match kind {
-            ConditionalKind::If => (cds::CUgraphConditionalNodeType::CU_GRAPH_COND_TYPE_IF, bodies.len() as u32),
-            ConditionalKind::While => (cds::CUgraphConditionalNodeType::CU_GRAPH_COND_TYPE_WHILE, 1u32),
-            ConditionalKind::Switch { .. } => bail!(CudaError::KernelNotFound("CUDA conditional switch unsupported".into())),
+            ConditionalKind::If => (
+                cds::CUgraphConditionalNodeType::CU_GRAPH_COND_TYPE_IF,
+                bodies.len() as u32,
+            ),
+            ConditionalKind::While => (
+                cds::CUgraphConditionalNodeType::CU_GRAPH_COND_TYPE_WHILE,
+                1u32,
+            ),
+            ConditionalKind::Switch { .. } => bail!(CudaError::KernelNotFound(
+                "CUDA conditional switch unsupported".into()
+            )),
         };
 
         let mut body_graphs: Vec<CUgraph> = vec![std::ptr::null_mut(); size as usize];
         // SAFETY: CUgraphNodeParams_st is a C struct; zeroing and setting the conditional union arm.
         let mut node_params: cds::CUgraphNodeParams = unsafe { std::mem::zeroed() };
         node_params.type_ = cds::CUgraphNodeType::CU_GRAPH_NODE_TYPE_CONDITIONAL;
-        node_params.__bindgen_anon_1.conditional = cds::CUDA_CONDITIONAL_NODE_PARAMS { handle: handle.raw(), type_: cond_type, size, phGraph_out: body_graphs.as_mut_ptr(), ctx: cu_ctx };
+        node_params.__bindgen_anon_1.conditional = cds::CUDA_CONDITIONAL_NODE_PARAMS {
+            handle: handle.raw(),
+            type_: cond_type,
+            size,
+            phGraph_out: body_graphs.as_mut_ptr(),
+            ctx: cu_ctx,
+        };
 
         let mut cond_node: CUgraphNode = std::ptr::null_mut();
         // SAFETY: cu_graph, node_params, body_graphs are all valid.
-        let r = unsafe { cds::cuGraphAddNode(&mut cond_node, cu_graph, std::ptr::null(), 0, &mut node_params) };
-        if r != cds::CUresult::CUDA_SUCCESS { bail!(CudaError::Driver(cudarc::driver::DriverError(r))); }
+        let r = unsafe {
+            cds::cuGraphAddNode(
+                &mut cond_node,
+                cu_graph,
+                std::ptr::null(),
+                0,
+                &mut node_params,
+            )
+        };
+        if r != cds::CUresult::CUDA_SUCCESS {
+            bail!(CudaError::Driver(cudarc::driver::DriverError(r)));
+        }
 
         for (i, body_fn) in bodies.iter().enumerate() {
             let body = body_graphs[i];
-            if body.is_null() { bail!(CudaError::NullPtr); }
-            if let Err(e) = body_fn(body) { bail!(e); }
+            if body.is_null() {
+                bail!(CudaError::NullPtr);
+            }
+            if let Err(e) = body_fn(body) {
+                bail!(e);
+            }
         }
 
         let mut cu_exec: cds::CUgraphExec = std::ptr::null_mut();
         // SAFETY: cu_graph is fully constructed; cu_exec receives the exec handle.
         let r = unsafe { cds::cuGraphInstantiateWithFlags(&mut cu_exec, cu_graph, 0u64) };
-        if r != cds::CUresult::CUDA_SUCCESS { bail!(CudaError::Driver(cudarc::driver::DriverError(r))); }
+        if r != cds::CUresult::CUDA_SUCCESS {
+            bail!(CudaError::Driver(cudarc::driver::DriverError(r)));
+        }
 
-        Ok(Self { cu_graph, cu_exec, handle })
+        Ok(Self {
+            cu_graph,
+            cu_exec,
+            handle,
+        })
     }
 
-    pub fn new_if<F: Fn(CUgraph) -> CudaResult<()>>(body: F) -> CudaResult<Self> { Self::new(ConditionalKind::If, 0, &[body]) }
-    pub fn new_if_else<F: Fn(CUgraph) -> CudaResult<()>>(t: F, f: F) -> CudaResult<Self> { Self::new(ConditionalKind::If, 0, &[t, f]) }
-    pub fn new_while<F: Fn(CUgraph) -> CudaResult<()>>(body: F) -> CudaResult<Self> { Self::new(ConditionalKind::While, 0, &[body]) }
+    pub fn new_if<F: Fn(CUgraph) -> CudaResult<()>>(body: F) -> CudaResult<Self> {
+        Self::new(ConditionalKind::If, 0, &[body])
+    }
+    pub fn new_if_else<F: Fn(CUgraph) -> CudaResult<()>>(t: F, f: F) -> CudaResult<Self> {
+        Self::new(ConditionalKind::If, 0, &[t, f])
+    }
+    pub fn new_while<F: Fn(CUgraph) -> CudaResult<()>>(body: F) -> CudaResult<Self> {
+        Self::new(ConditionalKind::While, 0, &[body])
+    }
 
     pub fn launch(&self) -> CudaResult<()> {
         // SAFETY: cu_exec and the stream are valid for this graph's lifetime.
-        let r = unsafe { cudarc::driver::sys::cuGraphLaunch(self.cu_exec, get_ctx().stream.cu_stream()) };
-        if r != cudarc::driver::sys::CUresult::CUDA_SUCCESS { return Err(CudaError::Driver(cudarc::driver::DriverError(r))); }
+        let r = unsafe {
+            cudarc::driver::sys::cuGraphLaunch(self.cu_exec, get_ctx().stream.cu_stream())
+        };
+        if r != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+            return Err(CudaError::Driver(cudarc::driver::DriverError(r)));
+        }
         Ok(())
     }
 
-    pub fn device_handle(&self) -> cudarc::driver::sys::CUgraphConditionalHandle { self.handle.raw() }
+    pub fn device_handle(&self) -> cudarc::driver::sys::CUgraphConditionalHandle {
+        self.handle.raw()
+    }
 }
 
 const COND_SET_KERNEL_NAMES: &[&str] = &["k_cond_set_f32", "k_cond_set_f16", "k_cond_set_f64"];
 
 fn compile_cond_set_kernels(ctx: &CudaCtx) -> CudaResult<()> {
     {
-        let map = ctx.kernels.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if map.contains_key("k_cond_set_f32") { return Ok(()); }
+        let map = ctx
+            .kernels
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if map.contains_key("k_cond_set_f32") {
+            return Ok(());
+        }
     }
     for &name in COND_SET_KERNEL_NAMES {
         super::graph_compile::compile_and_cache_kernel(ctx, name, kernels_cu::COND_SET_KERNELS)?;
@@ -770,20 +1147,36 @@ pub enum CondCmp {
 }
 
 pub fn cuda_conditional_set_from_scalar<T: Scalar>(
-    handle: cudarc::driver::sys::CUgraphConditionalHandle, scalar_storage: &CudaStorage<T>,
-    cmp: CondCmp, threshold: f32,
+    handle: cudarc::driver::sys::CUgraphConditionalHandle,
+    scalar_storage: &CudaStorage<T>,
+    cmp: CondCmp,
+    threshold: f32,
 ) -> CudaResult<()> {
     let ctx = get_ctx();
     compile_cond_set_kernels(ctx)?;
     let func = get_kernel(ctx, &format!("k_cond_set_{}", type_suffix::<T>()))?;
     let handle_u64: u64 = handle;
-    let cmp_u32: u32 = match cmp { CondCmp::Positive => 0, CondCmp::Zero => 1, CondCmp::LessThan => 2 };
+    let cmp_u32: u32 = match cmp {
+        CondCmp::Positive => 0,
+        CondCmp::Zero => 1,
+        CondCmp::LessThan => 2,
+    };
     // SAFETY: all pointers are valid device pointers; scalar_storage is valid for the kernel call.
     unsafe {
-        result::launch_kernel(func, (1, 1, 1), (1, 1, 1), 0, ctx.stream.cu_stream(), &mut [
-            &handle_u64 as *const u64 as *mut c_void, &scalar_storage.buf.ptr as *const CUdeviceptr as *mut c_void,
-            &cmp_u32 as *const u32 as *mut c_void, &threshold as *const f32 as *mut c_void,
-        ]).map_err(CudaError::Driver)?;
+        result::launch_kernel(
+            func,
+            (1, 1, 1),
+            (1, 1, 1),
+            0,
+            ctx.stream.cu_stream(),
+            &mut [
+                &handle_u64 as *const u64 as *mut c_void,
+                &scalar_storage.buf.ptr as *const CUdeviceptr as *mut c_void,
+                &cmp_u32 as *const u32 as *mut c_void,
+                &threshold as *const f32 as *mut c_void,
+            ],
+        )
+        .map_err(CudaError::Driver)?;
     }
     Ok(())
 }
@@ -793,7 +1186,12 @@ pub fn cuda_if_positive<T: Scalar, F: Fn(CUgraph) -> CudaResult<()>>(
     body: F,
 ) -> CudaResult<ConditionalGraph> {
     let cond_graph = ConditionalGraph::new_if(body)?;
-    cuda_conditional_set_from_scalar(cond_graph.device_handle(), condition_storage, CondCmp::Positive, 0.0_f32)?;
+    cuda_conditional_set_from_scalar(
+        cond_graph.device_handle(),
+        condition_storage,
+        CondCmp::Positive,
+        0.0_f32,
+    )?;
     cond_graph.launch()?;
     Ok(cond_graph)
 }

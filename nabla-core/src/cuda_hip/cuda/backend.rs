@@ -502,15 +502,25 @@ impl crate::backend::BackendShape for crate::backend::Cuda {
 ///
 /// SAFETY: caller must verify `TypeId::of::<T>() == TypeId::of::<U>()`.
 fn try_lt_epilogue<T: Scalar, U: Scalar>(
-    a: &CudaStorage<T>, b: &CudaStorage<T>,
-    epilogue: Epilogue, bias: Option<CUdeviceptr>,
-    matmul_fn: fn(&mut CudaStorage<U>, &CudaStorage<U>, &CudaStorage<U>, Epilogue, Option<CUdeviceptr>) -> CudaResult<()>,
+    a: &CudaStorage<T>,
+    b: &CudaStorage<T>,
+    epilogue: Epilogue,
+    bias: Option<CUdeviceptr>,
+    matmul_fn: fn(
+        &mut CudaStorage<U>,
+        &CudaStorage<U>,
+        &CudaStorage<U>,
+        Epilogue,
+        Option<CUdeviceptr>,
+    ) -> CudaResult<()>,
     fallback: impl FnOnce() -> CudaStorage<T>,
 ) -> CudaStorage<T> {
     // SAFETY: TypeId check by caller guarantees T == U; same layout.
     let (a_u, b_u) = unsafe {
-        (&*(a as *const CudaStorage<T> as *const CudaStorage<U>),
-         &*(b as *const CudaStorage<T> as *const CudaStorage<U>))
+        (
+            &*(a as *const CudaStorage<T> as *const CudaStorage<U>),
+            &*(b as *const CudaStorage<T> as *const CudaStorage<U>),
+        )
     };
     let mut out_u = cuda_zeros::<U>(a_u.nrows, b_u.ncols);
     match matmul_fn(&mut out_u, a_u, b_u, epilogue, bias) {
@@ -542,7 +552,11 @@ impl crate::backend::BackendBlas for crate::backend::Cuda {
         epilogue_id: u8,
     ) -> CudaStorage<T> {
         use std::any::TypeId;
-        let epilogue = if epilogue_id == 0 { Epilogue::Relu } else { Epilogue::Gelu };
+        let epilogue = if epilogue_id == 0 {
+            Epilogue::Relu
+        } else {
+            Epilogue::Gelu
+        };
         let fallback = || cuda_matmul_epilogue_fallback(a, b, epilogue_id);
         if epilogue_id <= 1 {
             if TypeId::of::<T>() == TypeId::of::<f32>() {
@@ -571,11 +585,25 @@ impl crate::backend::BackendBlas for crate::backend::Cuda {
         };
         if TypeId::of::<T>() == TypeId::of::<f32>() {
             // SAFETY: TypeId guarantees T == f32.
-            return try_lt_epilogue(a, b, Epilogue::Bias, bias_ptr, cuda_matmul_epilogue, fallback);
+            return try_lt_epilogue(
+                a,
+                b,
+                Epilogue::Bias,
+                bias_ptr,
+                cuda_matmul_epilogue,
+                fallback,
+            );
         }
         if TypeId::of::<T>() == TypeId::of::<half::bf16>() {
             // SAFETY: TypeId guarantees T == half::bf16.
-            return try_lt_epilogue(a, b, Epilogue::Bias, bias_ptr, cuda_matmul_epilogue_bf16, fallback);
+            return try_lt_epilogue(
+                a,
+                b,
+                Epilogue::Bias,
+                bias_ptr,
+                cuda_matmul_epilogue_bf16,
+                fallback,
+            );
         }
         fallback()
     }

@@ -8,12 +8,14 @@ use cudarc::nvrtc;
 
 use super::core::{CudaCtx, CudaError, CudaResult, KernelEntry};
 use super::get_ctx;
-use super::graph::{
-    AnalyzedNode, FusionCandidate, KernelClass, OptimizationReport, analyze_graph,
-};
+use super::graph::{AnalyzedNode, FusionCandidate, KernelClass, OptimizationReport, analyze_graph};
 
 fn elementwise_out_idx(class: KernelClass) -> usize {
-    if class == KernelClass::UnaryElementwise { 1 } else { 2 }
+    if class == KernelClass::UnaryElementwise {
+        1
+    } else {
+        2
+    }
 }
 
 struct ChainDataFlow {
@@ -106,7 +108,11 @@ fn trace_chain_dataflow(nodes: &[AnalyzedNode], chain: &[usize]) -> ChainDataFlo
     let last_out_idx = elementwise_out_idx(last.class);
     let final_output = last.arg_values.get(last_out_idx).copied().unwrap_or(0);
     let n_val = nodes[chain[0]].arg_values.last().copied().unwrap_or(0) & 0xFFFF_FFFF;
-    ChainDataFlow { external_inputs, final_output, n_val }
+    ChainDataFlow {
+        external_inputs,
+        final_output,
+        n_val,
+    }
 }
 
 fn generate_fused_source(
@@ -236,17 +242,29 @@ fn load_plan(key: u64) -> Option<Vec<(String, String)>> {
     Some(entries)
 }
 
-pub(super) fn compile_and_cache_kernel(ctx: &CudaCtx, name: &str, source: &str) -> CudaResult<CUfunction> {
+pub(super) fn compile_and_cache_kernel(
+    ctx: &CudaCtx,
+    name: &str,
+    source: &str,
+) -> CudaResult<CUfunction> {
     {
-        let map = ctx.kernels.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(entry) = map.get(name) { return Ok(entry.func); }
+        let map = ctx
+            .kernels
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = map.get(name) {
+            return Ok(entry.func);
+        }
     }
 
     let (major, minor) = super::core::query_compute_capability();
     let arch = super::core::nvrtc_arch(major, minor);
     let cache_path = ptx_cache_path(source, arch);
 
-    let ptx_src = if let Some(cached) = cache_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+    let ptx_src = if let Some(cached) = cache_path
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+    {
         cached
     } else {
         let ptx = nvrtc::compile_ptx_with_opts(
@@ -279,8 +297,17 @@ pub(super) fn compile_and_cache_kernel(ctx: &CudaCtx, name: &str, source: &str) 
     let func = unsafe { cudarc::driver::result::module::get_function(module, c_fn) }
         .map_err(CudaError::Driver)?;
 
-    let mut map = ctx.kernels.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-    map.insert(name.to_owned(), KernelEntry { func, _module: module });
+    let mut map = ctx
+        .kernels
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.insert(
+        name.to_owned(),
+        KernelEntry {
+            func,
+            _module: module,
+        },
+    );
     Ok(func)
 }
 
@@ -348,8 +375,11 @@ pub fn apply_fusion(
     let ops_hash = ops_chain_hash(&candidate.ops);
     let kernel_name = format!("k_opt_fuse_{ops_hash:016x}");
 
-    let Some(source) = generate_fused_source(&candidate.node_indices, analyzed, &dataflow, &kernel_name)
-    else { return Ok(false); };
+    let Some(source) =
+        generate_fused_source(&candidate.node_indices, analyzed, &dataflow, &kernel_name)
+    else {
+        return Ok(false);
+    };
 
     let ctx = get_ctx();
     let func = compile_and_cache_kernel(ctx, &kernel_name, &source)?;
@@ -463,12 +493,15 @@ pub fn optimize_with_cache(cu_graph: CUgraph) -> CudaResult<(OptimizationReport,
     let applied = apply_all_fusions(cu_graph, &analyzed, &report.fusion_candidates)?;
 
     if applied > 0 {
-        let plan_entries: Vec<(String, String)> = report.fusion_candidates.iter()
+        let plan_entries: Vec<(String, String)> = report
+            .fusion_candidates
+            .iter()
             .filter(|c| c.node_indices.len() >= 2)
             .filter_map(|c| {
                 let dataflow = trace_chain_dataflow(&analyzed, &c.node_indices);
                 let name = format!("k_opt_fuse_{:016x}", ops_chain_hash(&c.ops));
-                generate_fused_source(&c.node_indices, &analyzed, &dataflow, &name).map(|s| (name, s))
+                generate_fused_source(&c.node_indices, &analyzed, &dataflow, &name)
+                    .map(|s| (name, s))
             })
             .collect();
         save_plan(key, &plan_entries);

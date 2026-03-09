@@ -94,7 +94,9 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[must_use]
     #[cfg(feature = "cpu")]
     pub fn one_hot(indices: &[usize], n_classes: usize) -> Self {
-        Self::from_fn(indices.len(), n_classes, |r, c| if c == indices[r] { T::one() } else { T::zero() })
+        Self::from_fn(indices.len(), n_classes, |r, c| {
+            if c == indices[r] { T::one() } else { T::zero() }
+        })
     }
 
     /// Create tensor from slice with non-blocking H2D transfer.

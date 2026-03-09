@@ -1,4 +1,7 @@
-use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::kernels_cu::BLOCK_SIZE;
 use crate::scalar::Scalar;
@@ -9,7 +12,8 @@ static POOL_DEBUG_CHECKED: AtomicBool = AtomicBool::new(false);
 #[inline]
 pub(crate) fn pool_debug_enabled() -> bool {
     if !POOL_DEBUG_CHECKED.load(Ordering::Relaxed) {
-        let enabled = std::env::var("NABLA_POOL_DEBUG").is_ok_and(|v| matches!(v.as_str(), "1" | "true"));
+        let enabled =
+            std::env::var("NABLA_POOL_DEBUG").is_ok_and(|v| matches!(v.as_str(), "1" | "true"));
         POOL_DEBUG.store(enabled, Ordering::Relaxed);
         POOL_DEBUG_CHECKED.store(true, Ordering::Release);
     }
@@ -127,7 +131,10 @@ pub(crate) const KERNEL_PAIRS: &[(&str, (&str, &str))] = &[
     ),
     (
         "batch_norm_update_running",
-        ("k_batch_norm_update_running_f32", "k_batch_norm_update_running_f64"),
+        (
+            "k_batch_norm_update_running_f32",
+            "k_batch_norm_update_running_f64",
+        ),
     ),
     (
         "cross_entropy",
@@ -443,8 +450,14 @@ pub(crate) const KERNEL_ID_MAP: &[(&str, KernelId)] = &[
     ("k_batch_norm_stats_f64", KernelId::BatchNormStatsF64),
     ("k_batch_norm_fwd_f32", KernelId::BatchNormFwdF32),
     ("k_batch_norm_fwd_f64", KernelId::BatchNormFwdF64),
-    ("k_batch_norm_update_running_f32", KernelId::BatchNormUpdateRunningF32),
-    ("k_batch_norm_update_running_f64", KernelId::BatchNormUpdateRunningF64),
+    (
+        "k_batch_norm_update_running_f32",
+        KernelId::BatchNormUpdateRunningF32,
+    ),
+    (
+        "k_batch_norm_update_running_f64",
+        KernelId::BatchNormUpdateRunningF64,
+    ),
     ("k_cross_entropy_f32", KernelId::CrossEntropyF32),
     ("k_cross_entropy_f64", KernelId::CrossEntropyF64),
     ("k_sdpa_f32", KernelId::SdpaF32),
@@ -653,8 +666,10 @@ impl<P: GpuPtr> MemoryPool<P> {
             if pool_debug_enabled() {
                 eprintln!(
                     "[nabla pool] GC #{} ratio={:.3} cached={}KB keep={}KB",
-                    self.gc_count, usage_ratio,
-                    self.cached_bytes / 1024, keep / 1024,
+                    self.gc_count,
+                    usage_ratio,
+                    self.cached_bytes / 1024,
+                    keep / 1024,
                 );
             }
             self.trim(keep, free_fn);
@@ -737,10 +752,14 @@ impl<P: GpuPtr> MemoryPool<P> {
     }
 
     /// Whether the pool has been pre-warmed from recorded allocations.
-    pub fn is_warmed(&self) -> bool { self.warmed }
+    pub fn is_warmed(&self) -> bool {
+        self.warmed
+    }
 
     /// Mark the pool as warmed (called after pre_warm with recorded sizes).
-    pub fn set_warmed(&mut self) { self.warmed = true; }
+    pub fn set_warmed(&mut self) {
+        self.warmed = true;
+    }
 
     /// Returns true exactly once: when alloc_count reaches the auto-warm threshold
     /// and the pool hasn't been warmed yet. Caller should stop recording and pre-warm.
@@ -748,22 +767,32 @@ impl<P: GpuPtr> MemoryPool<P> {
         !self.warmed && self.recording && self.alloc_count >= self.auto_warm_threshold
     }
 
-
     /// Print diagnostic summary to stderr (NABLA_POOL_DEBUG=1).
     pub fn print_diagnostics(&self) {
         if !pool_debug_enabled() {
             return;
         }
         let total = self.hits + self.misses;
-        let rate = if total > 0 { self.hits as f64 / total as f64 * 100.0 } else { 0.0 };
+        let rate = if total > 0 {
+            self.hits as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        };
         eprintln!(
             "[nabla pool] hits={} misses={} rate={:.1}% gc={} alloc={}MB cached={}MB buckets=[{}]",
-            self.hits, self.misses, rate, self.gc_count,
+            self.hits,
+            self.misses,
+            rate,
+            self.gc_count,
             self.allocated_bytes / (1024 * 1024),
             self.cached_bytes / (1024 * 1024),
             (0..BUCKET_COUNT)
                 .filter(|i| !self.buckets[*i].is_empty())
-                .map(|i| format!("{}:{}", 1usize << (i as u32 + MIN_BUCKET_EXP), self.buckets[i].len()))
+                .map(|i| format!(
+                    "{}:{}",
+                    1usize << (i as u32 + MIN_BUCKET_EXP),
+                    self.buckets[i].len()
+                ))
                 .collect::<Vec<_>>()
                 .join(","),
         );

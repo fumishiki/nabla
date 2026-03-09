@@ -11,14 +11,17 @@ use cudarc::driver::{CudaContext as CudarcContext, CudaStream, result};
 use cudarc::nvrtc;
 
 use crate::cuda_backend::NablaCudaGraph;
-use crate::gpu_common::{EnsureCache, MemoryPool, RtcStorage, bucket_size, grid_1d, lock_or_recover, type_suffix};
+use crate::gpu_common::{
+    EnsureCache, MemoryPool, RtcStorage, bucket_size, grid_1d, lock_or_recover, type_suffix,
+};
 use crate::kernels_cu::{self, BLOCK_SIZE, REDUCE_GRID_CAP};
 use crate::scalar::Scalar;
 
 #[inline]
 fn wmma_jit_enabled() -> bool {
-    std::env::var("NABLA_DISABLE_WMMA_JIT")
-        .map_or(true, |v| !matches!(v.as_str(), "1" | "true" | "TRUE" | "True"))
+    std::env::var("NABLA_DISABLE_WMMA_JIT").map_or(true, |v| {
+        !matches!(v.as_str(), "1" | "true" | "TRUE" | "True")
+    })
 }
 
 static TRANSFER_H2D: AtomicU64 = AtomicU64::new(0);
@@ -126,7 +129,11 @@ impl<T, E: std::fmt::Display> ResultExt<T> for Result<T, E> {
     #[inline]
     fn or_panic(self, context: &str) -> T {
         self.unwrap_or_else(|e| {
-            if context.is_empty() { panic!("{e}") } else { panic!("{context}: {e}") }
+            if context.is_empty() {
+                panic!("{e}")
+            } else {
+                panic!("{context}: {e}")
+            }
         })
     }
 }
@@ -143,7 +150,10 @@ pub(super) type CudaPool = MemoryPool<CUdeviceptr>;
 
 /// Allocate a bucketed GPU block for the pool. Used by pre_warm and auto-warm.
 #[inline]
-pub(super) fn pool_alloc_block(stream: cudarc::driver::sys::CUstream, size: usize) -> Option<(CUdeviceptr, usize)> {
+pub(super) fn pool_alloc_block(
+    stream: cudarc::driver::sys::CUstream,
+    size: usize,
+) -> Option<(CUdeviceptr, usize)> {
     let bsz = bucket_size(size);
     // SAFETY: allocating device memory via cuMemAllocAsync.
     let dptr = unsafe { result::malloc_async(stream, bsz) }.ok()?;
@@ -204,7 +214,11 @@ impl CuBuffer {
         let added = pool.pre_warm(&warm_sizes, |sz| pool_alloc_block(stream, sz));
         pool.set_warmed();
         if crate::gpu_common::pool_debug_enabled() {
-            eprintln!("[nabla pool] auto-warm: recorded {} allocs, added {} blocks", warm_sizes.len(), added);
+            eprintln!(
+                "[nabla pool] auto-warm: recorded {} allocs, added {} blocks",
+                warm_sizes.len(),
+                added
+            );
             pool.print_diagnostics();
         }
     }
@@ -261,7 +275,11 @@ impl CuBuffer {
     fn alloc_pooled(stream: &Arc<CudaStream>, size_bytes: usize) -> CudaResult<Self> {
         let pooled = !super::cuda_graph_is_capturing();
         let (dptr, alloc_size) = Self::alloc_from_pool(stream, size_bytes)?;
-        Ok(Self { ptr: dptr, alloc_size, pooled })
+        Ok(Self {
+            ptr: dptr,
+            alloc_size,
+            pooled,
+        })
     }
 
     pub(super) fn alloc_zeros(stream: &Arc<CudaStream>, size_bytes: usize) -> CudaResult<Self> {
@@ -292,7 +310,11 @@ impl CuBuffer {
         let (dptr, alloc_size) = Self::alloc_from_pool(stream, bytes)?;
         // SAFETY: T is POD (Copy); uploading raw bytes to GPU.
         unsafe { result::memcpy_htod_async(dptr, data, stream.cu_stream())? };
-        Ok(Self { ptr: dptr, alloc_size, pooled })
+        Ok(Self {
+            ptr: dptr,
+            alloc_size,
+            pooled,
+        })
     }
 
     pub(super) fn from_host<T: Scalar>(stream: &Arc<CudaStream>, data: &[T]) -> CudaResult<Self> {
@@ -441,17 +463,27 @@ pub(super) struct CudaCtx {
 impl CudaCtx {
     #[inline]
     pub(super) fn pool_lock(&self) -> std::sync::MutexGuard<'_, CudaPool> {
-        self.pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[inline]
-    pub(super) fn kernels_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, KernelEntry>> {
-        self.kernels.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+    pub(super) fn kernels_read(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, KernelEntry>> {
+        self.kernels
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[inline]
-    pub(super) fn kernels_write(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, KernelEntry>> {
-        self.kernels.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+    pub(super) fn kernels_write(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<String, KernelEntry>> {
+        self.kernels
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -554,8 +586,7 @@ pub(super) fn get_ctx() -> &'static CudaCtx {
                 eprintln!("WMMA kernel compilation failed (falling back to tiled): {e}");
             }
         }
-        let rf =
-            |name: &str| expect_ok(get_kernel(&cuda_ctx, name), "reduce kernel missing");
+        let rf = |name: &str| expect_ok(get_kernel(&cuda_ctx, name), "reduce kernel missing");
         // SAFETY: we're still constructing the OnceLock value, so mutating is fine.
         let ctx_ptr = &cuda_ctx as *const CudaCtx as *mut CudaCtx;
         unsafe {
@@ -616,7 +647,11 @@ pub fn cuda_pool_stop_recording_and_warm() -> CudaResult<usize> {
     let added = pool.pre_warm(&sizes, |sz| pool_alloc_block(stream, sz));
     pool.set_warmed();
     if crate::gpu_common::pool_debug_enabled() {
-        eprintln!("[nabla pool] auto pre-warm: recorded {} allocs, added {} blocks", sizes.len(), added);
+        eprintln!(
+            "[nabla pool] auto pre-warm: recorded {} allocs, added {} blocks",
+            sizes.len(),
+            added
+        );
         pool.print_diagnostics();
     }
     Ok(added)
@@ -661,146 +696,428 @@ pub(super) const KERNEL_NAMES: &[&str] = &[
     "k_where_fp8e4m3",
     "k_where_fp8e5m2",
     "k_where_fp4e2m1",
-    "k_neg_f32", "k_recip_f32", "k_exp_f32", "k_ln_f32", "k_log1p_f32",
-    "k_sin_f32", "k_cos_f32", "k_tan_f32", "k_tanh_f32", "k_sqrt_f32",
-    "k_abs_f32", "k_ceil_f32", "k_floor_f32", "k_round_f32", "k_erf_f32",
-    "k_asin_f32", "k_acos_f32", "k_atan_f32", "k_atan2_f32",
-    "k_sinh_f32", "k_cosh_f32", "k_asinh_f32", "k_acosh_f32", "k_atanh_f32",
-    "k_log2_f32", "k_log10_f32", "k_sigmoid_f32", "k_silu_f32", "k_mish_f32",
-    "k_leaky_relu_f32", "k_elu_f32", "k_hardswish_f32",
-    "k_add_f32", "k_sub_f32", "k_emul_f32", "k_ediv_f32",
-    "k_scale_f32", "k_powf_f32", "k_fill_f32", "k_transpose_f32", "k_matmul_f32",
-    "k_sum_f32", "k_max_f32", "k_min_f32",
-    "k_softmax_f32", "k_layer_norm_f32", "k_rms_norm_f32", "k_group_norm_f32",
-    "k_sum_axis1_f32", "k_max_axis1_f32", "k_embedding_f32",
-    "k_cumsum_axis1_f32", "k_cumprod_axis1_f32",
-    "k_neg_f16", "k_recip_f16", "k_exp_f16", "k_ln_f16", "k_log1p_f16",
-    "k_sin_f16", "k_cos_f16", "k_tan_f16", "k_tanh_f16", "k_sqrt_f16",
-    "k_abs_f16", "k_ceil_f16", "k_floor_f16", "k_round_f16", "k_erf_f16",
-    "k_asin_f16", "k_acos_f16", "k_atan_f16", "k_atan2_f16",
-    "k_atan2_fp8e4m3", "k_atan2_fp8e5m2", "k_atan2_fp4e2m1",
-    "k_sinh_f16", "k_cosh_f16", "k_asinh_f16", "k_acosh_f16", "k_atanh_f16",
-    "k_log2_f16", "k_log10_f16", "k_sigmoid_f16", "k_silu_f16", "k_mish_f16",
-    "k_leaky_relu_f16", "k_elu_f16", "k_hardswish_f16",
-    "k_add_f16", "k_sub_f16", "k_emul_f16", "k_ediv_f16",
-    "k_scale_f16", "k_powf_f16", "k_fill_f16", "k_transpose_f16", "k_matmul_f16",
-    "k_sum_f16", "k_max_f16", "k_min_f16",
-    "k_relu_bwd_f16", "k_leaky_relu_bwd_f16", "k_elu_bwd_f16",
-    "k_gelu_bwd_f16", "k_abs_bwd_f16", "k_expand_f16",
-    "k_mse_sum_fwd_f16", "k_mse_sum_bwd_f16",
-    "k_multi_axpy3_f16", "k_axpy_f16",
-    "k_softmax_f16", "k_layer_norm_f16", "k_rms_norm_f16", "k_group_norm_f16",
-    "k_sum_axis1_f16", "k_max_axis1_f16", "k_embedding_f16",
-    "k_cumsum_axis1_f16", "k_cumprod_axis1_f16",
+    "k_neg_f32",
+    "k_recip_f32",
+    "k_exp_f32",
+    "k_ln_f32",
+    "k_log1p_f32",
+    "k_sin_f32",
+    "k_cos_f32",
+    "k_tan_f32",
+    "k_tanh_f32",
+    "k_sqrt_f32",
+    "k_abs_f32",
+    "k_ceil_f32",
+    "k_floor_f32",
+    "k_round_f32",
+    "k_erf_f32",
+    "k_asin_f32",
+    "k_acos_f32",
+    "k_atan_f32",
+    "k_atan2_f32",
+    "k_sinh_f32",
+    "k_cosh_f32",
+    "k_asinh_f32",
+    "k_acosh_f32",
+    "k_atanh_f32",
+    "k_log2_f32",
+    "k_log10_f32",
+    "k_sigmoid_f32",
+    "k_silu_f32",
+    "k_mish_f32",
+    "k_leaky_relu_f32",
+    "k_elu_f32",
+    "k_hardswish_f32",
+    "k_add_f32",
+    "k_sub_f32",
+    "k_emul_f32",
+    "k_ediv_f32",
+    "k_scale_f32",
+    "k_powf_f32",
+    "k_fill_f32",
+    "k_transpose_f32",
+    "k_matmul_f32",
+    "k_sum_f32",
+    "k_max_f32",
+    "k_min_f32",
+    "k_softmax_f32",
+    "k_layer_norm_f32",
+    "k_rms_norm_f32",
+    "k_group_norm_f32",
+    "k_sum_axis1_f32",
+    "k_max_axis1_f32",
+    "k_embedding_f32",
+    "k_cumsum_axis1_f32",
+    "k_cumprod_axis1_f32",
+    "k_neg_f16",
+    "k_recip_f16",
+    "k_exp_f16",
+    "k_ln_f16",
+    "k_log1p_f16",
+    "k_sin_f16",
+    "k_cos_f16",
+    "k_tan_f16",
+    "k_tanh_f16",
+    "k_sqrt_f16",
+    "k_abs_f16",
+    "k_ceil_f16",
+    "k_floor_f16",
+    "k_round_f16",
+    "k_erf_f16",
+    "k_asin_f16",
+    "k_acos_f16",
+    "k_atan_f16",
+    "k_atan2_f16",
+    "k_atan2_fp8e4m3",
+    "k_atan2_fp8e5m2",
+    "k_atan2_fp4e2m1",
+    "k_sinh_f16",
+    "k_cosh_f16",
+    "k_asinh_f16",
+    "k_acosh_f16",
+    "k_atanh_f16",
+    "k_log2_f16",
+    "k_log10_f16",
+    "k_sigmoid_f16",
+    "k_silu_f16",
+    "k_mish_f16",
+    "k_leaky_relu_f16",
+    "k_elu_f16",
+    "k_hardswish_f16",
+    "k_add_f16",
+    "k_sub_f16",
+    "k_emul_f16",
+    "k_ediv_f16",
+    "k_scale_f16",
+    "k_powf_f16",
+    "k_fill_f16",
+    "k_transpose_f16",
+    "k_matmul_f16",
+    "k_sum_f16",
+    "k_max_f16",
+    "k_min_f16",
+    "k_relu_bwd_f16",
+    "k_leaky_relu_bwd_f16",
+    "k_elu_bwd_f16",
+    "k_gelu_bwd_f16",
+    "k_abs_bwd_f16",
+    "k_expand_f16",
+    "k_mse_sum_fwd_f16",
+    "k_mse_sum_bwd_f16",
+    "k_multi_axpy3_f16",
+    "k_axpy_f16",
+    "k_softmax_f16",
+    "k_layer_norm_f16",
+    "k_rms_norm_f16",
+    "k_group_norm_f16",
+    "k_sum_axis1_f16",
+    "k_max_axis1_f16",
+    "k_embedding_f16",
+    "k_cumsum_axis1_f16",
+    "k_cumprod_axis1_f16",
     "k_prod_partial_f16",
-    "k_max_pool2d_with_idx_f16", "k_max_pool2d_f16",
-    "k_avg_pool2d_f16", "k_adaptive_avg_pool2d_f16",
-    "k_im2col_f16", "k_im1col_f16", "k_im3col_f16",
+    "k_max_pool2d_with_idx_f16",
+    "k_max_pool2d_f16",
+    "k_avg_pool2d_f16",
+    "k_adaptive_avg_pool2d_f16",
+    "k_im2col_f16",
+    "k_im1col_f16",
+    "k_im3col_f16",
     "k_conv_transpose2d_f16",
-    "k_batch_norm_stats_f16", "k_batch_norm_fwd_f16",
-    "k_cross_entropy_f16", "k_sdpa_f16",
-    "k_masked_fill_bf16", "k_where_bf16",
-    "k_neg_bf16", "k_recip_bf16", "k_exp_bf16", "k_ln_bf16", "k_log1p_bf16",
-    "k_sin_bf16", "k_cos_bf16", "k_tan_bf16", "k_tanh_bf16", "k_sqrt_bf16",
-    "k_abs_bf16", "k_ceil_bf16", "k_floor_bf16", "k_round_bf16", "k_erf_bf16",
-    "k_asin_bf16", "k_acos_bf16", "k_atan_bf16", "k_atan2_bf16",
-    "k_sinh_bf16", "k_cosh_bf16", "k_asinh_bf16", "k_acosh_bf16", "k_atanh_bf16",
-    "k_log2_bf16", "k_log10_bf16", "k_sigmoid_bf16", "k_silu_bf16", "k_mish_bf16",
-    "k_leaky_relu_bf16", "k_elu_bf16", "k_hardswish_bf16",
-    "k_add_bf16", "k_sub_bf16", "k_emul_bf16", "k_ediv_bf16",
-    "k_scale_bf16", "k_powf_bf16", "k_fill_bf16", "k_transpose_bf16", "k_matmul_bf16",
-    "k_sum_bf16", "k_max_bf16", "k_min_bf16",
-    "k_relu_bwd_bf16", "k_leaky_relu_bwd_bf16", "k_elu_bwd_bf16",
-    "k_gelu_bwd_bf16", "k_abs_bwd_bf16", "k_expand_bf16",
-    "k_mse_sum_fwd_bf16", "k_mse_sum_bwd_bf16",
-    "k_multi_axpy3_bf16", "k_axpy_bf16",
-    "k_softmax_bf16", "k_layer_norm_bf16", "k_rms_norm_bf16", "k_group_norm_bf16",
-    "k_sum_axis1_bf16", "k_max_axis1_bf16", "k_embedding_bf16",
-    "k_cumsum_axis1_bf16", "k_cumprod_axis1_bf16",
+    "k_batch_norm_stats_f16",
+    "k_batch_norm_fwd_f16",
+    "k_cross_entropy_f16",
+    "k_sdpa_f16",
+    "k_masked_fill_bf16",
+    "k_where_bf16",
+    "k_neg_bf16",
+    "k_recip_bf16",
+    "k_exp_bf16",
+    "k_ln_bf16",
+    "k_log1p_bf16",
+    "k_sin_bf16",
+    "k_cos_bf16",
+    "k_tan_bf16",
+    "k_tanh_bf16",
+    "k_sqrt_bf16",
+    "k_abs_bf16",
+    "k_ceil_bf16",
+    "k_floor_bf16",
+    "k_round_bf16",
+    "k_erf_bf16",
+    "k_asin_bf16",
+    "k_acos_bf16",
+    "k_atan_bf16",
+    "k_atan2_bf16",
+    "k_sinh_bf16",
+    "k_cosh_bf16",
+    "k_asinh_bf16",
+    "k_acosh_bf16",
+    "k_atanh_bf16",
+    "k_log2_bf16",
+    "k_log10_bf16",
+    "k_sigmoid_bf16",
+    "k_silu_bf16",
+    "k_mish_bf16",
+    "k_leaky_relu_bf16",
+    "k_elu_bf16",
+    "k_hardswish_bf16",
+    "k_add_bf16",
+    "k_sub_bf16",
+    "k_emul_bf16",
+    "k_ediv_bf16",
+    "k_scale_bf16",
+    "k_powf_bf16",
+    "k_fill_bf16",
+    "k_transpose_bf16",
+    "k_matmul_bf16",
+    "k_sum_bf16",
+    "k_max_bf16",
+    "k_min_bf16",
+    "k_relu_bwd_bf16",
+    "k_leaky_relu_bwd_bf16",
+    "k_elu_bwd_bf16",
+    "k_gelu_bwd_bf16",
+    "k_abs_bwd_bf16",
+    "k_expand_bf16",
+    "k_mse_sum_fwd_bf16",
+    "k_mse_sum_bwd_bf16",
+    "k_multi_axpy3_bf16",
+    "k_axpy_bf16",
+    "k_softmax_bf16",
+    "k_layer_norm_bf16",
+    "k_rms_norm_bf16",
+    "k_group_norm_bf16",
+    "k_sum_axis1_bf16",
+    "k_max_axis1_bf16",
+    "k_embedding_bf16",
+    "k_cumsum_axis1_bf16",
+    "k_cumprod_axis1_bf16",
     "k_prod_partial_bf16",
-    "k_max_pool2d_with_idx_bf16", "k_max_pool2d_bf16",
-    "k_avg_pool2d_bf16", "k_adaptive_avg_pool2d_bf16",
-    "k_im2col_bf16", "k_im1col_bf16", "k_im3col_bf16",
+    "k_max_pool2d_with_idx_bf16",
+    "k_max_pool2d_bf16",
+    "k_avg_pool2d_bf16",
+    "k_adaptive_avg_pool2d_bf16",
+    "k_im2col_bf16",
+    "k_im1col_bf16",
+    "k_im3col_bf16",
     "k_conv_transpose2d_bf16",
-    "k_batch_norm_stats_bf16", "k_batch_norm_fwd_bf16",
-    "k_cross_entropy_bf16", "k_sdpa_bf16",
-    "k_cast_f32_to_bf16", "k_cast_bf16_to_f32",
-    "k_neg_f64", "k_recip_f64", "k_exp_f64", "k_ln_f64", "k_log1p_f64",
-    "k_sin_f64", "k_cos_f64", "k_tan_f64", "k_tanh_f64", "k_sqrt_f64",
-    "k_abs_f64", "k_ceil_f64", "k_floor_f64", "k_round_f64", "k_erf_f64",
-    "k_asin_f64", "k_acos_f64", "k_atan_f64", "k_atan2_f64",
-    "k_sinh_f64", "k_cosh_f64", "k_asinh_f64", "k_acosh_f64", "k_atanh_f64",
-    "k_log2_f64", "k_log10_f64", "k_sigmoid_f64", "k_silu_f64", "k_mish_f64",
-    "k_leaky_relu_f64", "k_elu_f64", "k_hardswish_f64",
-    "k_add_f64", "k_sub_f64", "k_emul_f64", "k_ediv_f64",
-    "k_scale_f64", "k_powf_f64", "k_fill_f64", "k_transpose_f64", "k_matmul_f64",
-    "k_sum_f64", "k_max_f64", "k_min_f64",
-    "k_softmax_f64", "k_layer_norm_f64", "k_rms_norm_f64", "k_group_norm_f64",
-    "k_sum_axis1_f64", "k_max_axis1_f64", "k_embedding_f64",
-    "k_cumsum_axis1_f64", "k_cumprod_axis1_f64",
-    "k_prod_partial_f32", "k_prod_partial_f64",
-    "k_max_pool2d_f32", "k_max_pool2d_with_idx_f32",
-    "k_avg_pool2d_f32", "k_adaptive_avg_pool2d_f32",
-    "k_max_pool2d_f64", "k_max_pool2d_with_idx_f64",
-    "k_avg_pool2d_f64", "k_adaptive_avg_pool2d_f64",
-    "k_im2col_f32", "k_im2col_f64",
-    "k_im1col_f32", "k_im1col_f64",
-    "k_im3col_f32", "k_im3col_f64",
-    "k_batch_norm_stats_f32", "k_batch_norm_fwd_f32",
-    "k_batch_norm_stats_f64", "k_batch_norm_fwd_f64",
-    "k_cross_entropy_f32", "k_cross_entropy_f64",
-    "k_sdpa_f32", "k_sdpa_f64",
-    "k_conv_transpose2d_f32", "k_conv_transpose2d_f64",
-    "k_axpy_f32", "k_axpy_f64",
-    "k_relu_bwd_f32", "k_relu_bwd_f64",
-    "k_leaky_relu_bwd_f32", "k_leaky_relu_bwd_f64",
-    "k_elu_bwd_f32", "k_elu_bwd_f64",
-    "k_gelu_bwd_f32", "k_gelu_bwd_f64",
-    "k_abs_bwd_f32", "k_abs_bwd_f64",
-    "k_expand_f32", "k_expand_f64",
-    "k_mse_sum_fwd_f32", "k_mse_sum_fwd_f64",
-    "k_mse_sum_bwd_f32", "k_mse_sum_bwd_f64",
-    "k_multi_axpy3_f32", "k_multi_axpy3_f64",
-    "k_wht_f32", "k_wht_f64", "k_wht_bf16",
-    "k_wht_inverse_f32", "k_wht_inverse_f64", "k_wht_inverse_bf16",
+    "k_batch_norm_stats_bf16",
+    "k_batch_norm_fwd_bf16",
+    "k_cross_entropy_bf16",
+    "k_sdpa_bf16",
+    "k_cast_f32_to_bf16",
+    "k_cast_bf16_to_f32",
+    "k_neg_f64",
+    "k_recip_f64",
+    "k_exp_f64",
+    "k_ln_f64",
+    "k_log1p_f64",
+    "k_sin_f64",
+    "k_cos_f64",
+    "k_tan_f64",
+    "k_tanh_f64",
+    "k_sqrt_f64",
+    "k_abs_f64",
+    "k_ceil_f64",
+    "k_floor_f64",
+    "k_round_f64",
+    "k_erf_f64",
+    "k_asin_f64",
+    "k_acos_f64",
+    "k_atan_f64",
+    "k_atan2_f64",
+    "k_sinh_f64",
+    "k_cosh_f64",
+    "k_asinh_f64",
+    "k_acosh_f64",
+    "k_atanh_f64",
+    "k_log2_f64",
+    "k_log10_f64",
+    "k_sigmoid_f64",
+    "k_silu_f64",
+    "k_mish_f64",
+    "k_leaky_relu_f64",
+    "k_elu_f64",
+    "k_hardswish_f64",
+    "k_add_f64",
+    "k_sub_f64",
+    "k_emul_f64",
+    "k_ediv_f64",
+    "k_scale_f64",
+    "k_powf_f64",
+    "k_fill_f64",
+    "k_transpose_f64",
+    "k_matmul_f64",
+    "k_sum_f64",
+    "k_max_f64",
+    "k_min_f64",
+    "k_softmax_f64",
+    "k_layer_norm_f64",
+    "k_rms_norm_f64",
+    "k_group_norm_f64",
+    "k_sum_axis1_f64",
+    "k_max_axis1_f64",
+    "k_embedding_f64",
+    "k_cumsum_axis1_f64",
+    "k_cumprod_axis1_f64",
+    "k_prod_partial_f32",
+    "k_prod_partial_f64",
+    "k_max_pool2d_f32",
+    "k_max_pool2d_with_idx_f32",
+    "k_avg_pool2d_f32",
+    "k_adaptive_avg_pool2d_f32",
+    "k_max_pool2d_f64",
+    "k_max_pool2d_with_idx_f64",
+    "k_avg_pool2d_f64",
+    "k_adaptive_avg_pool2d_f64",
+    "k_im2col_f32",
+    "k_im2col_f64",
+    "k_im1col_f32",
+    "k_im1col_f64",
+    "k_im3col_f32",
+    "k_im3col_f64",
+    "k_batch_norm_stats_f32",
+    "k_batch_norm_fwd_f32",
+    "k_batch_norm_stats_f64",
+    "k_batch_norm_fwd_f64",
+    "k_cross_entropy_f32",
+    "k_cross_entropy_f64",
+    "k_sdpa_f32",
+    "k_sdpa_f64",
+    "k_conv_transpose2d_f32",
+    "k_conv_transpose2d_f64",
+    "k_axpy_f32",
+    "k_axpy_f64",
+    "k_relu_bwd_f32",
+    "k_relu_bwd_f64",
+    "k_leaky_relu_bwd_f32",
+    "k_leaky_relu_bwd_f64",
+    "k_elu_bwd_f32",
+    "k_elu_bwd_f64",
+    "k_gelu_bwd_f32",
+    "k_gelu_bwd_f64",
+    "k_abs_bwd_f32",
+    "k_abs_bwd_f64",
+    "k_expand_f32",
+    "k_expand_f64",
+    "k_mse_sum_fwd_f32",
+    "k_mse_sum_fwd_f64",
+    "k_mse_sum_bwd_f32",
+    "k_mse_sum_bwd_f64",
+    "k_multi_axpy3_f32",
+    "k_multi_axpy3_f64",
+    "k_wht_f32",
+    "k_wht_f64",
+    "k_wht_bf16",
+    "k_wht_inverse_f32",
+    "k_wht_inverse_f64",
+    "k_wht_inverse_bf16",
     // Indexing kernels (k_indexing.cuh) — f32/f64 only
-    "k_submatrix_f32", "k_submatrix_f64",
-    "k_slice_set_f32", "k_slice_set_f64",
-    "k_gather_rows_u32idx_f32", "k_gather_rows_u32idx_f64",
-    "k_gather_f32", "k_gather_f64",
-    "k_scatter_f32", "k_scatter_f64",
-    "k_index_select_f32", "k_index_select_f64",
-    "k_scatter_add_dim0_u32idx_f32", "k_scatter_add_dim0_u32idx_f64",
-    "k_scatter_add_dim1_u32idx_f32", "k_scatter_add_dim1_u32idx_f64",
-    "k_sort_rows_f32", "k_sort_rows_f64",
+    "k_submatrix_f32",
+    "k_submatrix_f64",
+    "k_slice_set_f32",
+    "k_slice_set_f64",
+    "k_gather_rows_u32idx_f32",
+    "k_gather_rows_u32idx_f64",
+    "k_gather_f32",
+    "k_gather_f64",
+    "k_scatter_f32",
+    "k_scatter_f64",
+    "k_index_select_f32",
+    "k_index_select_f64",
+    "k_scatter_add_dim0_u32idx_f32",
+    "k_scatter_add_dim0_u32idx_f64",
+    "k_scatter_add_dim1_u32idx_f32",
+    "k_scatter_add_dim1_u32idx_f64",
+    "k_sort_rows_f32",
+    "k_sort_rows_f64",
 ];
 
 pub(super) const FP8_SUFFIXES: &[&str] = &["fp8e4m3", "fp8e5m2", "fp4e2m1"];
 pub(super) const FP8_UNARY_OPS: &[&str] = &[
-    "neg", "recip", "exp", "ln", "log1p", "sin", "cos", "tan", "tanh", "sqrt",
-    "abs", "ceil", "floor", "round", "erf", "asin", "acos", "atan",
-    "sinh", "cosh", "asinh", "acosh", "atanh", "log2", "log10",
-    "sigmoid", "silu", "mish", "leaky_relu", "elu", "hardswish",
+    "neg",
+    "recip",
+    "exp",
+    "ln",
+    "log1p",
+    "sin",
+    "cos",
+    "tan",
+    "tanh",
+    "sqrt",
+    "abs",
+    "ceil",
+    "floor",
+    "round",
+    "erf",
+    "asin",
+    "acos",
+    "atan",
+    "sinh",
+    "cosh",
+    "asinh",
+    "acosh",
+    "atanh",
+    "log2",
+    "log10",
+    "sigmoid",
+    "silu",
+    "mish",
+    "leaky_relu",
+    "elu",
+    "hardswish",
 ];
 pub(super) const FP8_BINARY_OPS: &[&str] = &["add", "sub", "emul", "ediv"];
 pub(super) const FP8_EXTRA_OPS: &[&str] = &[
-    "scale", "powf", "fill", "transpose", "matmul", "sum", "max", "min",
-    "softmax", "layer_norm", "rms_norm", "group_norm",
-    "sum_axis1", "max_axis1", "embedding", "cumsum_axis1", "cumprod_axis1",
-    "prod_partial", "max_pool2d_with_idx", "max_pool2d", "avg_pool2d", "adaptive_avg_pool2d",
-    "im2col", "im1col", "im3col", "conv_transpose2d",
-    "batch_norm_stats", "batch_norm_fwd", "cross_entropy", "sdpa",
-    "axpy", "expand", "mse_sum_fwd", "mse_sum_bwd",
+    "scale",
+    "powf",
+    "fill",
+    "transpose",
+    "matmul",
+    "sum",
+    "max",
+    "min",
+    "softmax",
+    "layer_norm",
+    "rms_norm",
+    "group_norm",
+    "sum_axis1",
+    "max_axis1",
+    "embedding",
+    "cumsum_axis1",
+    "cumprod_axis1",
+    "prod_partial",
+    "max_pool2d_with_idx",
+    "max_pool2d",
+    "avg_pool2d",
+    "adaptive_avg_pool2d",
+    "im2col",
+    "im1col",
+    "im3col",
+    "conv_transpose2d",
+    "batch_norm_stats",
+    "batch_norm_fwd",
+    "cross_entropy",
+    "sdpa",
+    "axpy",
+    "expand",
+    "mse_sum_fwd",
+    "mse_sum_bwd",
 ];
 
 pub(super) const WMMA_KERNEL_NAMES: &[&str] = &["k_matmul_wmma_f16", "k_matmul_wmma_bf16"];
 
 pub(super) fn nvrtc_include_paths() -> Vec<String> {
-    ["/usr/include", "/usr/include/aarch64-linux-gnu", "/usr/include/x86_64-linux-gnu"]
-        .into_iter()
-        .filter(|p| std::path::Path::new(p).is_dir())
-        .map(ToString::to_string)
-        .collect()
+    [
+        "/usr/include",
+        "/usr/include/aarch64-linux-gnu",
+        "/usr/include/x86_64-linux-gnu",
+    ]
+    .into_iter()
+    .filter(|p| std::path::Path::new(p).is_dir())
+    .map(ToString::to_string)
+    .collect()
 }
 
 pub(super) fn compile_all_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResult<()> {
@@ -824,14 +1141,24 @@ pub(super) fn compile_all_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaResu
             eprintln!("[nabla] CUDA kernel not found in PTX: {name}");
             CudaError::from(e)
         })?;
-        map.insert(name, KernelEntry { func, _module: module });
+        map.insert(
+            name,
+            KernelEntry {
+                func,
+                _module: module,
+            },
+        );
         Ok(())
     };
     for &name in KERNEL_NAMES {
         load_kernel(&mut map, name.to_owned())?;
     }
     for &suffix in FP8_SUFFIXES {
-        for &op in FP8_UNARY_OPS.iter().chain(FP8_BINARY_OPS).chain(FP8_EXTRA_OPS) {
+        for &op in FP8_UNARY_OPS
+            .iter()
+            .chain(FP8_BINARY_OPS)
+            .chain(FP8_EXTRA_OPS)
+        {
             load_kernel(&mut map, format!("k_{op}_{suffix}"))?;
         }
     }
@@ -860,7 +1187,13 @@ pub(super) fn compile_wmma_kernels(ctx: &CudaCtx, arch: &'static str) -> CudaRes
         let c_fn = CString::new(name).map_err(|_| CudaError::NullPtr)?;
         // SAFETY: getting function handle from loaded WMMA module.
         let func = unsafe { result::module::get_function(module, c_fn)? };
-        map.insert(name.to_owned(), KernelEntry { func, _module: module });
+        map.insert(
+            name.to_owned(),
+            KernelEntry {
+                func,
+                _module: module,
+            },
+        );
     }
     Ok(())
 }
@@ -906,10 +1239,13 @@ pub(crate) fn cuda_fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> CudaSt
         let bits: u32 = unsafe { std::mem::transmute_copy::<T, f32>(&val) }.to_bits();
         // SAFETY: buf.ptr is a valid device pointer; n is the element count.
         unsafe {
-            let res = cudarc::driver::sys::cuMemsetD32Async(
-                buf.ptr, bits, n, ctx.stream.cu_stream(),
+            let res =
+                cudarc::driver::sys::cuMemsetD32Async(buf.ptr, bits, n, ctx.stream.cu_stream());
+            assert_eq!(
+                res,
+                cudarc::driver::sys::CUresult::CUDA_SUCCESS,
+                "cuMemsetD32Async failed: {res:?}"
             );
-            assert_eq!(res, cudarc::driver::sys::CUresult::CUDA_SUCCESS, "cuMemsetD32Async failed: {res:?}");
         }
         return CudaStorage::new(nrows, ncols, buf);
     }
@@ -923,10 +1259,13 @@ pub(crate) fn cuda_fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> CudaSt
         let bits: u16 = unsafe { std::mem::transmute_copy::<T, u16>(&val) };
         // SAFETY: buf.ptr is a valid device pointer; n is the element count of 16-bit values.
         unsafe {
-            let res = cudarc::driver::sys::cuMemsetD16Async(
-                buf.ptr, bits, n, ctx.stream.cu_stream(),
+            let res =
+                cudarc::driver::sys::cuMemsetD16Async(buf.ptr, bits, n, ctx.stream.cu_stream());
+            assert_eq!(
+                res,
+                cudarc::driver::sys::CUresult::CUDA_SUCCESS,
+                "cuMemsetD16Async failed: {res:?}"
             );
-            assert_eq!(res, cudarc::driver::sys::CUresult::CUDA_SUCCESS, "cuMemsetD16Async failed: {res:?}");
         }
         return CudaStorage::new(nrows, ncols, buf);
     }
@@ -958,7 +1297,9 @@ pub(crate) fn cuda_fill<T: Scalar>(nrows: usize, ncols: usize, val: T) -> CudaSt
 }
 
 pub(crate) fn cuda_from_fn<T: Scalar>(
-    nrows: usize, ncols: usize, _f: impl FnMut(usize, usize) -> T,
+    nrows: usize,
+    ncols: usize,
+    _f: impl FnMut(usize, usize) -> T,
 ) -> CudaStorage<T> {
     if matches!(
         std::env::var("NABLA_FAST_FROM_FN").as_deref(),
@@ -970,7 +1311,9 @@ pub(crate) fn cuda_from_fn<T: Scalar>(
 }
 
 pub(crate) fn cuda_from_vec_async<T: Scalar>(
-    nrows: usize, ncols: usize, data: Vec<T>,
+    nrows: usize,
+    ncols: usize,
+    data: Vec<T>,
 ) -> CudaStorage<T> {
     let ctx = get_ctx();
     let buf = expect_ok(
@@ -981,7 +1324,8 @@ pub(crate) fn cuda_from_vec_async<T: Scalar>(
 }
 
 pub(crate) fn cuda_one_hot_from_indices<T: Scalar>(
-    indices: &CudaStorage<T>, n_classes: usize,
+    indices: &CudaStorage<T>,
+    n_classes: usize,
 ) -> CudaStorage<T> {
     cuda_zeros(indices.nrows, n_classes)
 }
@@ -989,9 +1333,10 @@ pub(crate) fn cuda_one_hot_from_indices<T: Scalar>(
 pub(crate) fn cuda_get<T: Scalar>(s: &CudaStorage<T>, r: usize, c: usize) -> T {
     s.ensure_cache();
     let guard = lock_or_recover(&s.host_cache);
-    guard
-        .as_ref()
-        .map_or_else(|| panic!("cuda_get: cache missing after ensure_cache"), |cache| cache[r * s.ncols + c])
+    guard.as_ref().map_or_else(
+        || panic!("cuda_get: cache missing after ensure_cache"),
+        |cache| cache[r * s.ncols + c],
+    )
 }
 
 pub(crate) fn cuda_set<T: Scalar>(s: &mut CudaStorage<T>, r: usize, c: usize, v: T) {
@@ -1012,7 +1357,8 @@ pub(crate) fn cuda_clone<T: Scalar>(s: &CudaStorage<T>) -> CudaStorage<T> {
     if bytes > 0 {
         // SAFETY: device-to-device copy of same-sized buffers.
         unsafe {
-            let _ = result::memcpy_dtod_async(new_buf.ptr, s.buf.ptr, bytes, ctx.stream.cu_stream());
+            let _ =
+                result::memcpy_dtod_async(new_buf.ptr, s.buf.ptr, bytes, ctx.stream.cu_stream());
         }
     }
     CudaStorage {

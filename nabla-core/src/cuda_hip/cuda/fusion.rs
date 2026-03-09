@@ -17,8 +17,13 @@ fn ensure_kernel(
     _maxreg: Option<u32>,
 ) {
     {
-        let map = ctx.kernels.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if map.contains_key(kernel_name) { return; }
+        let map = ctx
+            .kernels
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if map.contains_key(kernel_name) {
+            return;
+        }
     }
     let src = src_fn();
     let _ = super::graph_compile::compile_and_cache_kernel(ctx, kernel_name, &src)
@@ -28,8 +33,13 @@ fn ensure_kernel(
 /// Compile `src` via NVRTC if not already cached, then register.
 fn ensure_kernel_src(ctx: &CudaCtx, kernel_name: &str, src: &str) {
     {
-        let map = ctx.kernels.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if map.contains_key(kernel_name) { return; }
+        let map = ctx
+            .kernels
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if map.contains_key(kernel_name) {
+            return;
+        }
     }
     let _ = super::graph_compile::compile_and_cache_kernel(ctx, kernel_name, src)
         .or_panic("NVRTC compile failed");
@@ -58,8 +68,15 @@ pub fn cuda_launch_kernel_src(
     ensure_kernel_src(ctx, kernel_name, src);
     let func = expect_ok(get_kernel(ctx, kernel_name), "CUDA kernel lookup");
     unsafe {
-        result::launch_kernel(func, grid, block, shared_bytes, ctx.stream.cu_stream(), args)
-            .or_panic("CUDA launch kernel");
+        result::launch_kernel(
+            func,
+            grid,
+            block,
+            shared_bytes,
+            ctx.stream.cu_stream(),
+            args,
+        )
+        .or_panic("CUDA launch kernel");
     }
 }
 
@@ -83,7 +100,12 @@ pub(super) fn cuda_fuse_launch<T: Scalar>(
         || {
             let type_name = if tsuf == "f32" { "float" } else { "double" };
             gpu_common::fuse_kernel_source(
-                gpu_expr, n_inputs, type_name, &kernel_name, reg_estimate, true,
+                gpu_expr,
+                n_inputs,
+                type_name,
+                &kernel_name,
+                reg_estimate,
+                true,
             )
         },
         (reg_estimate > 80).then_some(120),
@@ -99,14 +121,23 @@ pub(super) fn cuda_fuse_launch<T: Scalar>(
     let input_ptrs = unsafe { extract_input_ptrs::<T>(inputs) };
 
     let mut args: Vec<*mut c_void> = Vec::with_capacity(n_inputs + 2);
-    args.extend(input_ptrs.iter().map(|ptr| ptr as *const CUdeviceptr as *mut c_void));
+    args.extend(
+        input_ptrs
+            .iter()
+            .map(|ptr| ptr as *const CUdeviceptr as *mut c_void),
+    );
     args.push(&out_buf.ptr as *const CUdeviceptr as *mut c_void);
     args.push(&n_u32 as *const u32 as *mut c_void);
 
     // SAFETY: launching fused kernel with correct argument layout.
     unsafe {
         result::launch_kernel(
-            func, (grid, 1, 1), (BLOCK_SIZE, 1, 1), 0, ctx.stream.cu_stream(), &mut args,
+            func,
+            (grid, 1, 1),
+            (BLOCK_SIZE, 1, 1),
+            0,
+            ctx.stream.cu_stream(),
+            &mut args,
         )
         .or_panic("CUDA launch fused kernel");
     }
@@ -164,7 +195,11 @@ pub(crate) fn cuda_mega_fuse_launch<T: Scalar>(
                 gpu_common::mega_fuse_tiled_kernel_source(&op_descs, type_name, &kernel_name, true)
             } else {
                 gpu_common::mega_fuse_kernel_source(
-                    &op_descs, &op_uses_prev, type_name, &kernel_name, true,
+                    &op_descs,
+                    &op_uses_prev,
+                    type_name,
+                    &kernel_name,
+                    true,
                 )
             }
         },
@@ -190,14 +225,27 @@ pub(crate) fn cuda_mega_fuse_launch<T: Scalar>(
         let grid = grid_1d(n.div_ceil(tile_size));
 
         let mut args: Vec<*mut c_void> = Vec::with_capacity(n_inputs + ops.len() + 1);
-        args.extend(shared_input_ptrs.iter().map(|ptr| ptr as *const CUdeviceptr as *mut c_void));
-        args.extend(out_bufs.iter().map(|buf| &buf.ptr as *const CUdeviceptr as *mut c_void));
+        args.extend(
+            shared_input_ptrs
+                .iter()
+                .map(|ptr| ptr as *const CUdeviceptr as *mut c_void),
+        );
+        args.extend(
+            out_bufs
+                .iter()
+                .map(|buf| &buf.ptr as *const CUdeviceptr as *mut c_void),
+        );
         args.push(&n_u32 as *const u32 as *mut c_void);
 
         // SAFETY: launching tiled mega-kernel; argument layout matches generated source.
         unsafe {
             result::launch_kernel(
-                func, (grid, 1, 1), (BLOCK_SIZE, 1, 1), 0, ctx.stream.cu_stream(), &mut args,
+                func,
+                (grid, 1, 1),
+                (BLOCK_SIZE, 1, 1),
+                0,
+                ctx.stream.cu_stream(),
+                &mut args,
             )
             .or_panic("CUDA launch mega-fused kernel");
         }
@@ -225,7 +273,12 @@ pub(crate) fn cuda_mega_fuse_launch<T: Scalar>(
         // SAFETY: launching standard mega-fused kernel with correct argument layout.
         unsafe {
             result::launch_kernel(
-                func, (grid, 1, 1), (BLOCK_SIZE, 1, 1), 0, ctx.stream.cu_stream(), &mut args,
+                func,
+                (grid, 1, 1),
+                (BLOCK_SIZE, 1, 1),
+                0,
+                ctx.stream.cu_stream(),
+                &mut args,
             )
             .or_panic("CUDA launch mega-fused kernel");
         }
@@ -258,7 +311,12 @@ pub(crate) fn cuda_fuse_reduce_launch<T: Scalar>(
         || {
             let type_name = if tsuf == "f32" { "float" } else { "double" };
             gpu_common::fuse_reduce_kernel_source(
-                gpu_expr, n_inputs, type_name, &kernel_name, axis, true,
+                gpu_expr,
+                n_inputs,
+                type_name,
+                &kernel_name,
+                axis,
+                true,
             )
         },
         None,
@@ -282,7 +340,11 @@ pub(crate) fn cuda_fuse_reduce_launch<T: Scalar>(
     let input_ptrs = unsafe { extract_input_ptrs::<T>(inputs) };
 
     let mut args: Vec<*mut c_void> = Vec::with_capacity(n_inputs + 3);
-    args.extend(input_ptrs.iter().map(|ptr| ptr as *const CUdeviceptr as *mut c_void));
+    args.extend(
+        input_ptrs
+            .iter()
+            .map(|ptr| ptr as *const CUdeviceptr as *mut c_void),
+    );
     args.push(&out_buf.ptr as *const CUdeviceptr as *mut c_void);
     args.push(&rows_u32 as *const u32 as *mut c_void);
     args.push(&cols_u32 as *const u32 as *mut c_void);
@@ -290,7 +352,12 @@ pub(crate) fn cuda_fuse_reduce_launch<T: Scalar>(
     // SAFETY: launching fused map-reduce kernel with correct argument layout.
     unsafe {
         result::launch_kernel(
-            func, (grid_dim, 1, 1), (BLOCK_SIZE, 1, 1), 0, ctx.stream.cu_stream(), &mut args,
+            func,
+            (grid_dim, 1, 1),
+            (BLOCK_SIZE, 1, 1),
+            0,
+            ctx.stream.cu_stream(),
+            &mut args,
         )
         .or_panic("CUDA launch fuse-reduce kernel");
     }

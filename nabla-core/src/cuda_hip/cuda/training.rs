@@ -17,17 +17,29 @@ pub struct TrainingGraph {
 impl TrainingGraph {
     #[must_use]
     pub fn new() -> Self {
-        Self { graph: None, warmup_iters: 5, iter_count: 0, min_nodes: 3, capture_disabled: false }
+        Self {
+            graph: None,
+            warmup_iters: 5,
+            iter_count: 0,
+            min_nodes: 3,
+            capture_disabled: false,
+        }
     }
 
     #[must_use]
     pub fn with_warmup(warmup_iters: usize) -> Self {
-        Self { warmup_iters, ..Self::new() }
+        Self {
+            warmup_iters,
+            ..Self::new()
+        }
     }
 
     #[must_use]
     pub fn with_min_nodes(min_nodes: usize) -> Self {
-        Self { min_nodes: min_nodes.max(1), ..Self::new() }
+        Self {
+            min_nodes: min_nodes.max(1),
+            ..Self::new()
+        }
     }
 
     pub fn step<F: FnMut()>(&mut self, f: &mut F) -> CudaResult<()> {
@@ -110,14 +122,21 @@ fn build_bindings(tracked_ptrs: &[u64], kernel_nodes: &[KernelNodeState]) -> Vec
     tracked_ptrs
         .iter()
         .map(|&ptr| {
-            let refs = kernel_nodes.iter().enumerate()
+            let refs = kernel_nodes
+                .iter()
+                .enumerate()
                 .flat_map(|(ni, node)| {
-                    node.arg_bytes.iter().enumerate()
+                    node.arg_bytes
+                        .iter()
+                        .enumerate()
                         .filter(move |&(_, &v)| v == ptr)
                         .map(move |(ai, _)| (ni, ai))
                 })
                 .collect();
-            ParamBinding { original_ptr: ptr, refs }
+            ParamBinding {
+                original_ptr: ptr,
+                refs,
+            }
         })
         .collect()
 }
@@ -437,13 +456,28 @@ impl<T: Scalar> GpuTape<T> {
             GpuOp::Neg { a_id, .. } => patch!(Neg { a_id }),
             GpuOp::Scale { a_id, s_idx, .. } => patch!(Scale { a_id, s_idx }),
             GpuOp::Emul { a_id, b_id, .. } => patch!(Emul { a_id, b_id }),
-            GpuOp::Matmul { a_id, b_id, m, k, n, .. } => patch!(Matmul { a_id, b_id, m, k, n }),
+            GpuOp::Matmul {
+                a_id,
+                b_id,
+                m,
+                k,
+                n,
+                ..
+            } => patch!(Matmul {
+                a_id,
+                b_id,
+                m,
+                k,
+                n
+            }),
             GpuOp::Exp { a_id, .. } => patch!(Exp { a_id }),
             GpuOp::Ln { a_id, .. } => patch!(Ln { a_id }),
             GpuOp::Sin { a_id, .. } => patch!(Sin { a_id }),
             GpuOp::Cos { a_id, .. } => patch!(Cos { a_id }),
             GpuOp::Tanh { a_id, .. } => patch!(Tanh { a_id }),
-            GpuOp::SumAll { a_id, rows, cols, .. } => patch!(SumAll { a_id, rows, cols }),
+            GpuOp::SumAll {
+                a_id, rows, cols, ..
+            } => patch!(SumAll { a_id, rows, cols }),
         };
         self.ops.push(patched);
         out_id

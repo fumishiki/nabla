@@ -10,11 +10,7 @@ use crate::scalar::Scalar;
 use super::*;
 
 /// Launch a unary kernel with a scalar parameter: kernel(input, scalar, output, n).
-pub(super) fn launch_unary_scalar<T: Scalar>(
-    a: &CudaStorage<T>,
-    s: T,
-    op: &str,
-) -> CudaStorage<T> {
+pub(super) fn launch_unary_scalar<T: Scalar>(a: &CudaStorage<T>, s: T, op: &str) -> CudaStorage<T> {
     let ctx = get_ctx();
     let n = a.n();
     let mut nbuf = [0u8; 64];

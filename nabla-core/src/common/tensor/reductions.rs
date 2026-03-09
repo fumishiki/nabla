@@ -174,8 +174,16 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
             other.nrows() == 1 || other.ncols() == 1,
             "nabla: outer expects other to be a vector"
         );
-        let a = if self.ncols() == 1 { self.clone() } else { self.t() };
-        let b = if other.nrows() == 1 { other.clone() } else { other.t() };
+        let a = if self.ncols() == 1 {
+            self.clone()
+        } else {
+            self.t()
+        };
+        let b = if other.nrows() == 1 {
+            other.clone()
+        } else {
+            other.t()
+        };
         &a * &b
     }
 
@@ -410,7 +418,12 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
         B::count_nonzero(&self.storage)
     }
 
-    fn cum_op(&self, axis: usize, axis1_fn: impl FnOnce(&B::Storage<T>) -> B::Storage<T>, name: &str) -> Self {
+    fn cum_op(
+        &self,
+        axis: usize,
+        axis1_fn: impl FnOnce(&B::Storage<T>) -> B::Storage<T>,
+        name: &str,
+    ) -> Self {
         match axis {
             1 => Self::from_storage(axis1_fn(&self.storage)),
             0 => {
@@ -423,7 +436,11 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     }
 
     fn resolve_dim(dim: i64, op: &str) -> usize {
-        let axis = if dim < 0 { (2i64 + dim) as isize } else { dim as isize };
+        let axis = if dim < 0 {
+            (2i64 + dim) as isize
+        } else {
+            dim as isize
+        };
         Self::resolve_axis(axis, op)
     }
 
@@ -493,7 +510,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[cfg(feature = "cpu")]
     pub fn filter_sum(&self, pred: impl Fn(T) -> bool) -> T {
         let (m, n) = self.shape();
-        (0..m).flat_map(|r| (0..n).map(move |c| self.get(r, c)))
+        (0..m)
+            .flat_map(|r| (0..n).map(move |c| self.get(r, c)))
             .filter(|v| pred(*v))
             .fold(T::zero(), |acc, v| acc + v)
     }
@@ -503,7 +521,8 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
     #[cfg(feature = "cpu")]
     pub fn count_where(&self, pred: impl Fn(T) -> bool) -> usize {
         let (m, n) = self.shape();
-        (0..m).flat_map(|r| (0..n).map(move |c| self.get(r, c)))
+        (0..m)
+            .flat_map(|r| (0..n).map(move |c| self.get(r, c)))
             .filter(|v| pred(*v))
             .count()
     }

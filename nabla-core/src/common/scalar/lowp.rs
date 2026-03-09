@@ -5,10 +5,19 @@ use super::{MathOps, ReductionOps, Scalar, erf_approx};
 
 /// Quantize `f32` to low-precision: `M` mantissa bits, `BIAS`, `EMIN`, `EMAX`, `SIGN_BIT` position.
 #[inline]
-fn quantize_lowp<const M: i32, const BIAS: i32, const EMIN: i32, const EMAX: i32, const SIGN_BIT: u8>(
-    v: f32, mask: u8,
+fn quantize_lowp<
+    const M: i32,
+    const BIAS: i32,
+    const EMIN: i32,
+    const EMAX: i32,
+    const SIGN_BIT: u8,
+>(
+    v: f32,
+    mask: u8,
 ) -> u8 {
-    if v == 0.0 { return 0; }
+    if v == 0.0 {
+        return 0;
+    }
     let sign = u8::from(v.is_sign_negative());
     let av = v.abs();
     if !av.is_finite() {
@@ -16,7 +25,9 @@ fn quantize_lowp<const M: i32, const BIAS: i32, const EMIN: i32, const EMAX: i32
         return ((sign << SIGN_BIT) | (exp_bits << M) | ((1u8 << M) - 1)) & mask;
     }
     let mut exp = av.log2().floor() as i32;
-    if exp < EMIN { return 0; }
+    if exp < EMIN {
+        return 0;
+    }
     let mant_bits;
     if exp > EMAX {
         exp = EMAX;
@@ -27,7 +38,10 @@ fn quantize_lowp<const M: i32, const BIAS: i32, const EMIN: i32, const EMAX: i32
         if mant_i >= (1 << M) {
             mant_i = 0;
             exp += 1;
-            if exp > EMAX { exp = EMAX; mant_i = (1 << M) - 1; }
+            if exp > EMAX {
+                exp = EMAX;
+                mant_i = (1 << M) - 1;
+            }
         }
         mant_bits = mant_i;
     }
@@ -37,10 +51,13 @@ fn quantize_lowp<const M: i32, const BIAS: i32, const EMIN: i32, const EMAX: i32
 /// Dequantize low-precision bits to `f32`: `M` mantissa bits, `BIAS`, `SIGN_BIT`, `EXP_MASK`.
 #[inline]
 fn dequantize_lowp<const M: i32, const BIAS: i32, const SIGN_BIT: u8, const EXP_MASK: u8>(
-    bits: u8, premask: u8,
+    bits: u8,
+    premask: u8,
 ) -> f32 {
     let b = bits & premask;
-    if b == 0 { return 0.0; }
+    if b == 0 {
+        return 0.0;
+    }
     let sign = (b >> SIGN_BIT) & 1;
     let exp = i32::from((b >> M) & EXP_MASK) - BIAS;
     let mant = 1.0 + i32::from(b & ((1 << M) - 1) as u8) as f32 / (1 << M) as f32;
@@ -48,12 +65,30 @@ fn dequantize_lowp<const M: i32, const BIAS: i32, const SIGN_BIT: u8, const EXP_
     if sign == 1 { -v } else { v }
 }
 
-#[inline] fn quantize_fp8_e4m3(v: f32) -> u8 { quantize_lowp::<3, 7, -6, 7, 7>(v, 0xff) }
-#[inline] fn dequantize_fp8_e4m3(b: u8) -> f32 { dequantize_lowp::<3, 7, 7, 0x0f>(b, 0xff) }
-#[inline] fn quantize_fp8_e5m2(v: f32) -> u8 { quantize_lowp::<2, 15, -14, 15, 7>(v, 0xff) }
-#[inline] fn dequantize_fp8_e5m2(b: u8) -> f32 { dequantize_lowp::<2, 15, 7, 0x1f>(b, 0xff) }
-#[inline] fn quantize_fp4_e2m1(v: f32) -> u8 { quantize_lowp::<1, 1, -1, 2, 3>(v, 0x0f) }
-#[inline] fn dequantize_fp4_e2m1(b: u8) -> f32 { dequantize_lowp::<1, 1, 3, 0x03>(b, 0x0f) }
+#[inline]
+fn quantize_fp8_e4m3(v: f32) -> u8 {
+    quantize_lowp::<3, 7, -6, 7, 7>(v, 0xff)
+}
+#[inline]
+fn dequantize_fp8_e4m3(b: u8) -> f32 {
+    dequantize_lowp::<3, 7, 7, 0x0f>(b, 0xff)
+}
+#[inline]
+fn quantize_fp8_e5m2(v: f32) -> u8 {
+    quantize_lowp::<2, 15, -14, 15, 7>(v, 0xff)
+}
+#[inline]
+fn dequantize_fp8_e5m2(b: u8) -> f32 {
+    dequantize_lowp::<2, 15, 7, 0x1f>(b, 0xff)
+}
+#[inline]
+fn quantize_fp4_e2m1(v: f32) -> u8 {
+    quantize_lowp::<1, 1, -1, 2, 3>(v, 0x0f)
+}
+#[inline]
+fn dequantize_fp4_e2m1(b: u8) -> f32 {
+    dequantize_lowp::<1, 1, 3, 0x03>(b, 0x0f)
+}
 
 #[repr(transparent)]
 #[derive(Copy, Clone, Default, PartialEq, Eq)]

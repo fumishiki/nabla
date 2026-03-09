@@ -309,10 +309,30 @@ macro_rules! mag2 {
 macro_rules! impl_complex_reduction {
     ($ty:ty) => {
         impl ReductionOps for $ty {
-            #[inline] fn reduction_add(self, other: Self) -> Self { self + other }
-            #[inline] fn reduction_max(self, other: Self) -> Self { if mag2!(self) >= mag2!(other) { self } else { other } }
-            #[inline] fn reduction_min(self, other: Self) -> Self { if mag2!(self) <= mag2!(other) { self } else { other } }
-            #[inline] fn reduction_gt(self, other: Self) -> bool { mag2!(self) > mag2!(other) }
+            #[inline]
+            fn reduction_add(self, other: Self) -> Self {
+                self + other
+            }
+            #[inline]
+            fn reduction_max(self, other: Self) -> Self {
+                if mag2!(self) >= mag2!(other) {
+                    self
+                } else {
+                    other
+                }
+            }
+            #[inline]
+            fn reduction_min(self, other: Self) -> Self {
+                if mag2!(self) <= mag2!(other) {
+                    self
+                } else {
+                    other
+                }
+            }
+            #[inline]
+            fn reduction_gt(self, other: Self) -> bool {
+                mag2!(self) > mag2!(other)
+            }
         }
     };
 }
@@ -325,13 +345,31 @@ macro_rules! impl_complex_scalar {
         impl Scalar for $T {
             type Real = $F;
             const IS_REAL: bool = false;
-            #[inline] fn zero() -> Self { Complex::new(0.0, 0.0) }
-            #[inline] fn one() -> Self { Complex::new(1.0, 0.0) }
-            #[inline] fn conj(self) -> Self { Complex::new(self.re, -self.im) }
-            #[inline] fn abs_val(self) -> Self::Real { self.norm() }
+            #[inline]
+            fn zero() -> Self {
+                Complex::new(0.0, 0.0)
+            }
+            #[inline]
+            fn one() -> Self {
+                Complex::new(1.0, 0.0)
+            }
+            #[inline]
+            fn conj(self) -> Self {
+                Complex::new(self.re, -self.im)
+            }
+            #[inline]
+            fn abs_val(self) -> Self::Real {
+                self.norm()
+            }
             #[allow(clippy::cast_possible_truncation)]
-            #[inline] fn from_f64(v: f64) -> Self { $from_f64(v) }
-            #[inline] fn to_f64(self) -> f64 { $to_f64(self) }
+            #[inline]
+            fn from_f64(v: f64) -> Self {
+                $from_f64(v)
+            }
+            #[inline]
+            fn to_f64(self) -> f64 {
+                $to_f64(self)
+            }
         }
     };
 }

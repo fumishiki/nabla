@@ -24,6 +24,7 @@ pub(super) use ops::*;
 pub(super) use reduce::*;
 pub(super) use training::*;
 
+pub(crate) use backend::{launch_unary, launch_unary_inplace};
 pub use blas_ops::{cuda_matmul_epilogue, cuda_matmul_epilogue_bf16};
 pub use core::{
     CuBuffer, CudaError, CudaResult, CudaStorage, Epilogue, cuda_compute_stream,
@@ -33,14 +34,13 @@ pub use core::{
 };
 pub use fusion::cuda_launch_kernel_src;
 pub use graph::{
-    AllocationProfile, AnalyzedNode, CondCmp, ConditionalGraph, ConditionalKind,
-    EpilogueCandidate, FusionCandidate, KernelClass, KernelNodeState, NablaCudaGraph,
-    OptimizationReport, PyGraph, PyGraphTrainingGraph, TransposeElimCandidate, analyze_graph,
-    cuda_conditional_set_from_scalar, cuda_copy_from_host, cuda_graph_capture,
-    cuda_graph_capture_cached, cuda_if_positive, cuda_to_vec_async, extract_allocation_profile,
+    AllocationProfile, AnalyzedNode, CondCmp, ConditionalGraph, ConditionalKind, EpilogueCandidate,
+    FusionCandidate, KernelClass, KernelNodeState, NablaCudaGraph, OptimizationReport, PyGraph,
+    PyGraphTrainingGraph, TransposeElimCandidate, analyze_graph, cuda_conditional_set_from_scalar,
+    cuda_copy_from_host, cuda_graph_capture, cuda_graph_capture_cached, cuda_if_positive,
+    cuda_to_vec_async, extract_allocation_profile,
 };
 pub use graph_compile::{apply_all_fusions, apply_fusion, optimize_with_cache};
+pub(crate) use ops::cuda_scale_inplace;
 pub use training::{DoubleBuffer, NablaGraph, TrainingGraph};
 pub(crate) use training::{GpuOp, GpuTape};
-pub(crate) use backend::{launch_unary, launch_unary_inplace};
-pub(crate) use ops::cuda_scale_inplace;

@@ -62,9 +62,20 @@ unsafe fn gemm_ex_typed<T: Scalar>(
     } else if TypeId::of::<T>() == TypeId::of::<f64>() {
         unsafe {
             cublas_result::dgemm(
-                ctx.blas.0, op_b, op_a, n, m, k,
-                &alpha_f64, b_ptr as *const f64, ldb, a_ptr as *const f64, lda,
-                &beta_f64, out_ptr as *mut f64, ldc,
+                ctx.blas.0,
+                op_b,
+                op_a,
+                n,
+                m,
+                k,
+                &alpha_f64,
+                b_ptr as *const f64,
+                ldb,
+                a_ptr as *const f64,
+                lda,
+                &beta_f64,
+                out_ptr as *mut f64,
+                ldc,
             )
             .or_panic(label);
         }
@@ -89,10 +100,23 @@ unsafe fn gemm_ex_typed<T: Scalar>(
 
     unsafe {
         cublas_result::gemm_ex(
-            ctx.blas.0, op_b, op_a, n, m, k,
-            params.alpha_ptr, b_ptr as *const c_void, params.data_type, ldb,
-            a_ptr as *const c_void, params.data_type, lda,
-            params.beta_ptr, out_ptr as *mut c_void, params.data_type, ldc,
+            ctx.blas.0,
+            op_b,
+            op_a,
+            n,
+            m,
+            k,
+            params.alpha_ptr,
+            b_ptr as *const c_void,
+            params.data_type,
+            ldb,
+            a_ptr as *const c_void,
+            params.data_type,
+            lda,
+            params.beta_ptr,
+            out_ptr as *mut c_void,
+            params.data_type,
+            ldc,
             params.compute_type,
             cublas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
         )
@@ -124,10 +148,18 @@ unsafe fn sgemv_fast(
     // SAFETY: pointers are valid GPU buffers; alpha/beta on host stack.
     unsafe {
         cublas_result::sgemv(
-            ctx.blas.0, op, rows, cols, &alpha,
-            mat_ptr as *const f32, ld,
-            vec_ptr as *const f32, 1,
-            &beta, out_ptr as *mut f32, 1,
+            ctx.blas.0,
+            op,
+            rows,
+            cols,
+            &alpha,
+            mat_ptr as *const f32,
+            ld,
+            vec_ptr as *const f32,
+            1,
+            &beta,
+            out_ptr as *mut f32,
+            1,
         )
         .or_panic(label);
     }
@@ -199,7 +231,19 @@ pub(super) fn cublas_gemm<T: Scalar>(
     // f32 GEMV fast path
     if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() && m == 1 {
         // SAFETY: TypeId guarantees T == f32; pointers are valid GPU buffers.
-        unsafe { sgemv_fast(ctx, cublas_sys::cublasOperation_t::CUBLAS_OP_N, n, k, b.buf.ptr, n, a.buf.ptr, out.buf.ptr, "cuBLAS sgemv") };
+        unsafe {
+            sgemv_fast(
+                ctx,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                n,
+                k,
+                b.buf.ptr,
+                n,
+                a.buf.ptr,
+                out.buf.ptr,
+                "cuBLAS sgemv",
+            )
+        };
         return;
     }
 
@@ -209,7 +253,15 @@ pub(super) fn cublas_gemm<T: Scalar>(
             ctx,
             cublas_sys::cublasOperation_t::CUBLAS_OP_N,
             cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-            n, m, k, b.buf.ptr, n, a.buf.ptr, k, out.buf.ptr, n,
+            n,
+            m,
+            k,
+            b.buf.ptr,
+            n,
+            a.buf.ptr,
+            k,
+            out.buf.ptr,
+            n,
             "cuBLAS gemm_ex",
         )
     };
@@ -236,7 +288,19 @@ pub(super) fn cublas_gemm_tn<T: Scalar>(
     // f32 GEMV fast path
     if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() && m == 1 {
         // SAFETY: TypeId guarantees T == f32; pointers are valid GPU buffers.
-        unsafe { sgemv_fast(ctx, cublas_sys::cublasOperation_t::CUBLAS_OP_N, n, k, b.buf.ptr, n, a.buf.ptr, out.buf.ptr, "cuBLAS sgemv tn") };
+        unsafe {
+            sgemv_fast(
+                ctx,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_N,
+                n,
+                k,
+                b.buf.ptr,
+                n,
+                a.buf.ptr,
+                out.buf.ptr,
+                "cuBLAS sgemv tn",
+            )
+        };
         return;
     }
 
@@ -246,7 +310,15 @@ pub(super) fn cublas_gemm_tn<T: Scalar>(
             ctx,
             cublas_sys::cublasOperation_t::CUBLAS_OP_N,
             cublas_sys::cublasOperation_t::CUBLAS_OP_T,
-            n, m, k, b.buf.ptr, n, a.buf.ptr, m, out.buf.ptr, n,
+            n,
+            m,
+            k,
+            b.buf.ptr,
+            n,
+            a.buf.ptr,
+            m,
+            out.buf.ptr,
+            n,
             "cuBLAS gemm_ex tn",
         )
     };
@@ -274,7 +346,19 @@ pub(super) fn cublas_gemm_nt<T: Scalar>(
     // f32 GEMV fast path
     if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() && m == 1 {
         // SAFETY: TypeId guarantees T == f32; pointers are valid GPU buffers.
-        unsafe { sgemv_fast(ctx, cublas_sys::cublasOperation_t::CUBLAS_OP_T, k, n, b.buf.ptr, k, a.buf.ptr, out.buf.ptr, "cuBLAS sgemv nt") };
+        unsafe {
+            sgemv_fast(
+                ctx,
+                cublas_sys::cublasOperation_t::CUBLAS_OP_T,
+                k,
+                n,
+                b.buf.ptr,
+                k,
+                a.buf.ptr,
+                out.buf.ptr,
+                "cuBLAS sgemv nt",
+            )
+        };
         return;
     }
 
@@ -284,7 +368,15 @@ pub(super) fn cublas_gemm_nt<T: Scalar>(
             ctx,
             cublas_sys::cublasOperation_t::CUBLAS_OP_T,
             cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-            n, m, k, b.buf.ptr, k, a.buf.ptr, k, out.buf.ptr, n,
+            n,
+            m,
+            k,
+            b.buf.ptr,
+            k,
+            a.buf.ptr,
+            k,
+            out.buf.ptr,
+            n,
             "cuBLAS gemm_ex nt",
         )
     };
@@ -333,8 +425,24 @@ pub(crate) fn cuda_matmul_epilogue_fallback<T: Scalar>(
     let n = gemm_out.ncols;
     let in_ptr = &raw const gemm_out as *const CudaStorage<T> as *const u8;
     match epilogue_id {
-        0 => cuda_fuse_launch::<T>(&[in_ptr], m, n, EPILOGUE_RELU_EXPR, EPILOGUE_RELU_HASH, 1, 4),
-        1 => cuda_fuse_launch::<T>(&[in_ptr], m, n, EPILOGUE_GELU_EXPR, EPILOGUE_GELU_HASH, 1, 8),
+        0 => cuda_fuse_launch::<T>(
+            &[in_ptr],
+            m,
+            n,
+            EPILOGUE_RELU_EXPR,
+            EPILOGUE_RELU_HASH,
+            1,
+            4,
+        ),
+        1 => cuda_fuse_launch::<T>(
+            &[in_ptr],
+            m,
+            n,
+            EPILOGUE_GELU_EXPR,
+            EPILOGUE_GELU_HASH,
+            1,
+            8,
+        ),
         _ => gemm_out,
     }
 }
@@ -354,98 +462,116 @@ unsafe fn lt_gemm_core(
     c_type: lts::cudaDataType_t,
     compute_type: lts::cublasComputeType_t,
     scale_type: lts::cudaDataType_t,
-    m: u64, k: u64, n: u64,
+    m: u64,
+    k: u64,
+    n: u64,
     a_ptr: CUdeviceptr,
     b_ptr: CUdeviceptr,
     out_ptr: CUdeviceptr,
     epilogue: Option<(&Epilogue, Option<CUdeviceptr>, Option<lts::cudaDataType_t>)>,
-) -> Result<(), CudaError> { unsafe {
-    let layout_b = lt::create_matrix_layout(ab_type, n, k, n as i64)?;
-    let layout_a = lt::create_matrix_layout(ab_type, k, m, k as i64)?;
-    let layout_c = lt::create_matrix_layout(c_type, n, m, n as i64)?;
+) -> Result<(), CudaError> {
+    unsafe {
+        let layout_b = lt::create_matrix_layout(ab_type, n, k, n as i64)?;
+        let layout_a = lt::create_matrix_layout(ab_type, k, m, k as i64)?;
+        let layout_c = lt::create_matrix_layout(c_type, n, m, n as i64)?;
 
-    let matmul_desc = lt::create_matmul_desc(compute_type, scale_type)?;
+        let matmul_desc = lt::create_matmul_desc(compute_type, scale_type)?;
 
-    if let Some((epi, bias, bias_type)) = epilogue {
-        let lt_epi: lts::cublasLtEpilogue_t = match epi {
-            Epilogue::None => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_DEFAULT,
-            Epilogue::Relu => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_RELU,
-            Epilogue::Gelu => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_GELU,
-            Epilogue::Bias => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_BIAS,
-            Epilogue::ReluBias => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_RELU_BIAS,
-            Epilogue::GeluBias => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_GELU_BIAS,
-        };
+        if let Some((epi, bias, bias_type)) = epilogue {
+            let lt_epi: lts::cublasLtEpilogue_t = match epi {
+                Epilogue::None => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_DEFAULT,
+                Epilogue::Relu => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_RELU,
+                Epilogue::Gelu => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_GELU,
+                Epilogue::Bias => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_BIAS,
+                Epilogue::ReluBias => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_RELU_BIAS,
+                Epilogue::GeluBias => lts::cublasLtEpilogue_t::CUBLASLT_EPILOGUE_GELU_BIAS,
+            };
 
-        // SAFETY: matmul_desc is valid; lt_epi is a pod value matching the attribute size.
-        lt::set_matmul_desc_attribute(
-            matmul_desc,
-            lts::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_EPILOGUE,
-            &lt_epi as *const lts::cublasLtEpilogue_t as *const c_void,
-            std::mem::size_of::<lts::cublasLtEpilogue_t>(),
-        )?;
+            // SAFETY: matmul_desc is valid; lt_epi is a pod value matching the attribute size.
+            lt::set_matmul_desc_attribute(
+                matmul_desc,
+                lts::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_EPILOGUE,
+                &lt_epi as *const lts::cublasLtEpilogue_t as *const c_void,
+                std::mem::size_of::<lts::cublasLtEpilogue_t>(),
+            )?;
 
-        if let Some(bias_ptr) = bias {
-            if matches!(epi, Epilogue::Bias | Epilogue::ReluBias | Epilogue::GeluBias) {
-                // SAFETY: bias_ptr is a valid device pointer supplied by the caller.
-                lt::set_matmul_desc_attribute(
-                    matmul_desc,
-                    lts::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_BIAS_POINTER,
-                    &bias_ptr as *const CUdeviceptr as *const c_void,
-                    std::mem::size_of::<CUdeviceptr>(),
-                )?;
-                if let Some(bt) = bias_type {
+            if let Some(bias_ptr) = bias {
+                if matches!(
+                    epi,
+                    Epilogue::Bias | Epilogue::ReluBias | Epilogue::GeluBias
+                ) {
+                    // SAFETY: bias_ptr is a valid device pointer supplied by the caller.
                     lt::set_matmul_desc_attribute(
+                        matmul_desc,
+                        lts::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_BIAS_POINTER,
+                        &bias_ptr as *const CUdeviceptr as *const c_void,
+                        std::mem::size_of::<CUdeviceptr>(),
+                    )?;
+                    if let Some(bt) = bias_type {
+                        lt::set_matmul_desc_attribute(
                         matmul_desc,
                         lts::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_BIAS_DATA_TYPE,
                         &bt as *const lts::cudaDataType_t as *const c_void,
                         std::mem::size_of::<lts::cudaDataType_t>(),
                     )?;
+                    }
                 }
             }
         }
+
+        let matmul_pref = lt::create_matmul_pref()?;
+        // SAFETY: matmul_pref is valid; size is a pod usize matching the preference attribute.
+        lt::set_matmul_pref_attribute(
+            matmul_pref,
+            lts::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+            &ctx.blas_lt_workspace_size as *const usize as *const c_void,
+            std::mem::size_of::<usize>(),
+        )?;
+
+        // SAFETY: all descriptors/layouts are valid; heuristic output is written by the library.
+        let heuristic = lt::get_matmul_algo_heuristic(
+            ctx.blas_lt.0,
+            matmul_desc,
+            layout_b,
+            layout_a,
+            layout_c,
+            layout_c,
+            matmul_pref,
+        )?;
+
+        let alpha = 1.0f32;
+        let beta = 0.0f32;
+
+        // SAFETY: all handles/layouts/pointers are valid; alpha/beta are f32 stack scalars.
+        lt::matmul(
+            ctx.blas_lt.0,
+            matmul_desc,
+            &alpha as *const f32 as *const c_void,
+            &beta as *const f32 as *const c_void,
+            b_ptr as *const c_void,
+            layout_b,
+            a_ptr as *const c_void,
+            layout_a,
+            out_ptr as *const c_void,
+            layout_c,
+            out_ptr as *mut c_void,
+            layout_c,
+            &heuristic.algo,
+            ctx.blas_lt_workspace as *mut c_void,
+            ctx.blas_lt_workspace_size,
+            ctx.stream.cu_stream() as lts::cudaStream_t,
+        )?;
+
+        // SAFETY: destroy calls are safe after the matmul has been enqueued on the stream.
+        let _ = lt::destroy_matmul_pref(matmul_pref);
+        let _ = lt::destroy_matmul_desc(matmul_desc);
+        let _ = lt::destroy_matrix_layout(layout_c);
+        let _ = lt::destroy_matrix_layout(layout_a);
+        let _ = lt::destroy_matrix_layout(layout_b);
+
+        Ok(())
     }
-
-    let matmul_pref = lt::create_matmul_pref()?;
-    // SAFETY: matmul_pref is valid; size is a pod usize matching the preference attribute.
-    lt::set_matmul_pref_attribute(
-        matmul_pref,
-        lts::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
-        &ctx.blas_lt_workspace_size as *const usize as *const c_void,
-        std::mem::size_of::<usize>(),
-    )?;
-
-    // SAFETY: all descriptors/layouts are valid; heuristic output is written by the library.
-    let heuristic = lt::get_matmul_algo_heuristic(
-        ctx.blas_lt.0, matmul_desc, layout_b, layout_a, layout_c, layout_c, matmul_pref,
-    )?;
-
-    let alpha = 1.0f32;
-    let beta = 0.0f32;
-
-    // SAFETY: all handles/layouts/pointers are valid; alpha/beta are f32 stack scalars.
-    lt::matmul(
-        ctx.blas_lt.0, matmul_desc,
-        &alpha as *const f32 as *const c_void,
-        &beta as *const f32 as *const c_void,
-        b_ptr as *const c_void, layout_b,
-        a_ptr as *const c_void, layout_a,
-        out_ptr as *const c_void, layout_c,
-        out_ptr as *mut c_void, layout_c,
-        &heuristic.algo,
-        ctx.blas_lt_workspace as *mut c_void,
-        ctx.blas_lt_workspace_size,
-        ctx.stream.cu_stream() as lts::cudaStream_t,
-    )?;
-
-    // SAFETY: destroy calls are safe after the matmul has been enqueued on the stream.
-    let _ = lt::destroy_matmul_pref(matmul_pref);
-    let _ = lt::destroy_matmul_desc(matmul_desc);
-    let _ = lt::destroy_matrix_layout(layout_c);
-    let _ = lt::destroy_matrix_layout(layout_a);
-    let _ = lt::destroy_matrix_layout(layout_b);
-
-    Ok(())
-}}
+}
 
 // ---------------------------------------------------------------------------
 // cublasLt GEMM: typed epilogue dispatch (f32 / bf16)
@@ -459,7 +585,9 @@ unsafe fn cublas_lt_gemm_epilogue(
     ab_type: lts::cudaDataType_t,
     compute_type: lts::cublasComputeType_t,
     bias_data_type: Option<lts::cudaDataType_t>,
-    m: u64, k: u64, n: u64,
+    m: u64,
+    k: u64,
+    n: u64,
     a_ptr: CUdeviceptr,
     b_ptr: CUdeviceptr,
     out_ptr: CUdeviceptr,
@@ -469,44 +597,80 @@ unsafe fn cublas_lt_gemm_epilogue(
     // SAFETY: forwarded from caller.
     unsafe {
         lt_gemm_core(
-            ctx, ab_type, ab_type, compute_type, lts::cudaDataType_t::CUDA_R_32F,
-            m, k, n, a_ptr, b_ptr, out_ptr,
+            ctx,
+            ab_type,
+            ab_type,
+            compute_type,
+            lts::cudaDataType_t::CUDA_R_32F,
+            m,
+            k,
+            n,
+            a_ptr,
+            b_ptr,
+            out_ptr,
             Some((&epilogue, bias, bias_data_type)),
         )
     }
 }
 
 pub(super) fn cublas_lt_gemm_f32(
-    ctx: &CudaCtx, out: &mut CudaStorage<f32>,
-    a: &CudaStorage<f32>, b: &CudaStorage<f32>,
-    epilogue: Epilogue, bias: Option<CUdeviceptr>,
+    ctx: &CudaCtx,
+    out: &mut CudaStorage<f32>,
+    a: &CudaStorage<f32>,
+    b: &CudaStorage<f32>,
+    epilogue: Epilogue,
+    bias: Option<CUdeviceptr>,
 ) -> Result<(), CudaError> {
-    if out.n() == 0 { return Ok(()); }
+    if out.n() == 0 {
+        return Ok(());
+    }
     let (m, k, n) = (a.nrows as u64, a.ncols as u64, b.ncols as u64);
     // SAFETY: all pointers are valid GPU buffers from CudaStorage.
     unsafe {
         cublas_lt_gemm_epilogue(
-            ctx, lts::cudaDataType_t::CUDA_R_32F,
+            ctx,
+            lts::cudaDataType_t::CUDA_R_32F,
             lts::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_TF32,
-            None, m, k, n, a.buf.ptr, b.buf.ptr, out.buf.ptr, epilogue, bias,
+            None,
+            m,
+            k,
+            n,
+            a.buf.ptr,
+            b.buf.ptr,
+            out.buf.ptr,
+            epilogue,
+            bias,
         )
     }
 }
 
 pub(super) fn cublas_lt_gemm_bf16(
-    ctx: &CudaCtx, out: &mut CudaStorage<half::bf16>,
-    a: &CudaStorage<half::bf16>, b: &CudaStorage<half::bf16>,
-    epilogue: Epilogue, bias: Option<CUdeviceptr>,
+    ctx: &CudaCtx,
+    out: &mut CudaStorage<half::bf16>,
+    a: &CudaStorage<half::bf16>,
+    b: &CudaStorage<half::bf16>,
+    epilogue: Epilogue,
+    bias: Option<CUdeviceptr>,
 ) -> Result<(), CudaError> {
-    if out.n() == 0 { return Ok(()); }
+    if out.n() == 0 {
+        return Ok(());
+    }
     let (m, k, n) = (a.nrows as u64, a.ncols as u64, b.ncols as u64);
     // SAFETY: all pointers are valid GPU buffers from CudaStorage.
     unsafe {
         cublas_lt_gemm_epilogue(
-            ctx, lts::cudaDataType_t::CUDA_R_16BF,
+            ctx,
+            lts::cudaDataType_t::CUDA_R_16BF,
             lts::cublasComputeType_t::CUBLAS_COMPUTE_32F,
             Some(lts::cudaDataType_t::CUDA_R_16BF),
-            m, k, n, a.buf.ptr, b.buf.ptr, out.buf.ptr, epilogue, bias,
+            m,
+            k,
+            n,
+            a.buf.ptr,
+            b.buf.ptr,
+            out.buf.ptr,
+            epilogue,
+            bias,
         )
     }
 }
@@ -520,17 +684,30 @@ fn cublas_lt_gemm_fp8(
     ctx: &CudaCtx,
     out: &mut CudaStorage<half::bf16>,
     ab_type: lts::cudaDataType_t,
-    a_ptr: CUdeviceptr, b_ptr: CUdeviceptr,
-    m: u64, k: u64, n: u64,
+    a_ptr: CUdeviceptr,
+    b_ptr: CUdeviceptr,
+    m: u64,
+    k: u64,
+    n: u64,
 ) -> Result<(), CudaError> {
-    if out.n() == 0 { return Ok(()); }
+    if out.n() == 0 {
+        return Ok(());
+    }
     // SAFETY: all pointers are valid GPU buffers from CudaStorage.
     unsafe {
         lt_gemm_core(
-            ctx, ab_type, lts::cudaDataType_t::CUDA_R_16BF,
+            ctx,
+            ab_type,
+            lts::cudaDataType_t::CUDA_R_16BF,
             lts::cublasComputeType_t::CUBLAS_COMPUTE_32F,
             lts::cudaDataType_t::CUDA_R_32F,
-            m, k, n, a_ptr, b_ptr, out.buf.ptr, None,
+            m,
+            k,
+            n,
+            a_ptr,
+            b_ptr,
+            out.buf.ptr,
+            None,
         )
     }
 }
@@ -540,15 +717,20 @@ fn cublas_lt_gemm_fp8(
 // ---------------------------------------------------------------------------
 
 fn cuda_fp8_matmul_impl(
-    a_ptr: CUdeviceptr, b_ptr: CUdeviceptr,
+    a_ptr: CUdeviceptr,
+    b_ptr: CUdeviceptr,
     ab_type: lts::cudaDataType_t,
-    m: usize, k: usize, n: usize,
+    m: usize,
+    k: usize,
+    n: usize,
     label: &str,
 ) -> CudaStorage<half::bf16> {
     let ctx = get_ctx();
     let mut out = cuda_zeros::<half::bf16>(m, n);
-    cublas_lt_gemm_fp8(ctx, &mut out, ab_type, a_ptr, b_ptr, m as u64, k as u64, n as u64)
-        .or_panic(label);
+    cublas_lt_gemm_fp8(
+        ctx, &mut out, ab_type, a_ptr, b_ptr, m as u64, k as u64, n as u64,
+    )
+    .or_panic(label);
     out
 }
 
@@ -557,8 +739,13 @@ pub(crate) fn cuda_fp8_matmul_e4m3(
     b: &CudaStorage<crate::scalar::Fp8E4M3>,
 ) -> CudaStorage<half::bf16> {
     cuda_fp8_matmul_impl(
-        a.buf.ptr, b.buf.ptr, lts::cudaDataType_t::CUDA_R_8F_E4M3,
-        a.nrows, a.ncols, b.ncols, "cublasLt FP8 E4M3 GEMM",
+        a.buf.ptr,
+        b.buf.ptr,
+        lts::cudaDataType_t::CUDA_R_8F_E4M3,
+        a.nrows,
+        a.ncols,
+        b.ncols,
+        "cublasLt FP8 E4M3 GEMM",
     )
 }
 
@@ -567,8 +754,13 @@ pub(crate) fn cuda_fp8_matmul_e5m2(
     b: &CudaStorage<crate::scalar::Fp8E5M2>,
 ) -> CudaStorage<half::bf16> {
     cuda_fp8_matmul_impl(
-        a.buf.ptr, b.buf.ptr, lts::cudaDataType_t::CUDA_R_8F_E5M2,
-        a.nrows, a.ncols, b.ncols, "cublasLt FP8 E5M2 GEMM",
+        a.buf.ptr,
+        b.buf.ptr,
+        lts::cudaDataType_t::CUDA_R_8F_E5M2,
+        a.nrows,
+        a.ncols,
+        b.ncols,
+        "cublasLt FP8 E5M2 GEMM",
     )
 }
 
@@ -629,10 +821,20 @@ pub(super) fn cublas_gemm_strided_batched<T: Scalar>(
                 ctx.blas.0,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-                n as i32, m as i32, k as i32,
-                &alpha_f, b.buf.ptr as *const f32, n as i32, (k * n) as i64,
-                a.buf.ptr as *const f32, k as i32, (m * k) as i64,
-                &beta_f, out.buf.ptr as *mut f32, n as i32, (m * n) as i64,
+                n as i32,
+                m as i32,
+                k as i32,
+                &alpha_f,
+                b.buf.ptr as *const f32,
+                n as i32,
+                (k * n) as i64,
+                a.buf.ptr as *const f32,
+                k as i32,
+                (m * k) as i64,
+                &beta_f,
+                out.buf.ptr as *mut f32,
+                n as i32,
+                (m * n) as i64,
                 batch as i32,
             )
             .or_panic("cuBLAS sgemm_strided_batched");
@@ -643,10 +845,20 @@ pub(super) fn cublas_gemm_strided_batched<T: Scalar>(
                 ctx.blas.0,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-                n as i32, m as i32, k as i32,
-                &alpha_d, b.buf.ptr as *const f64, n as i32, (k * n) as i64,
-                a.buf.ptr as *const f64, k as i32, (m * k) as i64,
-                &beta_d, out.buf.ptr as *mut f64, n as i32, (m * n) as i64,
+                n as i32,
+                m as i32,
+                k as i32,
+                &alpha_d,
+                b.buf.ptr as *const f64,
+                n as i32,
+                (k * n) as i64,
+                a.buf.ptr as *const f64,
+                k as i32,
+                (m * k) as i64,
+                &beta_d,
+                out.buf.ptr as *mut f64,
+                n as i32,
+                (m * n) as i64,
                 batch as i32,
             )
             .or_panic("cuBLAS dgemm_strided_batched");
@@ -657,11 +869,13 @@ pub(super) fn cublas_gemm_strided_batched<T: Scalar>(
                 let b_off = (bi * k * n * std::mem::size_of::<T>()) as u64;
                 let c_off = (bi * m * n * std::mem::size_of::<T>()) as u64;
                 let a_slice = RtcStorage::new(
-                    m, k,
+                    m,
+                    k,
                     CuBuffer::borrow_ptr(a.buf.ptr + a_off, m * k * std::mem::size_of::<T>()),
                 );
                 let b_slice = RtcStorage::new(
-                    k, n,
+                    k,
+                    n,
                     CuBuffer::borrow_ptr(b.buf.ptr + b_off, k * n * std::mem::size_of::<T>()),
                 );
                 if beta == T::zero() && alpha == T::one() {
@@ -669,12 +883,16 @@ pub(super) fn cublas_gemm_strided_batched<T: Scalar>(
                     cuda_matmul_tiled(ctx, &mut tmp, &a_slice, &b_slice);
                     let bytes = m * n * std::mem::size_of::<T>();
                     result::memcpy_dtod_async(
-                        out.buf.ptr + c_off, tmp.buf.ptr, bytes, ctx.stream.cu_stream(),
+                        out.buf.ptr + c_off,
+                        tmp.buf.ptr,
+                        bytes,
+                        ctx.stream.cu_stream(),
                     )
                     .or_panic("CUDA memcpy batch tiled");
                 } else {
                     let c_view = RtcStorage::new(
-                        m, n,
+                        m,
+                        n,
                         CuBuffer::borrow_ptr(out.buf.ptr + c_off, m * n * std::mem::size_of::<T>()),
                     );
                     let mut ab_tmp = cuda_zeros::<T>(m, n);
@@ -684,7 +902,10 @@ pub(super) fn cublas_gemm_strided_batched<T: Scalar>(
                     let res = launch_binary(&scaled_c, &scaled_ab, "add");
                     let bytes = m * n * std::mem::size_of::<T>();
                     result::memcpy_dtod_async(
-                        out.buf.ptr + c_off, res.buf.ptr, bytes, ctx.stream.cu_stream(),
+                        out.buf.ptr + c_off,
+                        res.buf.ptr,
+                        bytes,
+                        ctx.stream.cu_stream(),
                     )
                     .or_panic("CUDA memcpy batch fallback");
                 }
@@ -730,10 +951,20 @@ pub(crate) fn cuda_bmm_nt<T: Scalar>(
                 ctx.blas.0,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_T,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-                n as i32, m as i32, k as i32,
-                &alpha_f, b.buf.ptr as *const f32, k as i32, (n * k) as i64,
-                a.buf.ptr as *const f32, k as i32, (m * k) as i64,
-                &beta_f, out.buf.ptr as *mut f32, n as i32, (m * n) as i64,
+                n as i32,
+                m as i32,
+                k as i32,
+                &alpha_f,
+                b.buf.ptr as *const f32,
+                k as i32,
+                (n * k) as i64,
+                a.buf.ptr as *const f32,
+                k as i32,
+                (m * k) as i64,
+                &beta_f,
+                out.buf.ptr as *mut f32,
+                n as i32,
+                (m * n) as i64,
                 batch as i32,
             )
             .or_panic("cuBLAS sgemm_strided_batched bmm_nt");
@@ -743,10 +974,20 @@ pub(crate) fn cuda_bmm_nt<T: Scalar>(
                 ctx.blas.0,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_T,
                 cublas_sys::cublasOperation_t::CUBLAS_OP_N,
-                n as i32, m as i32, k as i32,
-                &alpha_d, b.buf.ptr as *const f64, k as i32, (n * k) as i64,
-                a.buf.ptr as *const f64, k as i32, (m * k) as i64,
-                &beta_d, out.buf.ptr as *mut f64, n as i32, (m * n) as i64,
+                n as i32,
+                m as i32,
+                k as i32,
+                &alpha_d,
+                b.buf.ptr as *const f64,
+                k as i32,
+                (n * k) as i64,
+                a.buf.ptr as *const f64,
+                k as i32,
+                (m * k) as i64,
+                &beta_d,
+                out.buf.ptr as *mut f64,
+                n as i32,
+                (m * n) as i64,
                 batch as i32,
             )
             .or_panic("cuBLAS dgemm_strided_batched bmm_nt");
@@ -785,7 +1026,10 @@ fn bmm_nt_tiled_fallback<T: Scalar>(
         // SAFETY: copying result to correct offset in output buffer.
         unsafe {
             result::memcpy_dtod_async(
-                out.buf.ptr + (bi * m * n * elem) as u64, tmp.buf.ptr, bytes, ctx.stream.cu_stream(),
+                out.buf.ptr + (bi * m * n * elem) as u64,
+                tmp.buf.ptr,
+                bytes,
+                ctx.stream.cu_stream(),
             )
             .or_panic("CUDA memcpy batch tiled bmm_nt");
         }

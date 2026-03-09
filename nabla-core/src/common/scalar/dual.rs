@@ -27,7 +27,6 @@ impl<T: RealScalar> Dual<T> {
             deriv: T::zero(),
         }
     }
-
 }
 
 /// Convenience wrappers mirroring f64 standard methods so that
@@ -433,10 +432,28 @@ impl_value_reduction!([T: RealScalar] Dual<T>);
 impl<T: RealScalar> Scalar for Dual<T> {
     type Real = T;
     const IS_REAL: bool = true;
-    #[inline] fn zero() -> Self { Dual::new(T::zero(), T::zero()) }
-    #[inline] fn one() -> Self { Dual::new(T::one(), T::zero()) }
-    #[inline] fn conj(self) -> Self { self }
-    #[inline] fn abs_val(self) -> Self::Real { self.value.abs_val() }
-    #[inline] fn from_f64(v: f64) -> Self { Dual::new(T::from_f64(v), T::zero()) }
-    #[inline] fn to_f64(self) -> f64 { self.value.to_f64() }
+    #[inline]
+    fn zero() -> Self {
+        Dual::new(T::zero(), T::zero())
+    }
+    #[inline]
+    fn one() -> Self {
+        Dual::new(T::one(), T::zero())
+    }
+    #[inline]
+    fn conj(self) -> Self {
+        self
+    }
+    #[inline]
+    fn abs_val(self) -> Self::Real {
+        self.value.abs_val()
+    }
+    #[inline]
+    fn from_f64(v: f64) -> Self {
+        Dual::new(T::from_f64(v), T::zero())
+    }
+    #[inline]
+    fn to_f64(self) -> f64 {
+        self.value.to_f64()
+    }
 }

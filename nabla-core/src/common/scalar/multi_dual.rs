@@ -344,10 +344,28 @@ impl_value_reduction!([T: RealScalar, const N: usize] MultiDual<T, N>);
 impl<T: RealScalar, const N: usize> Scalar for MultiDual<T, N> {
     type Real = T;
     const IS_REAL: bool = false;
-    #[inline] fn zero() -> Self { Self::constant(T::zero()) }
-    #[inline] fn one() -> Self { Self::constant(T::one()) }
-    #[inline] fn conj(self) -> Self { self }
-    #[inline] fn abs_val(self) -> Self::Real { self.value.abs_val() }
-    #[inline] fn from_f64(v: f64) -> Self { Self::constant(T::from_f64(v)) }
-    #[inline] fn to_f64(self) -> f64 { self.value.to_f64() }
+    #[inline]
+    fn zero() -> Self {
+        Self::constant(T::zero())
+    }
+    #[inline]
+    fn one() -> Self {
+        Self::constant(T::one())
+    }
+    #[inline]
+    fn conj(self) -> Self {
+        self
+    }
+    #[inline]
+    fn abs_val(self) -> Self::Real {
+        self.value.abs_val()
+    }
+    #[inline]
+    fn from_f64(v: f64) -> Self {
+        Self::constant(T::from_f64(v))
+    }
+    #[inline]
+    fn to_f64(self) -> f64 {
+        self.value.to_f64()
+    }
 }

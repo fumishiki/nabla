@@ -21,12 +21,19 @@ pub(crate) struct EinsumInput {
 #[derive(Debug)]
 enum ContractionKind {
     Gemm,
-    GemmTransposed { transpose_a: bool, transpose_b: bool },
-    Gemv { mat_first: bool },
+    GemmTransposed {
+        transpose_a: bool,
+        transpose_b: bool,
+    },
+    Gemv {
+        mat_first: bool,
+    },
     Hadamard,
     Trace,
     Outer,
-    BatchGemm { batch_count: usize },
+    BatchGemm {
+        batch_count: usize,
+    },
     Fallback,
 }
 
@@ -131,7 +138,10 @@ fn contraction_counts<'a>(
         for idx in &term.indices {
             let name = idx.to_string();
             if !free_names.contains(&name) {
-                counts.entry(name).and_modify(|(c, _)| *c += 1).or_insert((1, idx));
+                counts
+                    .entry(name)
+                    .and_modify(|(c, _)| *c += 1)
+                    .or_insert((1, idx));
             }
         }
     }
@@ -183,14 +193,22 @@ fn canonicalize(input: &mut EinsumInput) {
         }
     }
 
-    for idx in input.output_indices.iter_mut()
-        .chain(input.rhs_terms.iter_mut().flat_map(|t| t.indices.iter_mut()))
-    {
-        if let Some(new) = rename.get(&idx.to_string()) { *idx = new.clone(); }
+    for idx in input.output_indices.iter_mut().chain(
+        input
+            .rhs_terms
+            .iter_mut()
+            .flat_map(|t| t.indices.iter_mut()),
+    ) {
+        if let Some(new) = rename.get(&idx.to_string()) {
+            *idx = new.clone();
+        }
     }
 }
 
-fn collect_non_free<'a>(terms: &'a [IndexedTensor], free_names: &HashSet<String>) -> (Vec<String>, Vec<&'a Ident>) {
+fn collect_non_free<'a>(
+    terms: &'a [IndexedTensor],
+    free_names: &HashSet<String>,
+) -> (Vec<String>, Vec<&'a Ident>) {
     let (mut names, mut idents) = (Vec::new(), Vec::new());
     let mut seen = HashSet::new();
     for term in terms {
@@ -264,7 +282,11 @@ fn classify(input: &EinsumInput) -> ContractionKind {
             && a.indices.len() == b.indices.len()
             && a.indices.len() == free.len()
         {
-            if rhs.iter().all(|t| t.indices.iter().all(|i| free_names.contains(&i.to_string()))) {
+            if rhs.iter().all(|t| {
+                t.indices
+                    .iter()
+                    .all(|i| free_names.contains(&i.to_string()))
+            }) {
                 return ContractionKind::Hadamard;
             }
         }
@@ -302,7 +324,10 @@ fn codegen_einsum(input: &EinsumInput) -> Result<TokenStream2> {
     use ContractionKind::*;
     match classify(input) {
         Gemm => codegen_gemm(input, false, false),
-        GemmTransposed { transpose_a, transpose_b } => codegen_gemm(input, transpose_a, transpose_b),
+        GemmTransposed {
+            transpose_a,
+            transpose_b,
+        } => codegen_gemm(input, transpose_a, transpose_b),
         Gemv { mat_first } => codegen_gemv(input, mat_first),
         Hadamard => codegen_hadamard(input),
         Trace => codegen_trace(input),
@@ -315,14 +340,22 @@ fn codegen_einsum(input: &EinsumInput) -> Result<TokenStream2> {
 fn element_access(binding: &Ident, indices: &[Ident], is_original: bool) -> TokenStream2 {
     match (indices.len(), is_original) {
         (0, _) => quote! { #binding },
-        (1, true) => { let i = &indices[0]; quote! { #binding.get(#i, 0) } }
-        (2, true) => { let (i, j) = (&indices[0], &indices[1]); quote! { #binding.get(#i, #j) } }
+        (1, true) => {
+            let i = &indices[0];
+            quote! { #binding.get(#i, 0) }
+        }
+        (2, true) => {
+            let (i, j) = (&indices[0], &indices[1]);
+            quote! { #binding.get(#i, #j) }
+        }
         _ => quote! { #binding.get_nd(&[#(#indices),*]) },
     }
 }
 
 fn dim_expr_at(binding: &Ident, pos: usize, ndim: usize) -> TokenStream2 {
-    if ndim > 2 { return quote! { #binding.dim(#pos) }; }
+    if ndim > 2 {
+        return quote! { #binding.dim(#pos) };
+    }
     match pos {
         0 => quote! { #binding.nrows() },
         1 => quote! { #binding.ncols() },
@@ -340,14 +373,26 @@ fn find_dim_expr(
     for &(binding, indices, is_orig) in tensors {
         for (pos, tidx) in indices.iter().enumerate() {
             if *tidx == s {
-                let expr = if is_orig { dim_expr_at(binding, pos, indices.len()) }
-                           else { quote! { #binding.dim(#pos) } };
-                if preferred_pos == Some(pos) { return Ok(expr); }
-                if fallback.is_none() { fallback = Some(expr); }
+                let expr = if is_orig {
+                    dim_expr_at(binding, pos, indices.len())
+                } else {
+                    quote! { #binding.dim(#pos) }
+                };
+                if preferred_pos == Some(pos) {
+                    return Ok(expr);
+                }
+                if fallback.is_none() {
+                    fallback = Some(expr);
+                }
             }
         }
     }
-    fallback.ok_or_else(|| Error::new_spanned(idx, format!("einsum!: index `{idx}` not found in any tensor")))
+    fallback.ok_or_else(|| {
+        Error::new_spanned(
+            idx,
+            format!("einsum!: index `{idx}` not found in any tensor"),
+        )
+    })
 }
 
 fn rhs_descriptors(terms: &[IndexedTensor]) -> Vec<(Ident, &[Ident], bool)> {
@@ -413,13 +458,21 @@ where
     F: Fn(&Ident) -> Result<TokenStream2>,
 {
     let wrap_or_bare = |body: TokenStream2| -> TokenStream2 {
-        if wrap { quote! { let __final = #body; } } else { body }
+        if wrap {
+            quote! { let __final = #body; }
+        } else {
+            body
+        }
     };
 
     match free_indices.len() {
         0 => {
             let core = quote! { let mut __acc = nabla::scalar::math_utils::zero::<_>(); #loops };
-            Ok(if wrap { core } else { quote! { #core __acc } })
+            Ok(if wrap {
+                core
+            } else {
+                quote! { #core __acc }
+            })
         }
         1 => {
             let fi = &free_indices[0];
@@ -444,10 +497,15 @@ where
             }))
         }
         _ => {
-            let shape_exprs: Vec<TokenStream2> = free_indices.iter()
-                .map(|fi| dim_lookup(fi)).collect::<Result<_>>()?;
-            let idx_bindings: Vec<TokenStream2> = free_indices.iter().enumerate()
-                .map(|(n, fi)| quote! { let #fi = __idx[#n]; }).collect();
+            let shape_exprs: Vec<TokenStream2> = free_indices
+                .iter()
+                .map(|fi| dim_lookup(fi))
+                .collect::<Result<_>>()?;
+            let idx_bindings: Vec<TokenStream2> = free_indices
+                .iter()
+                .enumerate()
+                .map(|(n, fi)| quote! { let #fi = __idx[#n]; })
+                .collect();
             Ok(wrap_or_bare(quote! {
                 nabla::tensor::NdTensor::from_fn(
                     &[#(#shape_exprs),*],
@@ -464,7 +522,9 @@ fn bind_ref(name: &Ident) -> (Ident, TokenStream2) {
 }
 
 fn transpose_ref(bind: &Ident, label: &str, transpose: bool) -> (TokenStream2, TokenStream2) {
-    if !transpose { return (quote! {}, quote! { #bind }); }
+    if !transpose {
+        return (quote! {}, quote! { #bind });
+    }
     let t_bind = Ident::new(&format!("__{label}_t"), bind.span());
     (quote! { let #t_bind = #bind.t(); }, quote! { (&#t_bind) })
 }
@@ -493,8 +553,11 @@ fn codegen_gemm(input: &EinsumInput, transpose_a: bool, transpose_b: bool) -> Re
 }
 
 fn codegen_gemv(input: &EinsumInput, mat_first: bool) -> Result<TokenStream2> {
-    let (mat_term, vec_term) = if mat_first { (&input.rhs_terms[0], &input.rhs_terms[1]) }
-                                else { (&input.rhs_terms[1], &input.rhs_terms[0]) };
+    let (mat_term, vec_term) = if mat_first {
+        (&input.rhs_terms[0], &input.rhs_terms[1])
+    } else {
+        (&input.rhs_terms[1], &input.rhs_terms[0])
+    };
     let (mat_bind, mat_stmt) = bind_ref(&mat_term.name);
     let (vec_bind, vec_stmt) = bind_ref(&vec_term.name);
     let transpose_mat = mat_term.indices[0] != input.output_indices[0];
@@ -505,9 +568,13 @@ fn codegen_gemv(input: &EinsumInput, mat_first: bool) -> Result<TokenStream2> {
 
 fn codegen_hadamard(input: &EinsumInput) -> Result<TokenStream2> {
     let (a, b) = (&input.rhs_terms[0].name, &input.rhs_terms[1].name);
-    let same_order = name_list(&input.rhs_terms[0].indices) == name_list(&input.rhs_terms[1].indices);
-    Ok(if same_order { quote! { { (#a).emul(&#b) } } }
-       else { quote! { { (#a).emul(&(#b).t()) } } })
+    let same_order =
+        name_list(&input.rhs_terms[0].indices) == name_list(&input.rhs_terms[1].indices);
+    Ok(if same_order {
+        quote! { { (#a).emul(&#b) } }
+    } else {
+        quote! { { (#a).emul(&(#b).t()) } }
+    })
 }
 
 fn codegen_trace(input: &EinsumInput) -> Result<TokenStream2> {
@@ -526,11 +593,12 @@ fn codegen_trace(input: &EinsumInput) -> Result<TokenStream2> {
 fn codegen_outer(input: &EinsumInput) -> Result<TokenStream2> {
     let (a_bind, a_stmt) = bind_ref(&input.rhs_terms[0].name);
     let (b_bind, b_stmt) = bind_ref(&input.rhs_terms[1].name);
-    let (row, col) = if input.rhs_terms[0].indices[0].to_string() == input.output_indices[0].to_string() {
-        (quote! { #a_bind }, quote! { #b_bind })
-    } else {
-        (quote! { #b_bind }, quote! { #a_bind })
-    };
+    let (row, col) =
+        if input.rhs_terms[0].indices[0].to_string() == input.output_indices[0].to_string() {
+            (quote! { #a_bind }, quote! { #b_bind })
+        } else {
+            (quote! { #b_bind }, quote! { #a_bind })
+        };
     Ok(quote! {{ #a_stmt #b_stmt
         nabla::tensor::Tensor::from_fn(#row.nrows(), #col.nrows(), |__i, __j| {
             nabla::scalar::math_utils::mul(&#row.get(__i, 0), &#col.get(__j, 0))
@@ -542,10 +610,12 @@ fn codegen_batch_gemm(input: &EinsumInput, batch_count: usize) -> Result<TokenSt
     let (a_bind, a_stmt) = bind_ref(&input.rhs_terms[0].name);
     let (b_bind, b_stmt) = bind_ref(&input.rhs_terms[1].name);
     let batch_vars: Vec<Ident> = (0..batch_count)
-        .map(|d| Ident::new(&format!("__b{d}"), Span::call_site())).collect();
+        .map(|d| Ident::new(&format!("__b{d}"), Span::call_site()))
+        .collect();
     let (rd, cd) = (batch_count, batch_count + 1);
     let mut shape_exprs: Vec<TokenStream2> = (0..batch_count)
-        .map(|d| quote! { #a_bind.dim(#d) }).collect();
+        .map(|d| quote! { #a_bind.dim(#d) })
+        .collect();
     shape_exprs.extend([quote! { #a_bind.dim(#rd) }, quote! { #b_bind.dim(#cd) }]);
 
     let batch_idx = quote! { &[#(#batch_vars),*] };
@@ -558,14 +628,19 @@ fn codegen_batch_gemm(input: &EinsumInput, batch_count: usize) -> Result<TokenSt
         let (bv, dim) = (&batch_vars[d], quote! { #a_bind.dim(#d) });
         loops = quote! { for #bv in 0..#dim { #loops } };
     }
-    Ok(quote! {{ #a_stmt #b_stmt let mut __out = nabla::tensor::NdTensor::zeros(&[#(#shape_exprs),*]); #loops __out }})
+    Ok(
+        quote! {{ #a_stmt #b_stmt let mut __out = nabla::tensor::NdTensor::zeros(&[#(#shape_exprs),*]); #loops __out }},
+    )
 }
 
 fn build_accumulate_step(terms: &[IndexedTensor]) -> TokenStream2 {
-    let accesses: Vec<TokenStream2> = terms.iter().map(|t| {
-        let binding = Ident::new(&format!("__{}", t.name), t.name.span());
-        element_access(&binding, &t.indices, true)
-    }).collect();
+    let accesses: Vec<TokenStream2> = terms
+        .iter()
+        .map(|t| {
+            let binding = Ident::new(&format!("__{}", t.name), t.name.span());
+            element_access(&binding, &t.indices, true)
+        })
+        .collect();
     let product_expr = accesses.iter().skip(1).fold(accesses[0].clone(), |acc, a| {
         quote! { nabla::scalar::math_utils::mul(&#acc, &#a) }
     });
@@ -628,7 +703,8 @@ fn compute_contracted<'a>(
 ) -> HashSet<String> {
     left.intersection(right)
         .filter(|idx| !output_names.contains(*idx) && !remaining.contains(*idx))
-        .cloned().collect()
+        .cloned()
+        .collect()
 }
 
 fn greedy_contraction_order(
@@ -636,8 +712,10 @@ fn greedy_contraction_order(
     output_indices: &[Ident],
 ) -> Vec<(usize, usize)> {
     let output_names: HashSet<String> = output_indices.iter().map(Ident::to_string).collect();
-    let mut slot_indices: Vec<HashSet<String>> = terms.iter()
-        .map(|t| t.indices.iter().map(Ident::to_string).collect()).collect();
+    let mut slot_indices: Vec<HashSet<String>> = terms
+        .iter()
+        .map(|t| t.indices.iter().map(Ident::to_string).collect())
+        .collect();
     let mut slot_alive: Vec<bool> = vec![true; terms.len()];
     let mut order: Vec<(usize, usize)> = Vec::new();
 
@@ -649,13 +727,25 @@ fn greedy_contraction_order(
         for i in 0..alive.len() {
             for j in (i + 1)..alive.len() {
                 let (li, ri) = (alive[i], alive[j]);
-                let remaining: HashSet<String> = alive.iter()
+                let remaining: HashSet<String> = alive
+                    .iter()
                     .filter(|&&k| k != li && k != ri)
-                    .flat_map(|&k| slot_indices[k].iter().cloned()).collect();
-                let contracted = compute_contracted(&slot_indices[li], &slot_indices[ri], &output_names, &remaining);
-                let cost = slot_indices[li].union(&slot_indices[ri])
-                    .filter(|idx| !contracted.contains(*idx)).count();
-                if cost < best_cost { best_cost = cost; best = (li, ri); }
+                    .flat_map(|&k| slot_indices[k].iter().cloned())
+                    .collect();
+                let contracted = compute_contracted(
+                    &slot_indices[li],
+                    &slot_indices[ri],
+                    &output_names,
+                    &remaining,
+                );
+                let cost = slot_indices[li]
+                    .union(&slot_indices[ri])
+                    .filter(|idx| !contracted.contains(*idx))
+                    .count();
+                if cost < best_cost {
+                    best_cost = cost;
+                    best = (li, ri);
+                }
             }
         }
 
@@ -664,10 +754,19 @@ fn greedy_contraction_order(
 
         let remaining: HashSet<String> = (0..slot_indices.len())
             .filter(|&k| slot_alive[k] && k != li && k != ri)
-            .flat_map(|k| slot_indices[k].iter().cloned()).collect();
-        let contracted = compute_contracted(&slot_indices[li], &slot_indices[ri], &output_names, &remaining);
-        let merged: HashSet<String> = slot_indices[li].union(&slot_indices[ri])
-            .filter(|idx| !contracted.contains(*idx)).cloned().collect();
+            .flat_map(|k| slot_indices[k].iter().cloned())
+            .collect();
+        let contracted = compute_contracted(
+            &slot_indices[li],
+            &slot_indices[ri],
+            &output_names,
+            &remaining,
+        );
+        let merged: HashSet<String> = slot_indices[li]
+            .union(&slot_indices[ri])
+            .filter(|idx| !contracted.contains(*idx))
+            .cloned()
+            .collect();
 
         slot_alive[li] = false;
         slot_alive[ri] = false;
@@ -691,20 +790,36 @@ fn codegen_sequential_contraction(input: &EinsumInput) -> Result<TokenStream2> {
     let n_steps = contraction_order.len();
 
     let slot_name = |idx: usize| -> String {
-        if idx < n_terms { input.rhs_terms[idx].name.to_string() }
-        else { format!("tmp_{}", idx - n_terms) }
+        if idx < n_terms {
+            input.rhs_terms[idx].name.to_string()
+        } else {
+            format!("tmp_{}", idx - n_terms)
+        }
     };
-    let path_desc: String = contraction_order.iter().enumerate()
+    let path_desc: String = contraction_order
+        .iter()
+        .enumerate()
         .map(|(step, &(li, ri))| format!("step {step}: {} x {}", slot_name(li), slot_name(ri)))
-        .collect::<Vec<_>>().join(", ");
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let tensor_bindings = dedup_bindings(&input.rhs_terms);
 
-    let mut slots: HashMap<usize, IntermediateTensor> = input.rhs_terms.iter().enumerate()
-        .map(|(i, t)| (i, IntermediateTensor {
-            binding: Ident::new(&format!("__{}", t.name), t.name.span()),
-            indices: t.indices.clone(), is_original: true,
-        })).collect();
+    let mut slots: HashMap<usize, IntermediateTensor> = input
+        .rhs_terms
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            (
+                i,
+                IntermediateTensor {
+                    binding: Ident::new(&format!("__{}", t.name), t.name.span()),
+                    indices: t.indices.clone(),
+                    is_original: true,
+                },
+            )
+        })
+        .collect();
 
     let mut intermediate_stmts: Vec<TokenStream2> = Vec::new();
     let mut next_slot = n_terms;
@@ -712,16 +827,26 @@ fn codegen_sequential_contraction(input: &EinsumInput) -> Result<TokenStream2> {
     for (step_idx, &(li, ri)) in contraction_order.iter().enumerate() {
         let (acc, rhs_t) = match (slots.remove(&li), slots.remove(&ri)) {
             (Some(l), Some(r)) => (l, r),
-            _ => return Err(Error::new(Span::call_site(), "einsum!: internal error in contraction order")),
+            _ => {
+                return Err(Error::new(
+                    Span::call_site(),
+                    "einsum!: internal error in contraction order",
+                ));
+            }
         };
 
-        let remaining: HashSet<String> = slots.values()
-            .flat_map(|t| t.indices.iter()).map(Ident::to_string).collect();
+        let remaining: HashSet<String> = slots
+            .values()
+            .flat_map(|t| t.indices.iter())
+            .map(Ident::to_string)
+            .collect();
         let left_set: HashSet<String> = acc.indices.iter().map(Ident::to_string).collect();
         let right_set: HashSet<String> = rhs_t.indices.iter().map(Ident::to_string).collect();
-        let contracted: HashSet<String> = left_set.intersection(&right_set)
+        let contracted: HashSet<String> = left_set
+            .intersection(&right_set)
             .filter(|idx| !output_names.contains(*idx) && !remaining.contains(*idx))
-            .cloned().collect();
+            .cloned()
+            .collect();
 
         let all_indices = acc.indices.iter().chain(rhs_t.indices.iter());
         let (mut step_out, mut contr_dedup) = (Vec::new(), Vec::new());
@@ -729,7 +854,9 @@ fn codegen_sequential_contraction(input: &EinsumInput) -> Result<TokenStream2> {
         for idx in all_indices {
             let s = idx.to_string();
             if contracted.contains(&s) {
-                if seen_c.insert(s) { contr_dedup.push(idx); }
+                if seen_c.insert(s) {
+                    contr_dedup.push(idx);
+                }
             } else if seen_out.insert(s) {
                 step_out.push(idx.clone());
             }
@@ -746,11 +873,15 @@ fn codegen_sequential_contraction(input: &EinsumInput) -> Result<TokenStream2> {
             (&acc.binding, acc.indices.as_slice(), acc.is_original),
             (&rhs_t.binding, rhs_t.indices.as_slice(), rhs_t.is_original),
         ];
-        let loops = build_tiled_loops(&contr_dedup, |ci| find_dim_expr(ci, &pair, None), step_stmt)?;
+        let loops =
+            build_tiled_loops(&contr_dedup, |ci| find_dim_expr(ci, &pair, None), step_stmt)?;
 
         if step_idx == n_steps - 1 {
             intermediate_stmts.push(emit_output_tensor(
-                &input.output_indices, |fi| find_dim_expr(fi, &pair, None), &loops, true,
+                &input.output_indices,
+                |fi| find_dim_expr(fi, &pair, None),
+                &loops,
+                true,
             )?);
         } else {
             let tmp_name = Ident::new(&format!("__tmp_{step_idx}"), Span::call_site());
@@ -761,10 +892,15 @@ fn codegen_sequential_contraction(input: &EinsumInput) -> Result<TokenStream2> {
                     let #tmp_name = __acc;
                 });
             } else {
-                let shape_exprs: Vec<TokenStream2> = step_out.iter()
-                    .map(|fi| find_dim_expr(fi, &pair, None)).collect::<Result<_>>()?;
-                let idx_bindings: Vec<TokenStream2> = step_out.iter().enumerate()
-                    .map(|(n, fi)| quote! { let #fi = __idx[#n]; }).collect();
+                let shape_exprs: Vec<TokenStream2> = step_out
+                    .iter()
+                    .map(|fi| find_dim_expr(fi, &pair, None))
+                    .collect::<Result<_>>()?;
+                let idx_bindings: Vec<TokenStream2> = step_out
+                    .iter()
+                    .enumerate()
+                    .map(|(n, fi)| quote! { let #fi = __idx[#n]; })
+                    .collect();
                 intermediate_stmts.push(quote! {
                     let #tmp_name = nabla::tensor::NdTensor::from_fn(
                         &[#(#shape_exprs),*],
@@ -777,15 +913,23 @@ fn codegen_sequential_contraction(input: &EinsumInput) -> Result<TokenStream2> {
                     );
                 });
             }
-            slots.insert(next_slot, IntermediateTensor {
-                binding: tmp_name, indices: step_out, is_original: false,
-            });
+            slots.insert(
+                next_slot,
+                IntermediateTensor {
+                    binding: tmp_name,
+                    indices: step_out,
+                    is_original: false,
+                },
+            );
             next_slot += 1;
         }
     }
 
-    let final_expr = if input.output_indices.is_empty() { quote! { __acc } }
-                     else { quote! { __final } };
+    let final_expr = if input.output_indices.is_empty() {
+        quote! { __acc }
+    } else {
+        quote! { __final }
+    };
 
     Ok(quote! {{
         #[allow(unused_variables)]

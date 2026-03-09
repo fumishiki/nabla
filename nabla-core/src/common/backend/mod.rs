@@ -125,9 +125,17 @@ pub trait BackendCore: private::Sealed + Send + Sync + 'static {
     /// Build storage from a pre-allocated row-major `Vec<T>` (zero-copy when possible).
     #[must_use]
     fn from_vec<T: Scalar>(nrows: usize, ncols: usize, data: Vec<T>) -> Self::Storage<T> {
-        assert_eq!(data.len(), nrows * ncols, "from_vec: data length must equal nrows * ncols");
+        assert_eq!(
+            data.len(),
+            nrows * ncols,
+            "from_vec: data length must equal nrows * ncols"
+        );
         let mut i = 0usize;
-        Self::from_fn(nrows, ncols, move |_, _| { let v = data[i]; i += 1; v })
+        Self::from_fn(nrows, ncols, move |_, _| {
+            let v = data[i];
+            i += 1;
+            v
+        })
     }
 
     /// Non-blocking H2D upload: data transfer on a separate copy stream overlaps with compute.
@@ -140,7 +148,9 @@ pub trait BackendCore: private::Sealed + Send + Sync + 'static {
     /// Non-blocking D2H transfer: copies tensor data to a `Vec<T>` using the copy stream.
     fn to_vec_async<T: Scalar>(a: &Self::Storage<T>) -> Vec<T> {
         let (rows, cols) = (Self::nrows(a), Self::ncols(a));
-        (0..rows).flat_map(|r| (0..cols).map(move |c| Self::get(a, r, c))).collect()
+        (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| Self::get(a, r, c)))
+            .collect()
     }
 
     /// Cast storage element type using `f64` as an intermediate (default: host loop).
@@ -270,21 +280,33 @@ pub trait BackendMath: BackendCore {
 
     /// Replace elements where `mask` is non-zero with `value`.
     fn masked_fill<T: Scalar>(
-        a: &Self::Storage<T>, mask: &Self::Storage<T>, value: T,
+        a: &Self::Storage<T>,
+        mask: &Self::Storage<T>,
+        value: T,
     ) -> Self::Storage<T> {
         let (rows, cols) = (Self::nrows(a), Self::ncols(a));
         Self::from_fn(rows, cols, |r, c| {
-            if Self::get(mask, r, c).to_f64() == 0.0 { Self::get(a, r, c) } else { value }
+            if Self::get(mask, r, c).to_f64() == 0.0 {
+                Self::get(a, r, c)
+            } else {
+                value
+            }
         })
     }
 
     /// Element-wise conditional: `where cond != 0, pick a, else pick b`.
     fn where_cond<T: Scalar>(
-        a: &Self::Storage<T>, cond: &Self::Storage<T>, b: &Self::Storage<T>,
+        a: &Self::Storage<T>,
+        cond: &Self::Storage<T>,
+        b: &Self::Storage<T>,
     ) -> Self::Storage<T> {
         let (rows, cols) = (Self::nrows(a), Self::ncols(a));
         Self::from_fn(rows, cols, |r, c| {
-            if Self::get(cond, r, c).to_f64() != 0.0 { Self::get(a, r, c) } else { Self::get(b, r, c) }
+            if Self::get(cond, r, c).to_f64() != 0.0 {
+                Self::get(a, r, c)
+            } else {
+                Self::get(b, r, c)
+            }
         })
     }
 }
@@ -335,14 +357,16 @@ pub trait BackendReduce: BackendCore {
     /// Product of all elements.
     fn prod_all<T: Scalar>(a: &Self::Storage<T>) -> T {
         let (rows, cols) = (Self::nrows(a), Self::ncols(a));
-        (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c)))
+        (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| (r, c)))
             .fold(T::one(), |acc, (r, c)| acc * Self::get(a, r, c))
     }
 
     /// Count of elements not equal to zero.
     fn count_nonzero<T: Scalar>(a: &Self::Storage<T>) -> usize {
         let (rows, cols) = (Self::nrows(a), Self::ncols(a));
-        (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c)))
+        (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| (r, c)))
             .filter(|&(r, c)| Self::get(a, r, c).to_f64() != 0.0)
             .count()
     }
@@ -364,24 +388,31 @@ pub trait BackendReduce: BackendCore {
 
     /// Fused MSE sum forward: `sum((pred-target)^2)` -> (1,1) storage.
     fn mse_sum_fwd<T: Scalar>(
-        pred: &Self::Storage<T>, target: &Self::Storage<T>,
+        pred: &Self::Storage<T>,
+        target: &Self::Storage<T>,
     ) -> Self::Storage<T> {
         let (rows, cols) = (Self::nrows(pred), Self::ncols(pred));
-        let sum = (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c)))
-            .fold(T::zero(), |acc, (r, c)| {
+        let sum = (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))).fold(
+            T::zero(),
+            |acc, (r, c)| {
                 let d = Self::get(pred, r, c) - Self::get(target, r, c);
                 acc + d * d
-            });
+            },
+        );
         Self::fill(1, 1, sum)
     }
 
     /// Fused MSE sum backward: `out[i] = 2*(pred[i]-target[i])*grad`.
     fn mse_sum_bwd<T: Scalar>(
-        pred: &Self::Storage<T>, target: &Self::Storage<T>, grad: &Self::Storage<T>,
+        pred: &Self::Storage<T>,
+        target: &Self::Storage<T>,
+        grad: &Self::Storage<T>,
     ) -> Self::Storage<T> {
         let (rows, cols) = (Self::nrows(pred), Self::ncols(pred));
         let two_g = T::from_f64(2.0) * Self::get(grad, 0, 0);
-        Self::from_fn(rows, cols, |r, c| (Self::get(pred, r, c) - Self::get(target, r, c)) * two_g)
+        Self::from_fn(rows, cols, |r, c| {
+            (Self::get(pred, r, c) - Self::get(target, r, c)) * two_g
+        })
     }
 
     /// Lp norm: `(sum |x_i|^p)^(1/p)`, or `max|x_i|` for p=inf.
@@ -392,7 +423,9 @@ pub trait BackendReduce: BackendCore {
         if p_f64.is_infinite() && p_f64 > 0.0 {
             return elems.fold(T::zero(), crate::scalar::ReductionOps::reduction_max);
         }
-        elems.fold(T::zero(), |acc, v| acc + v.math_powf(p)).math_powf(T::one() / p)
+        elems
+            .fold(T::zero(), |acc, v| acc + v.math_powf(p))
+            .math_powf(T::one() / p)
     }
 }
 
@@ -675,17 +708,29 @@ pub trait BackendBlas: BackendCore {
     }
 
     /// FP8 E4M3 matmul: inputs in Fp8E4M3, output in bf16. Hardware-accelerated on Hopper+.
-    #[cfg(any(feature = "cpu", feature = "cuda", feature = "hip", feature = "wgpu-f16"))]
+    #[cfg(any(
+        feature = "cpu",
+        feature = "cuda",
+        feature = "hip",
+        feature = "wgpu-f16"
+    ))]
     fn fp8_matmul_e4m3(
-        a: &Self::Storage<Fp8E4M3>, b: &Self::Storage<Fp8E4M3>,
+        a: &Self::Storage<Fp8E4M3>,
+        b: &Self::Storage<Fp8E4M3>,
     ) -> Self::Storage<half::bf16> {
         fp8_matmul_default::<Fp8E4M3, Self>(a, b)
     }
 
     /// FP8 E5M2 matmul: inputs in Fp8E5M2, output in bf16. Hardware-accelerated on Hopper+.
-    #[cfg(any(feature = "cpu", feature = "cuda", feature = "hip", feature = "wgpu-f16"))]
+    #[cfg(any(
+        feature = "cpu",
+        feature = "cuda",
+        feature = "hip",
+        feature = "wgpu-f16"
+    ))]
     fn fp8_matmul_e5m2(
-        a: &Self::Storage<Fp8E5M2>, b: &Self::Storage<Fp8E5M2>,
+        a: &Self::Storage<Fp8E5M2>,
+        b: &Self::Storage<Fp8E5M2>,
     ) -> Self::Storage<half::bf16> {
         fp8_matmul_default::<Fp8E5M2, Self>(a, b)
     }
@@ -772,9 +817,15 @@ mod nn;
 pub use nn::BackendNN;
 
 /// Default FP8 matmul: cast to f32, matmul, cast to bf16.
-#[cfg(any(feature = "cpu", feature = "cuda", feature = "hip", feature = "wgpu-f16"))]
+#[cfg(any(
+    feature = "cpu",
+    feature = "cuda",
+    feature = "hip",
+    feature = "wgpu-f16"
+))]
 fn fp8_matmul_default<F: Scalar, B: BackendBlas + ?Sized>(
-    a: &B::Storage<F>, b: &B::Storage<F>,
+    a: &B::Storage<F>,
+    b: &B::Storage<F>,
 ) -> B::Storage<half::bf16> {
     let (m, k) = (B::nrows(a), B::ncols(a));
     let n = B::ncols(b);
@@ -787,7 +838,9 @@ fn fp8_matmul_default<F: Scalar, B: BackendBlas + ?Sized>(
 
 /// Row-wise cumulative scan with given identity and binary op.
 fn cum_scan<T: Scalar, B: BackendCore + ?Sized>(
-    a: &B::Storage<T>, identity: T, op: fn(T, T) -> T,
+    a: &B::Storage<T>,
+    identity: T,
+    op: fn(T, T) -> T,
 ) -> B::Storage<T> {
     let (rows, cols) = (B::nrows(a), B::ncols(a));
     let mut data = vec![T::zero(); rows * cols];

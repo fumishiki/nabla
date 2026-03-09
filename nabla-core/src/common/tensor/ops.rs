@@ -372,7 +372,13 @@ impl<T: Scalar, B: Backend> Tensor<T, B> {
 
     // ---- Broadcast operations ----
 
-    fn broadcast_op(&self, vec: &Self, axis: usize, op: &str, f: impl FnOnce(&B::Storage<T>, &B::Storage<T>) -> B::Storage<T>) -> Self {
+    fn broadcast_op(
+        &self,
+        vec: &Self,
+        axis: usize,
+        op: &str,
+        f: impl FnOnce(&B::Storage<T>, &B::Storage<T>) -> B::Storage<T>,
+    ) -> Self {
         let expanded = self.expand_broadcast_vec(vec, axis, op);
         Tensor::from_storage(f(&self.storage, &expanded.storage))
     }
@@ -584,7 +590,10 @@ macro_rules! impl_broadcast_binop {
                     let self_exp = self.expand(p, q);
                     return Tensor::from_storage(B::$backend_fn(&self_exp.storage, &rhs.storage));
                 }
-                panic!("nabla: {} ({}x{}) vs ({}x{}) -- shapes are not broadcast-compatible", $name, m, n, p, q);
+                panic!(
+                    "nabla: {} ({}x{}) vs ({}x{}) -- shapes are not broadcast-compatible",
+                    $name, m, n, p, q
+                );
             }
         }
     };
@@ -599,7 +608,15 @@ macro_rules! impl_assign_op {
             fn $method(&mut self, rhs: &Tensor<T, B>) {
                 let (m, n) = self.shape();
                 let (p, q) = rhs.shape();
-                assert!(m == p && n == q, "nabla: {} ({}x{}) vs ({}x{}) -- shapes must match", $sym, m, n, p, q);
+                assert!(
+                    m == p && n == q,
+                    "nabla: {} ({}x{}) vs ({}x{}) -- shapes must match",
+                    $sym,
+                    m,
+                    n,
+                    p,
+                    q
+                );
                 self.storage = B::$backend_fn(&self.storage, &rhs.storage);
             }
         }
@@ -698,17 +715,23 @@ macro_rules! impl_owned_binop_fwd {
         impl<T: Scalar, B: Backend> $trait for Tensor<T, B> {
             type Output = Self;
             #[inline]
-            fn $method(self, rhs: Self) -> Self::Output { (&self).$method(&rhs) }
+            fn $method(self, rhs: Self) -> Self::Output {
+                (&self).$method(&rhs)
+            }
         }
         impl<T: Scalar, B: Backend> $trait<Tensor<T, B>> for &Tensor<T, B> {
             type Output = Tensor<T, B>;
             #[inline]
-            fn $method(self, rhs: Tensor<T, B>) -> Self::Output { self.$method(&rhs) }
+            fn $method(self, rhs: Tensor<T, B>) -> Self::Output {
+                self.$method(&rhs)
+            }
         }
         impl<T: Scalar, B: Backend> $trait<&Tensor<T, B>> for Tensor<T, B> {
             type Output = Self;
             #[inline]
-            fn $method(self, rhs: &Self) -> Self::Output { (&self).$method(rhs) }
+            fn $method(self, rhs: &Self) -> Self::Output {
+                (&self).$method(rhs)
+            }
         }
     };
 }
@@ -720,13 +743,17 @@ impl_owned_binop_fwd!(Mul, mul);
 impl<T: Scalar, B: Backend> Neg for Tensor<T, B> {
     type Output = Self;
     #[inline]
-    fn neg(self) -> Self::Output { -&self }
+    fn neg(self) -> Self::Output {
+        -&self
+    }
 }
 
 impl<T: Scalar, B: Backend> Mul<T> for Tensor<T, B> {
     type Output = Self;
     #[inline]
-    fn mul(self, rhs: T) -> Self::Output { &self * rhs }
+    fn mul(self, rhs: T) -> Self::Output {
+        &self * rhs
+    }
 }
 
 macro_rules! impl_scalar_lhs_ops {

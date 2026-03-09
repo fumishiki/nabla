@@ -71,7 +71,11 @@ pub fn derive_module_impl(input: TokenStream) -> syn::Result<TokenStream> {
 
     let push_tokens =
         |req: &[syn::Ident], opt: &[syn::Ident], named: bool, mutable: bool| -> Vec<TokenStream> {
-            let (borrow, opt_borrow) = if mutable { (quote!(&mut), quote!(ref mut)) } else { (quote!(&), quote!(ref)) };
+            let (borrow, opt_borrow) = if mutable {
+                (quote!(&mut), quote!(ref mut))
+            } else {
+                (quote!(&), quote!(ref))
+            };
             let mut out = Vec::with_capacity(req.len() + opt.len());
             for id in req {
                 out.push(if named {
@@ -140,7 +144,13 @@ fn extract_tb_params(input: &DeriveInput) -> syn::Result<(syn::Ident, TokenStrea
         .generics
         .params
         .iter()
-        .filter_map(|p| if let GenericParam::Type(tp) = p { Some(tp) } else { None })
+        .filter_map(|p| {
+            if let GenericParam::Type(tp) = p {
+                Some(tp)
+            } else {
+                None
+            }
+        })
         .collect();
 
     let t = type_params
@@ -162,7 +172,10 @@ fn extract_tb_params(input: &DeriveInput) -> syn::Result<(syn::Ident, TokenStrea
 
     let t_ident = t.ident.clone();
     let b_tokens = match b {
-        Some(bp) => { let id = &bp.ident; quote! { #id } }
+        Some(bp) => {
+            let id = &bp.ident;
+            quote! { #id }
+        }
         None => quote! { nabla_core::backend::DefaultBackend },
     };
     Ok((t_ident, b_tokens))

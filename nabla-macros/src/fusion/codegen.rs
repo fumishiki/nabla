@@ -12,14 +12,27 @@ use syn::{Error, Expr, ExprBinary, ExprMethodCall, ExprPath, ExprUnary, Result};
 use super::expr::{contains_tensor, scalar_method_name};
 
 const CUDA_UNARY_MAP: &[(&str, &str)] = &[
-    ("exp", "exp"), ("ln", "log"), ("log1p", "log1p"), ("sin", "sin"),
-    ("cos", "cos"), ("tanh", "tanh"), ("sqrt", "sqrt"), ("abs", "fabs"),
-    ("erf", "erf"), ("ceil", "ceil"), ("floor", "floor"), ("round", "round"),
+    ("exp", "exp"),
+    ("ln", "log"),
+    ("log1p", "log1p"),
+    ("sin", "sin"),
+    ("cos", "cos"),
+    ("tanh", "tanh"),
+    ("sqrt", "sqrt"),
+    ("abs", "fabs"),
+    ("erf", "erf"),
+    ("ceil", "ceil"),
+    ("floor", "floor"),
+    ("round", "round"),
 ];
 
 fn cuda_method_expr(method: &str, recv: &str) -> Option<String> {
-    if method == "recip" { return Some(format!("(1.0/({recv}))")); }
-    if method == "neg" { return Some(format!("(-{recv})")); }
+    if method == "recip" {
+        return Some(format!("(1.0/({recv}))"));
+    }
+    if method == "neg" {
+        return Some(format!("(-{recv})"));
+    }
     CUDA_UNARY_MAP
         .iter()
         .find(|(m, _)| *m == method)
@@ -425,9 +438,13 @@ const TRANSCENDENTAL_OPS: &[&str] = &["exp", "ln", "sqrt", "sin", "cos", "tanh",
 const CHEAP_OPS: &[&str] = &["abs", "ceil", "floor", "round", "neg", "recip"];
 
 fn op_cost(name: &str) -> (usize, usize) {
-    if TRANSCENDENTAL_OPS.contains(&name) || name == "powf" { (1, 0) }
-    else if CHEAP_OPS.contains(&name) { (0, 1) }
-    else { (0, 0) }
+    if TRANSCENDENTAL_OPS.contains(&name) || name == "powf" {
+        (1, 0)
+    } else if CHEAP_OPS.contains(&name) {
+        (0, 1)
+    } else {
+        (0, 0)
+    }
 }
 
 pub(crate) fn expr_hash(s: &str) -> String {
